@@ -2,6 +2,8 @@
 
 为 **Google Antigravity**（Windows / macOS / Linux）打造的一体化界面重塑、多语言本地化与 Token HUD 遥测增强插件。基于 Antigravity 内置的 **Chrome DevTools Protocol（CDP）** 调试端口实现无损动态注入，**不修改任何 Antigravity 安装文件**，支持热更新与一键无痕还原。
 
+> **来源声明**：本项目灵感及部分源码来源于 [Nwflower/dsh-claude-style](https://github.com/Nwflower/dsh-claude-style)；Codex 思考强度滑杆样式来源于 [Microqian2th/dsh-codex-effort-slider](https://github.com/Microqian2th/dsh-codex-effort-slider)；梁武峰思考强度滑杆样式来源于 [mobius/dsh-performance-slider](https://github.com/mobius/dsh-performance-slider)。详见 [来源声明](#来源声明)。
+
 ---
 
 ## 目录
@@ -14,6 +16,7 @@
 - [配置说明 (`config.json`)](#配置说明-configjson)
 - [项目结构](#项目结构)
 - [开发、测试与构建](#开发测试与构建)
+- [来源声明](#来源声明)
 - [开源协议](#开源协议)
 
 ---
@@ -208,6 +211,16 @@ npm run remove
 ```
 
 测试套件包含对注入包语法、模拟 DOM 挂载/无损卸载、5 语言翻译引擎、思考强度滑块数学模型、用量统计与配额匹配、二维波纹场、螃蟹状态机，以及 `installer.exe` 编译/静默安装/CDP 注入/设置同步热更新/保留配置升级/卸载自清理全流程的自动化验证。
+
+---
+
+## 来源声明
+
+本项目在设计与实现过程中参考并使用了以下开源项目的灵感、样式及部分源码，特此声明并致谢：
+
+- **项目灵感来源及部分源码来源**：[https://github.com/Nwflower/dsh-claude-style](https://github.com/Nwflower/dsh-claude-style)
+- **Codex 思考强度滑杆样式**：[https://github.com/Microqian2th/dsh-codex-effort-slider](https://github.com/Microqian2th/dsh-codex-effort-slider)
+- **梁武峰思考强度滑杆样式**：[https://github.com/mobius/dsh-performance-slider](https://github.com/mobius/dsh-performance-slider)
 
 ---
 
