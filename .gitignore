@@ -1,0 +1,15 @@
+# Runtime PID & log files
+.watch.pid
+watch.log
+
+# Local user configuration (use config.example.json as template)
+config.json
+
+# Compiled Windows binaries (rebuild with `npm run build:installer`)
+installer.exe
+*.exe
+
+# Dependencies & OS metadata
+node_modules/
+.DS_Store
+Thumbs.db

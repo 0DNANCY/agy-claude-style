@@ -1,0 +1,585 @@
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) module.exports = factory();
+  else root.__agCsI18nCore = factory();
+})(typeof globalThis !== 'undefined' ? globalThis : window, function () {
+  const LANG_OPTIONS = Object.freeze([
+    { id: 'zh-CN', label: '简体中文', htmlLang: 'zh-CN', intl: 'zh-CN' },
+    { id: 'zh-TW', label: '繁體中文', htmlLang: 'zh-TW', intl: 'zh-TW' },
+    { id: 'yue', label: '粵語', htmlLang: 'zh-HK', intl: 'zh-HK' },
+    { id: 'en', label: 'English', htmlLang: 'en', intl: 'en-US' },
+    { id: 'ja', label: '日本語', htmlLang: 'ja', intl: 'ja-JP' },
+  ]);
+
+  const LANG_META = Object.fromEntries(LANG_OPTIONS.map((opt) => [opt.id, opt]));
+
+  /**
+   * Normalize language identifier (or legacy boolean `zh` flag) to one of the 5 supported UI languages.
+   */
+  function normalizeLanguage(lang, fallback = 'zh-CN') {
+    if (lang === true) return 'zh-CN';
+    if (lang === false) return 'en';
+    const raw = typeof lang === 'string' ? lang.trim().toLowerCase().replace(/_/g, '-') : '';
+    if (!raw) return fallback;
+    if (raw === 'en' || raw.startsWith('en-') || raw === 'english') return 'en';
+    if (raw === 'ja' || raw.startsWith('ja-') || raw === 'jp' || raw === 'japanese') return 'ja';
+    if (
+      raw === 'yue' ||
+      raw.startsWith('yue-') ||
+      raw === 'zh-yue' ||
+      raw === 'zh-hk' ||
+      raw === 'zh-mo' ||
+      raw.includes('cantonese')
+    ) {
+      return 'yue';
+    }
+    if (
+      raw === 'zh-tw' ||
+      raw === 'zh-hant' ||
+      raw.startsWith('zh-hant-') ||
+      raw === 'tw' ||
+      raw === 'hant'
+    ) {
+      return 'zh-TW';
+    }
+    if (raw === 'zh' || raw === 'zh-cn' || raw === 'zh-hans' || raw.startsWith('zh-')) {
+      return 'zh-CN';
+    }
+    return fallback;
+  }
+
+  function intlLocale(lang) {
+    const id = normalizeLanguage(lang);
+    return LANG_META[id]?.intl || 'zh-CN';
+  }
+
+  function htmlLangAttr(lang) {
+    const id = normalizeLanguage(lang);
+    return LANG_META[id]?.htmlLang || 'zh-CN';
+  }
+
+  function isCjkLanguage(lang) {
+    return normalizeLanguage(lang) !== 'en';
+  }
+
+  const DURATION_TOKEN = /(\d+)\s*(months?|mo|weeks?|w|days?|d|hours?|h|minutes?|mins?|m|seconds?|secs?|s|years?|y)\b/g;
+
+  /**
+   * Translate an English duration snippet such as "4m 12s" or "6 days, 22 hours" using locale units.
+   * Returns null if text contains non-duration tokens.
+   */
+  function formatDuration(text, units) {
+    if (!text || !units) return null;
+    DURATION_TOKEN.lastIndex = 0;
+    const parts = [...String(text).matchAll(DURATION_TOKEN)];
+    if (!parts.length) return null;
+    const leftover = String(text)
+      .replace(DURATION_TOKEN, '')
+      .replace(/,|\band\b/gi, '')
+      .trim();
+    if (leftover) return null;
+    if (parts.length === 1 && parts[0][2] === 'm' && units.singleMin) {
+      return parts[0][1] + units.singleMin;
+    }
+    const sep = typeof units.joiner === 'string' ? units.joiner : '';
+    return parts
+      .map((p) => {
+        const key = p[2].toLowerCase();
+        const unit = units[key] || units[key.replace(/s$/, '')] || key;
+        return p[1] + unit;
+      })
+      .join(sep);
+  }
+
+  const hasOwn = Object.prototype.hasOwnProperty;
+  const CJK_LATIN = /([\u3400-\u9fff])([A-Za-z])|([A-Za-z])([\u3400-\u9fff])/g;
+
+  // Never descend into opt-out plugin roots or effort pills controlled by our runtime.
+  const OPT_OUT = '[data-ag-no-i18n], [data-ag-cs-effort]';
+  // Code / editing surfaces: text is untouched, but nested toolbar buttons (e.g. "Copy code") are UI.
+  const HARD = [
+    'script',
+    'style',
+    'noscript',
+    'svg',
+    'iframe',
+    'code',
+    'pre',
+    'kbd',
+    'samp',
+    'textarea',
+    'input',
+    'select',
+    '[contenteditable="true"]',
+    '.monaco-editor',
+    '.xterm',
+    '.font-mono',
+  ].join(',');
+  // Conversation content containers: prose/user messages untouched except interactive controls inside.
+  const CONTENT = [
+    '[data-testid="planner-response-text"]',
+    '[data-testid="user-message-content"]',
+    '[data-testid="user-input-step"] .bg-card',
+    '[class*="_code:not(pre_code)"]',
+    '.prose',
+    '.markdown',
+    '.markdown-alert',
+  ].join(',');
+  // User-chosen workspace / conversation titles: only relative timestamps ("4m", "5d") apply.
+  const NAMES = [
+    '[data-testid="conversation-row-sidebar"]',
+    '[data-testid="breadcrumb-segment"]',
+    '[data-testid="project-header"]',
+    '[data-project-label]',
+  ].join(',');
+  const ATTRS = ['placeholder', 'aria-label', 'title', 'data-placeholder', 'data-tooltip-content'];
+  const FIELD = 'input,textarea,select,[contenteditable="true"]';
+  const CONTROLS = 'button,[role="button"],[role="menuitem"]';
+
+  function closestSel(el, sel) {
+    if (!el || typeof el.closest !== 'function') return null;
+    try {
+      return el.closest(sel);
+    } catch {
+      return null;
+    }
+  }
+
+  function matchesSel(el, sel) {
+    if (!el || typeof el.matches !== 'function') return false;
+    try {
+      return el.matches(sel);
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Create a reversible multi-locale DOM translator modeled after Claudized-Antigravity.
+   * Restores every modified Text node and attribute in-place before switching locales or detaching.
+   */
+  function createDomTranslator(resolveBundle) {
+    const texts = new Map();
+    const attrs = new Map();
+    let observer = null;
+    let activeDoc = null;
+    let activeLang = 'en';
+    let bundle = null;
+    let compiledRules = [];
+    let compiledTimeRules = [];
+    let sentenceMap = new Map();
+    let fragmentSet = new Set();
+    let origHtmlLang = null;
+    let htmlLangCaptured = false;
+    let sincePrune = 0;
+
+    function clearBundleState() {
+      bundle = null;
+      compiledRules = [];
+      compiledTimeRules = [];
+      sentenceMap = new Map();
+      fragmentSet = new Set();
+    }
+
+    function compileBundle(nextBundle) {
+      bundle = nextBundle;
+      compiledRules = (nextBundle.rules || []).map(([src, flags, to]) => ({
+        re: new RegExp(src, flags),
+        to,
+      }));
+      compiledTimeRules = (nextBundle.timeRules || []).map(([src, flags, to]) => ({
+        re: new RegExp(src, flags),
+        to,
+      }));
+      sentenceMap = new Map((nextBundle.sentences || []).map(([text, parts]) => [text, parts]));
+      fragmentSet = new Set((nextBundle.sentences || []).flatMap(([, parts]) => Object.keys(parts)));
+    }
+
+    function lookup(text, el) {
+      if (!bundle || !bundle.dict || !hasOwn.call(bundle.dict, text)) return null;
+      const v = bundle.dict[text];
+      if (typeof v === 'string') return v;
+      if (!v || typeof v !== 'object') return null;
+      for (const sel in v) {
+        if (sel !== '*' && closestSel(el, sel)) return v[sel];
+      }
+      return v['*'] ?? null;
+    }
+
+    function applyRule(rule, m, el) {
+      let failed = false;
+      let composed = false;
+      const out = rule.to.replace(/\$([DT]?)(\d)/g, (_, kind, idx) => {
+        const g = m[+idx] ?? '';
+        if (kind === 'T') {
+          composed = true;
+          const v = lookup(g, el) ?? lookup(g.charAt(0).toUpperCase() + g.slice(1), el);
+          if (v == null) failed = true;
+          return v ?? g;
+        }
+        if (kind !== 'D') return g;
+        const v = formatDuration(g, bundle?.units);
+        if (v == null) failed = true;
+        return v ?? g;
+      });
+      if (failed) return null;
+      if (composed && bundle?.cjkLatinSpacing !== false) {
+        return out.replace(CJK_LATIN, (_, a, b, c, d) => (a ? a + ' ' + b : c + ' ' + d));
+      }
+      return out;
+    }
+
+    function originalText(el) {
+      if (!el || !activeDoc || typeof activeDoc.createTreeWalker !== 'function' || typeof NodeFilter === 'undefined') {
+        return '';
+      }
+      let s = '';
+      const w = activeDoc.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+      while (w.nextNode()) {
+        const rec = texts.get(w.currentNode);
+        s += rec && w.currentNode.nodeValue === rec.t ? rec.o : w.currentNode.nodeValue;
+      }
+      return s.replace(/\s+/g, ' ').trim();
+    }
+
+    function fromSentence(text, el) {
+      if (!fragmentSet.has(text)) return null;
+      for (let e = el, i = 0; e && i < 3; e = e.parentElement, i++) {
+        const parts = sentenceMap.get(originalText(e));
+        if (parts && hasOwn.call(parts, text)) return parts[text];
+      }
+      return null;
+    }
+
+    function convert(text, zone, el) {
+      if (!bundle || !text || !zone) return null;
+      if (zone === 2) {
+        const s = el && fromSentence(text, el);
+        if (s != null) return s;
+        const d = lookup(text, el);
+        if (d != null) return d;
+      }
+      const list = zone === 2 ? compiledRules.concat(compiledTimeRules) : compiledTimeRules;
+      for (const rule of list) {
+        const m = text.match(rule.re);
+        if (m) {
+          const applied = applyRule(rule, m, el);
+          if (applied != null) return applied;
+        }
+      }
+      return null;
+    }
+
+    // 0 = skip, 1 = names (relative times only), 2 = full UI chrome
+    function zoneOf(el) {
+      if (!el) return 0;
+      if (closestSel(el, OPT_OUT)) return 0;
+      const hard = closestSel(el, HARD);
+      if (hard) {
+        const ctl = closestSel(el, CONTROLS);
+        return ctl && hard.contains(ctl) ? 2 : 0;
+      }
+      const content = closestSel(el, CONTENT);
+      if (content) {
+        const ctl = closestSel(el, CONTROLS);
+        return ctl && content.contains(ctl) ? 2 : 0;
+      }
+      const names = closestSel(el, NAMES);
+      if (!names) return 2;
+      const ctl = closestSel(el, CONTROLS);
+      return ctl && ctl !== names && names.contains(ctl) ? 2 : 1;
+    }
+
+    function doText(node) {
+      if (!bundle || !node) return;
+      const cur = node.nodeValue;
+      const rec = texts.get(node);
+      if (rec && cur === rec.t) return;
+      const trimmed = typeof cur === 'string' ? cur.trim() : '';
+      if (!trimmed || trimmed.length > 300 || !/[A-Za-z]/.test(trimmed)) {
+        if (rec) texts.delete(node);
+        return;
+      }
+      const parent = node.parentElement;
+      const zone = zoneOf(parent);
+      if (!zone) {
+        if (rec) texts.delete(node);
+        return;
+      }
+      const out = convert(trimmed, zone, parent);
+      if (out == null || out === trimmed) {
+        if (rec) texts.delete(node);
+        return;
+      }
+      const next = cur.replace(trimmed, () => out);
+      texts.set(node, { o: cur, t: next });
+      node.nodeValue = next;
+    }
+
+    function doAttrs(el, only) {
+      if (!bundle || !el || closestSel(el, OPT_OUT)) return;
+      let zone = -1;
+      for (const name of only ? [only] : ATTRS) {
+        const cur = typeof el.getAttribute === 'function' ? el.getAttribute(name) : null;
+        if (cur == null) continue;
+        const recs = attrs.get(el);
+        const rec = recs && recs[name];
+        if (rec && cur === rec.t) continue;
+        if (zone < 0) {
+          zone = matchesSel(el, FIELD) ? zoneOf(el.parentElement) : zoneOf(el);
+        }
+        const trimmed = cur.trim();
+        const out = zone && trimmed ? convert(trimmed, zone, el) : null;
+        if (out == null || out === trimmed) {
+          if (rec) delete recs[name];
+          continue;
+        }
+        const next = cur.replace(trimmed, () => out);
+        (recs || attrs.set(el, {}).get(el))[name] = { o: cur, t: next };
+        el.setAttribute(name, next);
+      }
+    }
+
+    function walkControlsIn(el) {
+      if (!el || typeof el.querySelectorAll !== 'function' || closestSel(el, OPT_OUT)) return;
+      for (const ctl of el.querySelectorAll(CONTROLS)) {
+        if (!closestSel(ctl, OPT_OUT)) walk(ctl);
+      }
+    }
+
+    function walk(root) {
+      if (!bundle || !root) return;
+      if (root.nodeType === 3) return doText(root);
+      if (root.nodeType !== 1 && root.nodeType !== 9) return;
+      if (root.nodeType === 1) {
+        if (closestSel(root, OPT_OUT)) return;
+        const fenced = closestSel(root, HARD) || closestSel(root, CONTENT);
+        if (fenced && !(closestSel(root, CONTROLS) && fenced.contains(closestSel(root, CONTROLS)))) {
+          if (matchesSel(root, FIELD)) doAttrs(root);
+          return walkControlsIn(root);
+        }
+        doAttrs(root);
+      }
+      const doc = activeDoc || root.ownerDocument || root;
+      if (!doc || typeof doc.createTreeWalker !== 'function' || typeof NodeFilter === 'undefined') return;
+      const contents = [];
+      const walker = doc.createTreeWalker(root, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT, {
+        acceptNode: (n) => {
+          if (n.nodeType !== 1) return NodeFilter.FILTER_ACCEPT;
+          if (matchesSel(n, OPT_OUT)) return NodeFilter.FILTER_REJECT;
+          if (matchesSel(n, HARD) || matchesSel(n, CONTENT)) {
+            if (matchesSel(n, FIELD)) doAttrs(n);
+            contents.push(n);
+            return NodeFilter.FILTER_REJECT;
+          }
+          return NodeFilter.FILTER_ACCEPT;
+        },
+      });
+      while (walker.nextNode()) {
+        const n = walker.currentNode;
+        if (n.nodeType === 3) doText(n);
+        else doAttrs(n);
+      }
+      for (const c of contents) walkControlsIn(c);
+    }
+
+    function prune() {
+      for (const n of texts.keys()) if (!n.isConnected) texts.delete(n);
+      for (const el of attrs.keys()) if (!el.isConnected) attrs.delete(el);
+    }
+
+    function stopObserver() {
+      if (observer) {
+        try {
+          observer.disconnect();
+        } catch {}
+        observer = null;
+      }
+    }
+
+    function revertDom() {
+      stopObserver();
+      for (const [n, r] of texts) {
+        if (n.nodeValue === r.t) n.nodeValue = r.o;
+      }
+      for (const [el, recs] of attrs) {
+        for (const name in recs) {
+          if (el.getAttribute(name) === recs[name].t) el.setAttribute(name, recs[name].o);
+        }
+      }
+      texts.clear();
+      attrs.clear();
+    }
+
+    function restoreHtmlLang(doc) {
+      const html = doc?.documentElement;
+      if (!html || !htmlLangCaptured) return;
+      if (origHtmlLang == null) html.removeAttribute('lang');
+      else html.setAttribute('lang', origHtmlLang);
+      html.removeAttribute('data-ag-cs-cjk');
+    }
+
+    function revertNode(root) {
+      if (!root) return;
+      const visit = (n) => {
+        if (!n) return;
+        if (n.nodeType === 3) {
+          const r = texts.get(n);
+          if (r) {
+            if (n.nodeValue === r.t) n.nodeValue = r.o;
+            texts.delete(n);
+          }
+          return;
+        }
+        if (n.nodeType !== 1 && n.nodeType !== 9) return;
+        if (n.nodeType === 1 && attrs.has(n)) {
+          const recs = attrs.get(n);
+          for (const name in recs) {
+            if (typeof n.getAttribute === 'function' && n.getAttribute(name) === recs[name].t) {
+              n.setAttribute(name, recs[name].o);
+            }
+          }
+          attrs.delete(n);
+        }
+        const list = n.childNodes || n.children || [];
+        for (let i = 0; i < list.length; i += 1) visit(list[i]);
+      };
+      visit(root);
+    }
+
+    function translateNode(root) {
+      if (!bundle || !root) return;
+      walk(root);
+    }
+
+    function revert(doc = activeDoc) {
+      revertDom();
+      clearBundleState();
+      restoreHtmlLang(doc);
+      activeLang = 'en';
+    }
+
+    function setLanguage(lang, doc) {
+      const targetDoc = doc || activeDoc || (typeof document !== 'undefined' ? document : null);
+      activeDoc = targetDoc;
+      const norm = normalizeLanguage(lang);
+      const html = targetDoc?.documentElement;
+      if (html && !htmlLangCaptured) {
+        origHtmlLang = html.getAttribute('lang');
+        htmlLangCaptured = true;
+      }
+      if (norm === activeLang && (norm === 'en' || (bundle && observer))) {
+        return norm;
+      }
+
+      revertDom();
+      clearBundleState();
+      activeLang = norm;
+
+      if (norm === 'en') {
+        restoreHtmlLang(targetDoc);
+        return norm;
+      }
+
+      const nextBundle = typeof resolveBundle === 'function' ? resolveBundle(norm) : null;
+      if (!nextBundle) {
+        restoreHtmlLang(targetDoc);
+        return norm;
+      }
+
+      compileBundle(nextBundle);
+      if (html) {
+        html.setAttribute('lang', htmlLangAttr(norm));
+        html.setAttribute('data-ag-cs-cjk', '1');
+      }
+
+      if (!targetDoc || typeof targetDoc.createTreeWalker !== 'function' || typeof NodeFilter === 'undefined') {
+        return norm;
+      }
+
+      const MO = typeof MutationObserver === 'function' ? MutationObserver : targetDoc.defaultView?.MutationObserver;
+      if (typeof MO === 'function') {
+        observer = new MO((records) => {
+          for (const r of records) {
+            if (r.type === 'characterData') doText(r.target);
+            else if (r.type === 'attributes') doAttrs(r.target, r.attributeName);
+            else if (r.addedNodes) {
+              for (const n of r.addedNodes) walk(n);
+            }
+          }
+          if (++sincePrune > 500) {
+            sincePrune = 0;
+            prune();
+          }
+        });
+        observer.observe(targetDoc, {
+          subtree: true,
+          childList: true,
+          characterData: true,
+          attributes: true,
+          attributeFilter: ATTRS,
+        });
+      }
+
+      walk(targetDoc);
+      return norm;
+    }
+
+    function missing(doc = activeDoc) {
+      const targetDoc = doc || activeDoc;
+      if (!targetDoc?.body || typeof targetDoc.createTreeWalker !== 'function' || typeof NodeFilter === 'undefined') {
+        return [];
+      }
+      const seen = new Set();
+      const w = targetDoc.createTreeWalker(targetDoc.body, NodeFilter.SHOW_TEXT);
+      while (w.nextNode()) {
+        const n = w.currentNode;
+        const t = (n.nodeValue || '').trim();
+        if (!/[A-Za-z]{2}/.test(t) || texts.has(n)) continue;
+        const p = n.parentElement;
+        if (!p || zoneOf(p) !== 2) continue;
+        if (typeof p.getClientRects === 'function' && !p.getClientRects().length) continue;
+        seen.add(t);
+      }
+      if (typeof targetDoc.querySelectorAll === 'function') {
+        for (const el of targetDoc.querySelectorAll('[aria-label],[placeholder],[title]')) {
+          if (closestSel(el, OPT_OUT) || zoneOf(el) !== 2) continue;
+          const recs = attrs.get(el) || {};
+          for (const a of ['aria-label', 'placeholder', 'title']) {
+            const v = el.getAttribute(a);
+            if (v && /[A-Za-z]{2}/.test(v) && !recs[a]) seen.add('@' + a + ': ' + v);
+          }
+        }
+      }
+      return [...seen];
+    }
+
+    function destroy() {
+      revert(activeDoc);
+      activeDoc = null;
+    }
+
+    return {
+      get locale() {
+        return activeLang;
+      },
+      setLanguage,
+      revertNode,
+      translateNode,
+      revert,
+      destroy,
+      missing,
+      stats: () => ({ lang: activeLang, texts: texts.size, attrs: attrs.size }),
+      t: (text, el) => convert(String(text || '').trim(), 2, el || activeDoc?.body || null),
+    };
+  }
+
+  return {
+    LANG_OPTIONS,
+    normalizeLanguage,
+    intlLocale,
+    htmlLangAttr,
+    isCjkLanguage,
+    formatDuration,
+    createDomTranslator,
+  };
+});
