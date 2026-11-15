@@ -256,7 +256,10 @@ test('installer manifest validators match inject.js and cdp.js defaults', () => 
   }
 });
 
-test('installer.exe builds cleanly and executes full install, CDP injection, setting sync, upgrade, and uninstall lifecycle', async () => {
+test(
+  'installer.exe builds cleanly and executes full install, CDP injection, setting sync, upgrade, and uninstall lifecycle',
+  { skip: process.platform !== 'win32' ? 'Windows-only installer.exe E2E test' : false },
+  async () => {
   const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-cs-e2e-'));
   const installerExe = path.join(workDir, 'installer.exe');
   const installDir = path.join(workDir, 'installed');

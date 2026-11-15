@@ -1,0 +1,229 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g. v1.0.0). Leave empty to use v<package.json version>.'
+        required: false
+        type: string
+      prerelease:
+        description: 'Mark release as pre-release'
+        required: false
+        type: boolean
+        default: false
+      draft:
+        description: 'Save release as draft'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  prepare:
+    name: Resolve Release Metadata
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+      version: ${{ steps.meta.outputs.version }}
+      prerelease: ${{ steps.meta.outputs.prerelease }}
+      draft: ${{ steps.meta.outputs.draft }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Determine release tag and flags
+        id: meta
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            TAG="${{ github.ref_name }}"
+          elif [ -n "${{ inputs.tag }}" ]; then
+            TAG="${{ inputs.tag }}"
+          else
+            PKG_VER=$(node -p "require('./package.json').version")
+            TAG="v${PKG_VER}"
+          fi
+
+          if [[ ! "$TAG" =~ ^v[0-9A-Za-z._-]+$ ]]; then
+            echo "::error::Invalid release tag '$TAG'. Expected a tag starting with 'v' (e.g. v1.0.0)."
+            exit 1
+          fi
+
+          VERSION="${TAG#v}"
+          if [ "${{ inputs.prerelease }}" = "true" ] || [[ "$TAG" == *-* ]]; then
+            PRERELEASE="true"
+          else
+            PRERELEASE="false"
+          fi
+
+          if [ "${{ inputs.draft }}" = "true" ]; then
+            DRAFT="true"
+          else
+            DRAFT="false"
+          fi
+
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$PRERELEASE" >> "$GITHUB_OUTPUT"
+          echo "draft=$DRAFT" >> "$GITHUB_OUTPUT"
+          echo "Resolved release tag=$TAG version=$VERSION prerelease=$PRERELEASE draft=$DRAFT"
+
+  test-linux:
+    name: Test (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Run test suite
+        run: npm test
+
+  build-windows:
+    name: Build Windows installer.exe
+    needs: prepare
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Run test suite (including installer.exe E2E)
+        run: npm test
+
+      - name: Build standalone installer.exe
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          node scripts/build-installer.mjs --out dist/installer.exe
+          if (-not (Test-Path dist/installer.exe)) {
+            throw "dist/installer.exe was not generated"
+          }
+          Get-Item dist/installer.exe | Format-List Name, Length
+
+      - name: Upload Windows release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-windows
+          path: dist/installer.exe
+          retention-days: 7
+
+  build-macos:
+    name: Build macOS Universal App (.dmg)
+    needs: prepare
+    runs-on: macos-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Run test suite (including macOS .app E2E)
+        run: npm test
+
+      - name: Build Universal macOS App and DMG
+        env:
+          BUILD_VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          mkdir -p dist
+          node scripts/build-macos.mjs \
+            --out dist/AGY-Claude-Style-macOS-universal.dmg \
+            --app-out "dist/AGY Claude Style.app" \
+            --version "$BUILD_VERSION"
+          lipo -archs "dist/AGY Claude Style.app/Contents/MacOS/AGY Claude Style"
+          lipo -archs "dist/AGY Claude Style.app/Contents/MacOS/agy-claude-style-watcher"
+          codesign --verify --deep --strict "dist/AGY Claude Style.app"
+          hdiutil verify dist/AGY-Claude-Style-macOS-universal.dmg
+          ls -lh dist/AGY-Claude-Style-macOS-universal.dmg
+
+      - name: Upload macOS release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-macos
+          path: dist/AGY-Claude-Style-macOS-universal.dmg
+          retention-days: 7
+
+  release:
+    name: Publish GitHub Release
+    needs: [prepare, test-linux, build-windows, build-macos]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download compiled release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Generate SHA256 checksums
+        run: |
+          cd release-assets
+          ls -lh
+          sha256sum installer.exe AGY-Claude-Style-macOS-universal.dmg > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Prepare Release notes
+        run: |
+          cat > release-notes.md <<'EOF'
+          ## 📦 开箱即用安装包 / Standalone Downloads
+
+          无需安装 Node.js 或任何运行时依赖，下载后直接运行即可自动配置后台守护与无损注入：
+
+          - **Windows (x64 / Windows 10 & 11)**: 下载 `installer.exe`，双击运行自动安装、开启开机自启并实时注入 Antigravity Desktop。
+          - **macOS (Apple Silicon + Intel Universal)**: 下载 `AGY-Claude-Style-macOS-universal.dmg`，打开后拖入「应用程序」或直接双击运行 `AGY Claude Style.app`（内置 LaunchAgent 登录自启与独立原生守护进程）。
+            > **macOS 首次打开提示说明**：本构建采用 Ad-hoc 签名；若 macOS 提示“无法验证开发者”，请**右键点击 App → 打开**，或在终端执行 `xattr -cr "/Applications/AGY Claude Style.app"` 后再次打开。
+
+          ### 🔐 SHA256 Checksums
+          ```text
+          EOF
+          cat release-assets/SHA256SUMS.txt >> release-notes.md
+          echo '```' >> release-notes.md
+
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ needs.prepare.outputs.tag }}"
+          IS_PRERELEASE="${{ needs.prepare.outputs.prerelease }}"
+          IS_DRAFT="${{ needs.prepare.outputs.draft }}"
+          NOTES=$(cat release-notes.md)
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" \
+              --title "$TAG" \
+              --notes "$NOTES" \
+              --prerelease="$IS_PRERELEASE" \
+              --draft="$IS_DRAFT"
+            gh release upload "$TAG" release-assets/* --clobber
+          else
+            CREATE_ARGS=(
+              --target "${{ github.sha }}"
+              --title "$TAG"
+              --notes "$NOTES"
+              --generate-notes
+            )
+            if [ "$IS_PRERELEASE" = "true" ]; then
+              CREATE_ARGS+=(--prerelease)
+            fi
+            if [ "$IS_DRAFT" = "true" ]; then
+              CREATE_ARGS+=(--draft)
+            fi
+            gh release create "$TAG" release-assets/* "${CREATE_ARGS[@]}"
+          fi

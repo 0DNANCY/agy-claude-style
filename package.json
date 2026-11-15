@@ -8,6 +8,7 @@
     "inject": "node inject.js",
     "watch": "node inject.js --watch",
     "remove": "node remove.js",
-    "build:installer": "node scripts/build-installer.mjs"
+    "build:installer": "node scripts/build-installer.mjs",
+    "build:macos": "node scripts/build-macos.mjs"
   }
 }

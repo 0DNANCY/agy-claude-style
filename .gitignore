@@ -9,6 +9,11 @@ config.json
 installer.exe
 *.exe
 
+# Compiled macOS bundles & disk images (rebuild with `npm run build:macos`)
+*.app/
+*.dmg
+dist/
+
 # Dependencies & OS metadata
 node_modules/
 .DS_Store
