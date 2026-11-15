@@ -34,7 +34,8 @@
 - [🎒 环境要求](#环境要求)
 - [🚀 快速开始](#快速开始)
   - [🪟 方式一：Windows 独立安装器（目标机器无需 Node.js）](#方式一windows-独立安装器目标机器无需-nodejs)
-  - [💻 方式二：Node.js 脚本模式（Windows / macOS / Linux）](#方式二nodejs-脚本模式windows--macos--linux)
+  - [🍎 方式二：macOS 独立应用（目标机器无需 Node.js）](#方式二macos-独立应用目标机器无需-nodejs)
+  - [💻 方式三：Node.js 脚本模式（Windows / macOS / Linux）](#方式三nodejs-脚本模式windows--macos--linux)
 - [⚙️ 配置说明 (`config.json`)](#配置说明)
 - [🗂️ 项目结构](#项目结构)
 - [🧪 开发、测试与构建](#开发测试与构建)
@@ -120,8 +121,9 @@ Clawd 是由 [crab-assets.js](crab-assets.js) 与 [mascot-core.js](mascot-core.j
   - Windows：`%APPDATA%\Antigravity\DevToolsActivePort`
   - macOS：`~/Library/Application Support/Antigravity/DevToolsActivePort`
   - Linux：`${XDG_CONFIG_HOME:-~/.config}/Antigravity/DevToolsActivePort`
-- **Node.js >= 22**（仅脚本模式、测试与构建安装器需要）：项目零第三方 npm 依赖，直接使用 Node.js 内置的 `fetch`、`WebSocket` 与 `node:test`。
+- **Node.js >= 22**（仅脚本模式、测试与从源码构建安装器需要）：项目零第三方 npm 依赖，直接使用 Node.js 内置的 `fetch`、`WebSocket` 与 `node:test`。
 - **.NET Framework 4.x (`csc.exe`)**（仅在 Windows 上从源码构建 `installer.exe` 时需要，Windows 10/11 系统默认自带）。
+- **Xcode Command Line Tools (`swiftc`)**（仅在 macOS 上从源码构建 `.app` / `.dmg` 时需要，macOS 安装命令行工具后自带）。
 
 ---
 
@@ -129,9 +131,12 @@ Clawd 是由 [crab-assets.js](crab-assets.js) 与 [mascot-core.js](mascot-core.j
 <a id="方式一windows-独立安装器目标机器无需-nodejs"></a>
 ## 🚀 快速开始
 
+> [!TIP]
+> **开箱即用**：不想自己编译？可直接前往仓库 [Releases](https://github.com/0DNANCY/agy-claude-style/releases) 下载 GitHub Actions 自动编译发布的 `installer.exe`（Windows）或 `AGY-Claude-Style-macOS-universal.dmg`（macOS Universal，支持 Apple Silicon 与 Intel），目标机器无需安装 Node.js！
+
 ### 🪟 方式一：Windows 独立安装器（目标机器无需 Node.js）
 
-1. 在已安装 Node.js >= 22 的 Windows 环境克隆仓库并构建独立安装器：
+1. 直接从 [Releases](https://github.com/0DNANCY/agy-claude-style/releases) 下载 `installer.exe`，或在已安装 Node.js >= 22 的 Windows 环境克隆仓库从源码构建：
    ```bash
    git clone https://github.com/0DNANCY/agy-claude-style.git
    cd agy-claude-style
@@ -155,8 +160,27 @@ Clawd 是由 [crab-assets.js](crab-assets.js) 与 [mascot-core.js](mascot-core.j
 
 ---
 
-<a id="方式二nodejs-脚本模式windows--macos--linux"></a>
-### 💻 方式二：Node.js 脚本模式（Windows / macOS / Linux）
+<a id="方式二macos-独立应用目标机器无需-nodejs"></a>
+### 🍎 方式二：macOS 独立应用（目标机器无需 Node.js）
+
+1. 直接从 [Releases](https://github.com/0DNANCY/agy-claude-style/releases) 下载 `AGY-Claude-Style-macOS-universal.dmg`，或在已安装 Node.js >= 22 与 Xcode Command Line Tools 的 macOS 环境从源码构建：
+   ```bash
+   git clone https://github.com/0DNANCY/agy-claude-style.git
+   cd agy-claude-style
+   npm run build:macos
+   ```
+   构建完成后会在项目根目录生成通用架构（`arm64` + `x86_64`）的 `AGY Claude Style.app` 与 `AGY-Claude-Style-macOS-universal.dmg` 🦀。
+
+2. 打开 `.dmg`，将 `AGY Claude Style.app` 拖入「应用程序」（或直接双击运行）：
+   - 若首次打开时 macOS 提示“无法验证开发者”（Release 构建采用 Ad-hoc 签名），请**右键点击 `AGY Claude Style.app` → 打开**，或在终端执行 `xattr -cr "/Applications/AGY Claude Style.app"`。
+   - 自动检测本机 `Antigravity.app`，并将独立运行时与插件资源部署至 `~/Library/Application Support/agy-claude-style`（升级时自动保留已有 `config.json`）。
+   - 自动注册 `LaunchAgent`（`~/Library/LaunchAgents/io.github.0dnancy.agy-claude-style.plist`）实现登录自启，并立即启动原生 Swift 后台守护进程 `agy-claude-style-watcher` 实时注入及热更新。
+   - 如需卸载，重新打开 `AGY Claude Style.app` 点击「卸载并恢复原版」即可自动停止守护、移除自启并恢复原版界面。
+
+---
+
+<a id="方式三nodejs-脚本模式windows--macos--linux"></a>
+### 💻 方式三：Node.js 脚本模式（Windows / macOS / Linux）
 
 1. 克隆仓库并准备配置文件（可选，若不创建 `config.json` 将自动使用内置默认配置）：
    ```bash
@@ -224,6 +248,9 @@ Clawd 是由 [crab-assets.js](crab-assets.js) 与 [mascot-core.js](mascot-core.j
 
 ```text
 agy-claude-style/
+├── .github/workflows/         # GitHub Actions CI 测试与自动构建发布 Release 工作流
+│   ├── ci.yml                 # PR / main 分支跨平台测试与编译验证
+│   └── release.yml            # 推送 v* 标签或手动触发自动发布 Windows/macOS 安装包
 ├── assets/                    # README 可爱像素螃蟹 Clawd 视觉插图资源
 ├── cdp.js                     # CDP WebSocket/HTTP 客户端、页面发现与注入/移除表达式构建
 ├── inject.js                  # 单次注入与 --watch 热更新守护进程（含设置持久化绑定）
@@ -239,17 +266,23 @@ agy-claude-style/
 ├── ripple-core.js             # 首页字符矩阵噪声与二维水波方程求解器
 ├── crab-assets.js             # 内置 19 套像素螃蟹双层精灵图（body + ink PNG Data URI）
 ├── perf-assets.js             # 内置 31 帧 320×320 WebP 人像序列
-├── installer/                 # Windows 独立安装器与原生守护进程源码（C# / WinForms）
+├── installer/                 # Windows (C#) 与 macOS (Swift) 独立安装器及原生守护进程源码
 │   ├── common/
 │   │   ├── CdpClient.cs       # C# 轻量 CDP WebSocket 客户端与配置热更新同步
 │   │   └── MiniJson.cs        # 零依赖 JSON 解析与序列化
 │   ├── setup/
-│   │   ├── Program.cs         # 安装/升级/卸载 GUI 与 CLI 入口
+│   │   ├── Program.cs         # Windows 安装/升级/卸载 GUI 与 CLI 入口
 │   │   └── app.manifest       # Windows DPI 与清单配置
-│   └── watcher/
-│       └── Program.cs         # 独立托盘/无窗后台 CDP 守护进程
+│   ├── watcher/
+│   │   └── Program.cs         # Windows 无窗后台 CDP 守护进程
+│   └── macos/
+│       ├── Common/            # Swift 零依赖 JSON 解析与 URLSession WebSocket CDP 客户端
+│       ├── Setup/main.swift   # macOS Cocoa GUI / LaunchAgent 安装与卸载入口
+│       └── Watcher/main.swift # macOS 原生后台 CDP 守护进程
 ├── scripts/
-│   └── build-installer.mjs    # 零依赖打包脚本（Node zlib + csc.exe 编译生成 installer.exe）
+│   ├── build-common.mjs       # 共享构建工具（图标生成、清单、ZIP 打包）
+│   ├── build-installer.mjs    # 编译生成 Windows 独立 installer.exe
+│   └── build-macos.mjs        # 编译生成 macOS Universal .app 与 .dmg
 ├── test/                      # 基于 node:test 的单元测试与安装器 E2E 测试套件
 ├── watch.bat / watch.sh       # 后台守护启动脚本（Windows 配合 watch-hidden.vbs）
 ├── inject.bat / inject.sh     # 单次注入脚本
@@ -263,11 +296,14 @@ agy-claude-style/
 ## 🧪 开发、测试与构建
 
 ```bash
-# 运行全部 39 项单元测试与安装器端到端测试（Node.js >= 22）
+# 运行全部单元测试与对应平台的安装器端到端测试（Node.js >= 22）
 npm test
 
 # 在 Windows 上从源码编译生成独立 installer.exe
 npm run build:installer
+
+# 在 macOS 上从源码编译生成 Universal .app 与 .dmg
+npm run build:macos
 
 # 运行单次注入 / 监听热更新 / 卸载还原
 npm run inject
@@ -275,7 +311,13 @@ npm run watch
 npm run remove
 ```
 
-测试套件包含对注入包语法、模拟 DOM 挂载/无损卸载、5 语言翻译引擎、思考强度滑块数学模型、用量统计与配额匹配、二维波纹场、螃蟹状态机，以及 `installer.exe` 编译/静默安装/CDP 注入/设置同步热更新/保留配置升级/卸载自清理全流程的自动化验证。
+### 🚀 自动构建与发布 Release
+
+仓库已配置 GitHub Actions 工作流（[release.yml](.github/workflows/release.yml) 与 [ci.yml](.github/workflows/ci.yml)）：
+- **推送版本标签自动发布**：推送形如 `v1.0.0` 的标签（`git tag v1.0.0 && git push origin v1.0.0`），会自动在 `windows-latest` 与 `macos-latest` 上完成测试、编译 `installer.exe` 与 `AGY-Claude-Style-macOS-universal.dmg`（附带 `SHA256SUMS.txt`）并自动创建 GitHub Release。
+- **手动触发**：也可以在 GitHub 仓库 **Actions → Release → Run workflow** 手动触发编译并发布。
+
+测试套件包含对注入包语法、模拟 DOM 挂载/无损卸载、5 语言翻译引擎、思考强度滑块数学模型、用量统计与配额匹配、二维波纹场、螃蟹状态机，以及 Windows `installer.exe` 与 macOS `.app` 编译/静默安装/CDP 注入/设置同步热更新/保留配置升级/卸载清理全流程的自动化验证。
 
 ---
 

@@ -1,0 +1,96 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test-linux:
+    name: Test (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Run test suite
+        run: npm test
+
+  build-windows:
+    name: Test & Build installer.exe (Windows)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Run test suite (including installer.exe E2E)
+        run: npm test
+
+      - name: Build installer.exe
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          node scripts/build-installer.mjs --out dist/installer.exe
+          if (-not (Test-Path dist/installer.exe)) {
+            throw "dist/installer.exe was not generated"
+          }
+          Get-Item dist/installer.exe | Format-List Name, Length
+
+      - name: Upload Windows installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: dist/installer.exe
+          retention-days: 7
+
+  build-macos:
+    name: Test & Build Universal App/DMG (macOS)
+    runs-on: macos-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Run test suite (including macOS .app E2E)
+        run: npm test
+
+      - name: Build AGY Claude Style.app and DMG
+        run: |
+          mkdir -p dist
+          node scripts/build-macos.mjs --out dist/AGY-Claude-Style-macOS-universal.dmg --app-out "dist/AGY Claude Style.app"
+          lipo -archs "dist/AGY Claude Style.app/Contents/MacOS/AGY Claude Style"
+          lipo -archs "dist/AGY Claude Style.app/Contents/MacOS/agy-claude-style-watcher"
+          codesign --verify --deep --strict "dist/AGY Claude Style.app"
+          hdiutil verify dist/AGY-Claude-Style-macOS-universal.dmg
+          ls -lh dist/AGY-Claude-Style-macOS-universal.dmg
+
+      - name: Upload macOS DMG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-dmg
+          path: dist/AGY-Claude-Style-macOS-universal.dmg
+          retention-days: 7
