@@ -171,7 +171,16 @@
 
   function tsToMs(ts) {
     if (!ts) return 0;
-    if (typeof ts === 'number') return ts;
+    if (typeof ts === 'number') return Number.isFinite(ts) && ts > 0 ? ts : 0;
+    if (ts instanceof Date) return Number.isFinite(ts.getTime()) && ts.getTime() > 0 ? ts.getTime() : 0;
+    if (typeof ts === 'string') {
+      const s = ts.trim();
+      if (!s) return 0;
+      const asNum = Number(s);
+      if (Number.isFinite(asNum) && asNum > 0) return asNum > 1e11 ? asNum : asNum * 1000;
+      const parsed = Date.parse(s);
+      return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+    }
     const sec = Number(ts.seconds || 0);
     const nanos = Number(ts.nanos || 0);
     return sec > 0 ? sec * 1000 + Math.floor(nanos / 1e6) : 0;
@@ -206,36 +215,23 @@
 
     const days = {}; // YYYY-MM-DD -> { calls, input, output, cacheRead, cacheWrite, total, hours: number[24], models: { [id]: { input, output, cacheRead, cacheWrite, total, calls } } }
     let calls = 0;
+    const coveredStepIndices = new Set();
 
-    for (let i = 0; i < gmList.length; i++) {
-      const val = gmList[i]?.metadata?.value;
-      if (!val) continue;
-      const u = val.usage || val.retryInfos?.[val.retryInfos.length - 1]?.usage;
-      if (!u) continue;
+    function addUsageSample(u, ts, modelId) {
+      if (!u) return;
       const input = Number(u.inputTokens || 0);
       const cacheRead = Number(u.cacheReadTokens || 0);
       const cacheWrite = Number(u.cacheWriteTokens || 0);
       const output = Number(u.outputTokens || 0);
       const total = input + cacheRead + cacheWrite + output;
-      if (total <= 0 && input === 0 && output === 0) continue;
+      if (total <= 0 && input === 0 && output === 0) return;
 
       calls += 1;
-      const sIndices = Array.isArray(gmList[i].stepIndices) ? gmList[i].stepIndices : [];
-      let ts = 0;
-      for (let k = 0; k < sIndices.length; k++) {
-        const hit = stepTime.get(sIndices[k]);
-        if (hit) {
-          ts = hit;
-          break;
-        }
-      }
-      if (!ts) ts = fallbackMs;
-      if (!ts) continue;
+      if (!ts) return;
 
       const d = new Date(ts);
       const dayKey = homeDayKey(d);
       const hour = d.getHours();
-      const modelId = cleanModelName(val);
 
       let day = days[dayKey];
       if (!day) {
@@ -272,10 +268,41 @@
       mod.calls += 1;
     }
 
+    for (let i = 0; i < gmList.length; i++) {
+      const val = gmList[i]?.metadata?.value;
+      if (!val) continue;
+      const u = hasUsageTokens(val.usage) ? val.usage : val.retryInfos?.[val.retryInfos.length - 1]?.usage || val.usage;
+      if (!u) continue;
+      const sIndices = Array.isArray(gmList[i].stepIndices) ? gmList[i].stepIndices : [];
+      if (hasUsageTokens(u)) {
+        for (let k = 0; k < sIndices.length; k++) coveredStepIndices.add(sIndices[k]);
+      }
+      let ts = 0;
+      for (let k = 0; k < sIndices.length; k++) {
+        const hit = stepTime.get(sIndices[k]);
+        if (hit) {
+          ts = hit;
+          break;
+        }
+      }
+      if (!ts) ts = fallbackMs;
+      addUsageSample(u, ts, cleanModelName(val));
+    }
+
+    for (let i = 0; i < steps.length; i++) {
+      if (coveredStepIndices.has(i)) continue;
+      const st = steps[i];
+      if (!st) continue;
+      const mu = st.metadata?.modelUsage || st.step?.value?.metadata?.modelUsage;
+      if (!hasUsageTokens(mu)) continue;
+      const ts = stepTime.get(i) || fallbackMs;
+      addUsageSample(mu, ts, cleanModelName(mu));
+    }
+
     return {
       cascadeId: String(cascadeId || t.cascadeId || ''),
       stepCount: Number(summaryObj?.stepCount ?? steps.length ?? 0),
-      lastModifiedSec: Number(summaryObj?.lastModifiedTime?.seconds || 0),
+      lastModifiedSec: Math.floor(tsSec(summaryObj?.lastModifiedTime)),
       subagent: isSubagentSummary(summaryObj),
       calls,
       days,
@@ -511,11 +538,26 @@
 
   function durSec(d) {
     if (!d) return 0;
+    if (typeof d === 'number') return Number.isFinite(d) && d > 0 ? d : 0;
+    if (typeof d === 'string') {
+      const m = /^\s*(-?\d+(?:\.\d+)?)s?\s*$/i.exec(d);
+      return m ? Math.max(0, Number(m[1])) : 0;
+    }
     return Number(d.seconds || 0) + Number(d.nanos || 0) / 1e9;
   }
 
   function tsSec(ts) {
     if (!ts) return 0;
+    if (typeof ts === 'number') return Number.isFinite(ts) && ts > 0 ? (ts > 1e11 ? ts / 1000 : ts) : 0;
+    if (ts instanceof Date) return Number.isFinite(ts.getTime()) && ts.getTime() > 0 ? ts.getTime() / 1000 : 0;
+    if (typeof ts === 'string') {
+      const s = ts.trim();
+      if (!s) return 0;
+      const asNum = Number(s);
+      if (Number.isFinite(asNum) && asNum > 0) return asNum > 1e11 ? asNum / 1000 : asNum;
+      const parsed = Date.parse(s);
+      return Number.isFinite(parsed) && parsed > 0 ? parsed / 1000 : 0;
+    }
     return Number(ts.seconds || 0) + Number(ts.nanos || 0) / 1e9;
   }
 
@@ -645,11 +687,16 @@
     let peakSpeed = 0;
     let sustainedPeakSpeed = 0;
     let latestCw = null;
+    let latestCwMaxTokens = 0;
+    let latestCwUsed = 0;
     let latestChatStart = null;
     let latestBreakdown = null;
     let latestBudgets = null;
     let lastSpeed = 0;
     let lastTtft = 0;
+    let activeContextUsed = 0;
+    let lastContextStepIdx = -1;
+    let prevCheckpointIdx = -1;
 
     for (let i = 0; i < gmList.length; i++) {
       const val = gmList[i]?.metadata?.value;
@@ -676,7 +723,13 @@
       const cs = val.chatStartMetadata;
       const cwMeta = cs?.contextWindowMetadata;
       if (cs) latestChatStart = cs;
-      if (cwMeta && (cwMeta.estimatedTokensUsed || cwMeta.maxContextTokens)) {
+      if (Number(cwMeta?.maxContextTokens || 0) > 0) {
+        latestCwMaxTokens = Number(cwMeta.maxContextTokens);
+      }
+      if (Number(cwMeta?.estimatedTokensUsed || 0) > 0) {
+        latestCwUsed = Number(cwMeta.estimatedTokensUsed);
+      }
+      if (cwMeta && (cwMeta.estimatedTokensUsed || cwMeta.maxContextTokens || cwMeta.truncationReason)) {
         latestCw = cwMeta;
       }
       if (cwMeta?.tokenBreakdown?.groups?.length) {
@@ -706,9 +759,47 @@
         if (stream >= 0.5 && speed > sustainedPeakSpeed) sustainedPeakSpeed = speed;
       }
 
-      const promptTotal = inp + cr;
-      const callCacheHitPct = promptTotal > 0 ? (cr / promptTotal) * 100 : 0;
       const stepIndices = Array.isArray(gmList[i].stepIndices) ? gmList[i].stepIndices : [];
+      const callPromptTokens = inp + cr + cw;
+      const callCacheHitPct = callPromptTokens > 0 ? (cr / callPromptTokens) * 100 : 0;
+      const ownCwUsed = Number(cwMeta?.estimatedTokensUsed || 0);
+      const usageCtxAfterCall = callPromptTokens > 0 ? callPromptTokens + resp : 0;
+      const callCtxUsed = Math.max(ownCwUsed, usageCtxAfterCall);
+
+      const csCheckpointIdx = Number(cs?.checkpointIndex ?? -1);
+      const firstStepIdx = stepIndices.length > 0 ? stepIndices[0] : -1;
+      let checkpointBetween = false;
+      if (lastContextStepIdx >= 0 && firstStepIdx > lastContextStepIdx) {
+        for (let s = lastContextStepIdx + 1; s < firstStepIdx; s++) {
+          if (steps[s]?.step?.case === 'checkpoint') {
+            checkpointBetween = true;
+            break;
+          }
+        }
+      }
+      const checkpointOccurred =
+        (prevCheckpointIdx >= 0 && csCheckpointIdx >= 0 && csCheckpointIdx !== prevCheckpointIdx) ||
+        (csCheckpointIdx > 0 && csCheckpointIdx !== prevCheckpointIdx) ||
+        (csCheckpointIdx === 0 && steps[0]?.step?.case === 'checkpoint' && prevCheckpointIdx !== 0) ||
+        Number(cwMeta?.truncationReason || 0) > 0 ||
+        checkpointBetween;
+      if (csCheckpointIdx >= 0) prevCheckpointIdx = csCheckpointIdx;
+
+      if (callCtxUsed > 0) {
+        if (
+          stepIndices.length > 0 ||
+          ownCwUsed > 0 ||
+          activeContextUsed === 0 ||
+          checkpointOccurred ||
+          callCtxUsed >= activeContextUsed
+        ) {
+          activeContextUsed = callCtxUsed;
+          if (stepIndices.length > 0) {
+            lastContextStepIdx = stepIndices[stepIndices.length - 1];
+          }
+        }
+      }
+
       callList.push({
         callNumber: callList.length + 1,
         stepIndices,
@@ -720,8 +811,8 @@
         modelDisplayName: cleanModelName(val),
         responseModel: val.responseModel || '',
         modelId: Number(val.model || 0),
-        contextUsed: Number(cwMeta?.estimatedTokensUsed || 0),
-        contextMax: Number(cwMeta?.maxContextTokens || 0),
+        contextUsed: callCtxUsed,
+        contextMax: Number(cwMeta?.maxContextTokens || latestCwMaxTokens || 0),
         inputTokens: inp,
         cacheReadTokens: cr,
         cacheWriteTokens: cw,
@@ -746,11 +837,80 @@
       }
     }
 
+    const hasAnyStepIndices = callList.some((c) => c.stepIndices.length > 0);
+    const lastCoveredStepIdx =
+      callList.length === 0
+        ? -1
+        : hasAnyStepIndices
+        ? callList.reduce((mx, c) => (c.stepIndices.length ? Math.max(mx, ...c.stepIndices) : mx), -1)
+        : steps.length - 1;
+    let lastMeasuredStepIdx = lastCoveredStepIdx;
+
+    for (let idx = lastCoveredStepIdx + 1; idx < steps.length; idx++) {
+      const st = steps[idx];
+      if (!st) continue;
+      if (st.step?.case === 'checkpoint') {
+        activeContextUsed = 0;
+        lastMeasuredStepIdx = idx;
+        continue;
+      }
+      const mu = st.metadata?.modelUsage || st.step?.value?.metadata?.modelUsage;
+      if (!mu) continue;
+      const sInp = Number(mu.inputTokens || 0);
+      const sCr = Number(mu.cacheReadTokens || 0);
+      const sCw = Number(mu.cacheWriteTokens || 0);
+      const sOut = Number(mu.outputTokens || 0);
+      const sThink = Number(mu.thinkingOutputTokens || 0);
+      const sResp = Number(mu.responseOutputTokens || Math.max(0, sOut - sThink) || 0);
+      if (sInp + sCr + sCw > 0) {
+        activeContextUsed = sInp + sCr + sCw + sResp;
+        lastMeasuredStepIdx = idx;
+      }
+    }
+
+    let pendingStepTokens = 0;
+    for (let idx = lastMeasuredStepIdx + 1; idx < steps.length; idx++) {
+      const st = steps[idx];
+      if (!st) continue;
+      const sc = st.step?.case || '';
+      const val = st.step?.value || {};
+      if (sc === 'userInput') {
+        const q = val.query || val.text || val.userInput || '';
+        if (q) pendingStepTokens += estimateTextTokens(q).tokens;
+      } else if (sc === 'plannerResponse') {
+        const tcText = Array.isArray(val.toolCalls)
+          ? val.toolCalls.map((tc) => `${tc.name || ''}${tc.argumentsJson || ''}`).join('')
+          : '';
+        const visText = `${val.response || ''}${tcText}`;
+        const muOut = Number(st.metadata?.modelUsage?.outputTokens || 0);
+        const muThink = Number(st.metadata?.modelUsage?.thinkingOutputTokens || 0);
+        const estVis = visText ? estimateTextTokens(visText).tokens : 0;
+        pendingStepTokens += Math.max(Math.max(0, muOut - muThink), estVis);
+      } else if (sc && sc !== 'systemMessage' && sc !== 'checkpoint') {
+        const rawOut =
+          typeof val.output === 'string'
+            ? val.output
+            : typeof val.content === 'string'
+            ? val.content
+            : typeof val.result === 'string'
+            ? val.result
+            : '';
+        if (rawOut) pendingStepTokens += estimateTextTokens(rawOut).tokens;
+      }
+    }
+    if (pendingStepTokens > 0) {
+      if (activeContextUsed > 0) {
+        activeContextUsed += pendingStepTokens;
+      } else if (callList.length === 0) {
+        activeContextUsed = Number(known.sysTokens || 0) + Number(known.toolsTokens || 0) + pendingStepTokens;
+      }
+    }
+
     const maxContextTokens =
-      Number(latestCw?.maxContextTokens || 0) ||
+      latestCwMaxTokens ||
       Number(known.maxContextTokens || 0) ||
       256000;
-    const contextUsed = Number(latestCw?.estimatedTokensUsed || 0);
+    const contextUsed = activeContextUsed > 0 ? activeContextUsed : latestCwUsed;
     const contextRemaining = Math.max(0, maxContextTokens - contextUsed);
     const contextPct = maxContextTokens > 0 ? Math.min(100, (contextUsed / maxContextTokens) * 100) : 0;
     const contextRemainingPct =
@@ -765,6 +925,7 @@
     let userMsgTokens = 0;
     let botMsgTokens = 0;
     let toolIoTokens = 0;
+    let maxBreakdownStepIdx = -1;
 
     if (latestBreakdown && Array.isArray(latestBreakdown.groups)) {
       for (const grp of latestBreakdown.groups) {
@@ -785,6 +946,7 @@
           msgChildren = children.map((c) => {
             const m = /^(\d+):\s*(\S+)/.exec(c.name);
             const sIdx = m ? parseInt(m[1], 10) : -1;
+            if (sIdx > maxBreakdownStepIdx) maxBreakdownStepIdx = sIdx;
             const kind = m ? m[2] : c.name;
             const sInfo = sIdx >= 0 ? stepInfoMap.get(sIdx) : null;
             if (kind === 'USER_INPUT') userMsgTokens += c.tokens;
@@ -810,18 +972,94 @@
       }
     }
 
-    if (!sysTokens && known.sysTokens && contextUsed === 0) {
-      sysTokens = Number(known.sysTokens) || 0;
+    if (!latestBreakdown && sysTokens === 0 && toolsTokens === 0) {
+      const kSys = Number(known.sysTokens || 0);
+      const kTools = Number(known.toolsTokens || 0);
+      if (contextUsed === 0 || kSys + kTools <= contextUsed) {
+        if (kSys > 0) sysTokens = kSys;
+        if (kTools > 0) toolsTokens = kTools;
+      }
     }
-    if (!toolsTokens && known.toolsTokens && contextUsed === 0) {
-      toolsTokens = Number(known.toolsTokens) || 0;
+    if (contextUsed > sysTokens + toolsTokens + msgTokens && steps.length - 1 > maxBreakdownStepIdx) {
+      const extraTokens = contextUsed - (sysTokens + toolsTokens + msgTokens);
+      let postChatWeight = 0;
+      let postUserWeight = 0;
+      let postToolWeight = 0;
+      const postToolSteps = [];
+      for (let idx = maxBreakdownStepIdx + 1; idx < steps.length; idx++) {
+        const st = steps[idx];
+        if (!st) continue;
+        const sc = st.step?.case || '';
+        if (!sc || sc === 'systemMessage' || sc === 'checkpoint') continue;
+        const val = st.step?.value || {};
+        if (sc === 'userInput') {
+          const q = val.query || val.text || val.userInput || '';
+          const w = Math.max(80, q ? estimateTextTokens(q).tokens : 40);
+          postUserWeight += w;
+          postChatWeight += w;
+        } else if (sc === 'plannerResponse') {
+          const tcText = Array.isArray(val.toolCalls)
+            ? val.toolCalls.map((tc) => `${tc.name || ''}${tc.argumentsJson || ''}`).join('')
+            : '';
+          const txt = `${val.response || ''}${tcText}${val.thinking || ''}`;
+          const w = Math.max(80, txt ? estimateTextTokens(txt).tokens : 40);
+          postChatWeight += w;
+        } else {
+          const rawOut =
+            typeof val.output === 'string'
+              ? val.output
+              : typeof val.content === 'string'
+              ? val.content
+              : typeof val.result === 'string'
+              ? val.result
+              : typeof val.summary === 'string'
+              ? val.summary
+              : '';
+          const est = rawOut ? estimateTextTokens(rawOut).tokens : 0;
+          const w = Math.max(400, est);
+          const sInfo = stepInfoMap.get(idx);
+          const rawTool = sInfo?.toolName ? sInfo.toolName.split(':')[0].trim() : sc || 'tool';
+          postToolWeight += w;
+          postToolSteps.push({
+            stepIdx: idx,
+            kind: 'GENERIC',
+            toolName: sInfo?.toolName || rawTool,
+            label: sInfo?.toolName ? `#${idx} ${sInfo.toolName}` : `#${idx} ${rawTool}`,
+            weight: w,
+          });
+        }
+      }
+      const totalPostWeight = postChatWeight + postToolWeight;
+      if (totalPostWeight > 0) {
+        const extraTool = Math.round(extraTokens * (postToolWeight / totalPostWeight));
+        const extraChat = extraTokens - extraTool;
+        const extraUser = postChatWeight > 0 ? Math.round(extraChat * (postUserWeight / postChatWeight)) : 0;
+        const extraBot = extraChat - extraUser;
+        msgTokens += extraTokens;
+        toolIoTokens += extraTool;
+        userMsgTokens += extraUser;
+        botMsgTokens += extraBot;
+        if (extraTool > 0 && postToolWeight > 0) {
+          for (const pts of postToolSteps) {
+            const alloc = Math.round(extraTool * (pts.weight / postToolWeight));
+            msgChildren.push({
+              name: `${pts.stepIdx}: GENERIC`,
+              tokens: alloc,
+              stepIdx: pts.stepIdx,
+              kind: pts.kind,
+              toolName: pts.toolName,
+              label: pts.label,
+            });
+          }
+        }
+      }
     }
     if (contextUsed > 0 && sysTokens === 0 && toolsTokens === 0 && msgTokens === 0) {
       msgTokens = contextUsed;
     }
 
     const lastCall = callList.length ? callList[callList.length - 1] : null;
-    const totalPrompt = sumInput + sumCacheRead;
+    const totalPrompt = sumInput + sumCacheRead + sumCacheWrite;
     const cacheHitPct = totalPrompt > 0 ? (sumCacheRead / totalPrompt) * 100 : 0;
     const overallThinkPct = sumOutput > 0 ? (sumThinking / sumOutput) * 100 : 0;
     const totalTokens = sumInput + sumCacheRead + sumCacheWrite + sumOutput;
@@ -1077,7 +1315,7 @@
         customizationTokenBudget: known.customizationTokenBudget || 20000,
         rulesTokenBudget: known.rulesTokenBudget || 20000,
       },
-      hasActiveLimits: Boolean(latestCw?.maxContextTokens && sysTokens > 0),
+      hasActiveLimits: Boolean(latestCwMaxTokens > 0),
       isRunning,
       isThinking,
       hasError,
@@ -1169,7 +1407,7 @@
     const groups = rawGroups.map((g) => {
       const name = String(g.displayName || g.name || '');
       const buckets = (g.buckets || []).map((b) => {
-        const resetSeconds = Number(b.resetTime?.seconds || 0);
+        const resetSeconds = Math.floor(tsSec(b.resetTime));
         return {
           id: String(b.bucketId || ''),
           name: String(b.displayName || ''),
@@ -1215,7 +1453,7 @@
         m.quotaInfo && typeof m.quotaInfo.remainingFraction === 'number'
           ? Math.max(0, Math.min(100, Number(m.quotaInfo.remainingFraction) * 100))
           : null,
-      resetSeconds: Number(m.quotaInfo?.resetTime?.seconds || 0),
+      resetSeconds: Math.floor(tsSec(m.quotaInfo?.resetTime)),
     }));
 
     if (groups.length === 0 && modelConfigs.length > 0) {
