@@ -44,6 +44,7 @@ namespace AgyClaudeStyle.Installer
         public string InstallDir;
         public string AntigravityExe;
         public string AntigravityVersion;
+        public bool AntigravityRunningWithoutCdp;
         public int? CdpPort;
         public List<string> InjectedPages = new List<string>();
         public bool PreservedExistingConfig;
@@ -55,6 +56,7 @@ namespace AgyClaudeStyle.Installer
     {
         private const string UninstallRegSubKey = @"Software\Microsoft\Windows\CurrentVersion\Uninstall\AGYClaudeStyle";
         private const string StartupLnkName = "AGY-Claude-Style.lnk";
+        private const string LauncherLnkName = "Antigravity (AGY Claude Style).lnk";
         private const string WatcherExeName = "agy-claude-style-watcher.exe";
         private const string SelfInstalledExeName = "agy-claude-style-installer.exe";
 
@@ -76,6 +78,32 @@ namespace AgyClaudeStyle.Installer
         public static string GetStartupShortcutPath()
         {
             return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Startup), StartupLnkName);
+        }
+
+        public static string GetStartMenuLauncherShortcutPath()
+        {
+            return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Programs), LauncherLnkName);
+        }
+
+        public static void CreateAntigravityCdpShortcut(string lnkPath, string antigravityExe)
+        {
+            if (string.IsNullOrEmpty(lnkPath) || string.IsNullOrEmpty(antigravityExe) || !File.Exists(antigravityExe)) return;
+            try
+            {
+                string parent = Path.GetDirectoryName(lnkPath);
+                if (!string.IsNullOrEmpty(parent)) Directory.CreateDirectory(parent);
+                Type shellType = Type.GetTypeFromProgID("WScript.Shell");
+                object shell = Activator.CreateInstance(shellType);
+                object lnk = shellType.InvokeMember("CreateShortcut", BindingFlags.InvokeMethod, null, shell, new object[] { lnkPath });
+                Type lnkType = lnk.GetType();
+                lnkType.InvokeMember("TargetPath", BindingFlags.SetProperty, null, lnk, new object[] { antigravityExe });
+                lnkType.InvokeMember("Arguments", BindingFlags.SetProperty, null, lnk, new object[] { "--remote-debugging-port=0" });
+                lnkType.InvokeMember("WorkingDirectory", BindingFlags.SetProperty, null, lnk, new object[] { Path.GetDirectoryName(antigravityExe) });
+                lnkType.InvokeMember("IconLocation", BindingFlags.SetProperty, null, lnk, new object[] { antigravityExe + ",0" });
+                lnkType.InvokeMember("Description", BindingFlags.SetProperty, null, lnk, new object[] { "Launch Antigravity Desktop with CDP enabled for AGY Claude Style" });
+                lnkType.InvokeMember("Save", BindingFlags.InvokeMethod, null, lnk, null);
+            }
+            catch { }
         }
 
         public static AntigravityDetectResult DetectAntigravityDesktop()
@@ -423,7 +451,7 @@ namespace AgyClaudeStyle.Installer
                 if (key == null) return;
                 string exePath = Path.Combine(installDir, SelfInstalledExeName);
                 key.SetValue("DisplayName", "AGY Claude Style (Antigravity 界面增强补丁)", RegistryValueKind.String);
-                key.SetValue("DisplayVersion", version ?? "1.0.0", RegistryValueKind.String);
+                key.SetValue("DisplayVersion", version ?? "1.1.0", RegistryValueKind.String);
                 key.SetValue("Publisher", "AGY Claude Style", RegistryValueKind.String);
                 key.SetValue("InstallLocation", installDir, RegistryValueKind.String);
                 key.SetValue("DisplayIcon", exePath + ",0", RegistryValueKind.String);
@@ -519,10 +547,19 @@ namespace AgyClaudeStyle.Installer
                 activeCfg.ContainsKey("effortSliderStyle") ? activeCfg["effortSliderStyle"] : "claude"
             );
 
+            if (!string.IsNullOrEmpty(ag.ExePath))
+            {
+                CreateAntigravityCdpShortcut(Path.Combine(installDir, LauncherLnkName), ag.ExePath);
+            }
+
             if (!opts.NoAutostart)
             {
                 report(72, "正在配置 Windows 开机自动修补与卸载入口...");
                 CreateStartupShortcut(installDir);
+                if (!string.IsNullOrEmpty(ag.ExePath))
+                {
+                    CreateAntigravityCdpShortcut(GetStartMenuLauncherShortcutPath(), ag.ExePath);
+                }
                 RegisterUninstallEntry(installDir, manifest.Version);
             }
             else
@@ -620,10 +657,17 @@ namespace AgyClaudeStyle.Installer
                 result.Headline = "已安装并启动守护！等待 Antigravity 窗口就绪";
                 result.Detail = "已配置开机自启并启动后台守护。检测到调试端口 " + port.Value + "，窗口就绪后将自动完成注入。";
             }
+            else if (ag.IsRunning)
+            {
+                result.AntigravityRunningWithoutCdp = true;
+                result.Headline = "已安装并启动守护！但当前 Antigravity 未开启 CDP 端口";
+                result.Detail = "Antigravity 2.33.0+ 默认关闭远程调试端口。请点击下方「以 CDP 模式重启」，或通过带 --remote-debugging-port=0 参数的快捷方式启动。";
+                report(95, "[!] 检测到 Antigravity 正在运行但未开启 CDP（2.33.0+ 需带参 --remote-debugging-port=0 启动）");
+            }
             else
             {
                 result.Headline = "安装成功！后台自动修补已就绪";
-                result.Detail = "当前未检测到运行中的 Antigravity Desktop；守护进程已在后台待命，打开 Antigravity Desktop 后会自动立即生效。";
+                result.Detail = "守护进程已在后台待命。如使用 Antigravity 2.33.0+，请点击下方「以 CDP 模式启动」或使用「Antigravity (AGY Claude Style)」快捷方式启动。";
             }
             report(100, result.Headline);
             return result;
@@ -707,6 +751,12 @@ namespace AgyClaudeStyle.Installer
                 catch { }
                 try
                 {
+                    string launcherLnk = GetStartMenuLauncherShortcutPath();
+                    if (File.Exists(launcherLnk)) File.Delete(launcherLnk);
+                }
+                catch { }
+                try
+                {
                     Registry.CurrentUser.DeleteSubKeyTree(UninstallRegSubKey, false);
                 }
                 catch { }
@@ -779,6 +829,7 @@ namespace AgyClaudeStyle.Installer
 
         private string _activeInstallDir;
         private string _antigravityExe;
+        private bool _needsCdpRelaunch;
         private bool _selfDeleteOnClose;
         private bool _busy;
 
@@ -900,16 +951,33 @@ namespace AgyClaudeStyle.Installer
             _launchAgBtn.Size = new Size(134, 34);
             _launchAgBtn.Visible = false;
             _launchAgBtn.FlatStyle = FlatStyle.System;
-            _launchAgBtn.Click += (s, e) =>
+            _launchAgBtn.Click += async (s, e) =>
             {
-                try
+                if (string.IsNullOrEmpty(_antigravityExe) || !File.Exists(_antigravityExe)) return;
+                if (_needsCdpRelaunch)
                 {
-                    if (!string.IsNullOrEmpty(_antigravityExe) && File.Exists(_antigravityExe))
+                    _launchAgBtn.Enabled = false;
+                    AppendLog("[↻] 正在温和关闭 Antigravity 并以 --remote-debugging-port=0 重新启动...");
+                    bool ok = await Task.Run(() => CdpHelper.RelaunchAntigravityWithCdp(_antigravityExe, 0, 8000));
+                    if (ok)
                     {
-                        Process.Start(_antigravityExe);
+                        _needsCdpRelaunch = false;
+                        _statusHeadline.Text = "已以 CDP 模式重启 Antigravity";
+                        _statusHeadline.ForeColor = Color.FromArgb(21, 128, 61);
+                        _statusDetail.Text = "后台守护进程将在 2 秒内自动完成无损注入。";
+                        AppendLog("[✓] 已以 --remote-debugging-port=0 重启 Antigravity");
+                    }
+                    else
+                    {
+                        _launchAgBtn.Enabled = true;
+                        AppendLog("[!] 未能自动关闭 Antigravity，请先完全退出后再次点击");
                     }
                 }
-                catch { }
+                else
+                {
+                    bool ok = CdpHelper.LaunchAntigravityWithCdp(_antigravityExe, 0);
+                    AppendLog(ok ? "[✓] 已以 --remote-debugging-port=0 启动 Antigravity" : "[!] 启动 Antigravity 失败");
+                }
             };
 
             _closeBtn = new Button();
@@ -996,12 +1064,14 @@ namespace AgyClaudeStyle.Installer
                 OperationResult res = await Task.Run(() => InstallerCore.RunInstall(_opts, UpdateProgress));
                 _activeInstallDir = res.InstallDir;
                 _antigravityExe = res.AntigravityExe;
+                _needsCdpRelaunch = res.AntigravityRunningWithoutCdp;
                 _statusHeadline.Text = res.Headline;
-                _statusHeadline.ForeColor = Color.FromArgb(21, 128, 61);
+                _statusHeadline.ForeColor = res.AntigravityRunningWithoutCdp ? Color.FromArgb(180, 83, 9) : Color.FromArgb(21, 128, 61);
                 _statusDetail.Text = res.Detail;
                 _metaLabel.Text = "配置: " + res.ConfigSummary;
                 _openDirBtn.Enabled = Directory.Exists(_activeInstallDir);
                 _uninstallBtn.Enabled = true;
+                _launchAgBtn.Text = res.AntigravityRunningWithoutCdp ? "以 CDP 模式重启" : "以 CDP 模式启动";
                 _launchAgBtn.Visible = (!string.IsNullOrEmpty(_antigravityExe) && res.InjectedPages.Count == 0);
                 _launchAgBtn.Enabled = _launchAgBtn.Visible;
             }
@@ -1177,6 +1247,7 @@ namespace AgyClaudeStyle.Installer
             d["installDir"] = res.InstallDir;
             d["antigravityExe"] = res.AntigravityExe;
             d["antigravityVersion"] = res.AntigravityVersion;
+            d["antigravityRunningWithoutCdp"] = res.AntigravityRunningWithoutCdp;
             d["cdpPort"] = res.CdpPort.HasValue ? (object)res.CdpPort.Value : null;
             d["injectedPages"] = res.InjectedPages;
             d["preservedExistingConfig"] = res.PreservedExistingConfig;

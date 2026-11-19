@@ -2203,3 +2203,303 @@ test('ring and popover stay live despite static trajectorySummaries and non-root
     for (const id of timers) clearTimeout(id);
   }
 });
+
+test('syncTurnBadges mounts exactly one #T badge on the final agent-response of multi-response tool turns without misalignment, and style.css fixes sidebar badges/actions', async () => {
+  const css = cdp.readCss();
+  assert.ok(
+    css.includes('[data-testid="conversation-row-sidebar"] {\n  min-height: 28px !important;\n  height: auto !important;'),
+    'style.css unlocks conversation row height to auto for two-line project badges'
+  );
+  assert.ok(
+    css.includes('[data-testid="conversation-row-sidebar"]:has([data-project-glyph])') &&
+      css.includes('min-height: 46px !important;'),
+    'style.css expands rows with project badges'
+  );
+  assert.ok(
+    css.includes('.agy-sidebar-row .agy-row-actions') && css.includes('background: transparent !important;'),
+    'style.css overrides Antigravity triple-gradient .agy-row-actions backdrop'
+  );
+
+  const timers = new Set();
+  const matchesSimple = (n, sel) => {
+    if (!n || n.nodeType !== 1) return false;
+    let rest = sel.replace(/^:scope\s*>\s*/, '').trim();
+    if (!rest) return false;
+    const tm = /^[a-zA-Z0-9_-]+/.exec(rest);
+    if (tm) {
+      if (n.tagName !== tm[0].toUpperCase()) return false;
+      rest = rest.slice(tm[0].length);
+    }
+    while (rest) {
+      if (rest[0] === '#') {
+        const m = /^#([a-zA-Z0-9_-]+)/.exec(rest);
+        if (!m || n.id !== m[1]) return false;
+        rest = rest.slice(m[0].length);
+      } else if (rest[0] === '.') {
+        const m = /^\.([a-zA-Z0-9_-]+)/.exec(rest);
+        if (!m || !n.classList.contains(m[1])) return false;
+        rest = rest.slice(m[0].length);
+      } else if (rest[0] === '[') {
+        const m = /^\[([^\]=]+)(?:="([^"]*)")?\]/.exec(rest);
+        if (!m) return false;
+        const ok = m[2] === undefined ? n.hasAttribute(m[1]) : n.getAttribute(m[1]) === m[2];
+        if (!ok) return false;
+        rest = rest.slice(m[0].length);
+      } else {
+        return false;
+      }
+    }
+    return true;
+  };
+  const matchesChain = (n, selector) =>
+    selector.split(',').some((part) => {
+      const cleaned = part.replace(/^:scope\s*>\s*/, '').trim();
+      const tokens = cleaned.split(/\s+/).filter(Boolean);
+      if (tokens.length === 0 || !matchesSimple(n, tokens[tokens.length - 1])) return false;
+      let cur = n.parentElement;
+      let idx = tokens.length - 2;
+      while (cur && idx >= 0) {
+        if (matchesSimple(cur, tokens[idx])) idx -= 1;
+        cur = cur.parentElement;
+      }
+      return idx < 0;
+    });
+
+  const makeNode = (tag, { id = '', className = '', attrs = {}, text = '' } = {}) => {
+    const children = [];
+    const attrMap = new Map(Object.entries(attrs));
+    const classes = new Set(String(className).split(/\s+/).filter(Boolean));
+    const listeners = new Map();
+    const node = {
+      tagName: tag.toUpperCase(),
+      nodeType: 1,
+      id,
+      parentElement: null,
+      parentNode: null,
+      children,
+      _text: text,
+      _html: '',
+      style: { _p: {}, setProperty(k, v) { this._p[k] = String(v); }, getPropertyValue(k) { return this._p[k] || ''; }, removeProperty(k) { delete this._p[k]; } },
+      classList: {
+        contains: (c) => classes.has(c),
+        add: (c) => classes.add(c),
+        remove: (c) => classes.delete(c),
+        toggle: (c, f) => (f === undefined ? (classes.has(c) ? classes.delete(c) : classes.add(c)) : f ? classes.add(c) : classes.delete(c)),
+      },
+      get className() { return Array.from(classes).join(' '); },
+      set className(v) { classes.clear(); String(v).split(/\s+/).filter(Boolean).forEach((c) => classes.add(c)); },
+      get textContent() { return children.length ? children.map((c) => c.textContent).join('') : this._text; },
+      set textContent(v) { children.length = 0; this._text = String(v); },
+      get innerHTML() { return this._html; },
+      set innerHTML(v) { this._html = String(v); },
+      get lastElementChild() { return children[children.length - 1] || null; },
+      appendChild(ch) { ch.parentElement = this; ch.parentNode = this; children.push(ch); return ch; },
+      removeChild(ch) { const i = children.indexOf(ch); if (i >= 0) children.splice(i, 1); ch.parentElement = null; ch.parentNode = null; return ch; },
+      remove() { if (this.parentElement) this.parentElement.removeChild(this); },
+      setAttribute(k, v) { attrMap.set(k, String(v)); if (k === 'id') this.id = String(v); if (k === 'class') this.className = String(v); },
+      getAttribute(k) { return attrMap.has(k) ? attrMap.get(k) : null; },
+      hasAttribute(k) { return attrMap.has(k); },
+      removeAttribute(k) { attrMap.delete(k); },
+      toggleAttribute(k, f) { const on = f === undefined ? !attrMap.has(k) : Boolean(f); if (on) attrMap.set(k, ''); else attrMap.delete(k); return on; },
+      addEventListener(ev, cb) { if (!listeners.has(ev)) listeners.set(ev, []); listeners.get(ev).push(cb); },
+      removeEventListener() {},
+      matches(sel) { return matchesChain(this, sel); },
+      closest(sel) {
+        let cur = this;
+        while (cur) {
+          if (matchesChain(cur, sel)) return cur;
+          cur = cur.parentElement;
+        }
+        return null;
+      },
+      getBoundingClientRect() { return { left: 100, top: 100, right: 500, bottom: 140, width: 400, height: 40 }; },
+      animate() { return { cancel() {}, finished: Promise.resolve() }; },
+      isConnected: true,
+      clientWidth: 400,
+      offsetWidth: 400,
+      clientHeight: 30,
+      offsetHeight: 30,
+      dispatch(ev, extra = {}) {
+        const e = { type: ev, stopPropagation() {}, preventDefault() {}, ...extra };
+        for (const cb of [...(listeners.get(ev) || [])]) cb(e);
+      },
+      querySelector(sel) { return this.querySelectorAll(sel)[0] || null; },
+      querySelectorAll(sel) {
+        const parts = sel.split(',').map((s) => s.trim()).filter(Boolean);
+        const out = [];
+        const walk = (n, depth) => {
+          for (const c of n.children) {
+            const matched = parts.some((p) => {
+              if (p.startsWith(':scope >')) return depth === 0 && matchesChain(c, p);
+              return matchesChain(c, p);
+            });
+            if (matched) out.push(c);
+            walk(c, depth + 1);
+          }
+        };
+        walk(this, 0);
+        return out;
+      },
+    };
+    return node;
+  };
+
+  const html = makeNode('html');
+  const head = makeNode('head');
+  const body = makeNode('body', { className: 'theme-dark' });
+  html.appendChild(head);
+  html.appendChild(body);
+
+  const cascadeId = '44444444-4444-4444-8444-444444444444';
+  const convView = makeNode('div', { attrs: { 'data-testid': 'conversation-view', 'data-cascade-id': cascadeId } });
+  // Turn 1: user message + 3 separate agent-response wrappers (simulating text -> tool -> text -> tool -> final summary)
+  const u1 = makeNode('div', { attrs: { 'data-testid': 'user-input-step' }, text: 'Inspect repo' });
+  const r1aWrap = makeNode('div', { id: 'turn1-resp-1' });
+  const r1a = makeNode('div', { attrs: { 'data-testid': 'agent-response' }, text: 'Step 1' });
+  r1aWrap.appendChild(r1a);
+  const r1bWrap = makeNode('div', { id: 'turn1-resp-2' });
+  const r1b = makeNode('div', { attrs: { 'data-testid': 'agent-response' }, text: 'Step 2' });
+  r1bWrap.appendChild(r1b);
+  const r1cWrap = makeNode('div', { id: 'turn1-resp-3' });
+  const r1c = makeNode('div', { attrs: { 'data-testid': 'agent-response' }, text: 'Turn 1 final' });
+  r1cWrap.appendChild(r1c);
+
+  // Turn 2: user message + 2 separate agent-response wrappers
+  const u2 = makeNode('div', { attrs: { 'data-testid': 'user-input-step' }, text: 'Fix bug' });
+  const r2aWrap = makeNode('div', { id: 'turn2-resp-1' });
+  const r2a = makeNode('div', { attrs: { 'data-testid': 'agent-response' }, text: 'Running test' });
+  r2aWrap.appendChild(r2a);
+  const r2bWrap = makeNode('div', { id: 'turn2-resp-2' });
+  const r2b = makeNode('div', { attrs: { 'data-testid': 'agent-response' }, text: 'Turn 2 final' });
+  r2bWrap.appendChild(r2b);
+
+  for (const el of [u1, r1aWrap, r1bWrap, r1cWrap, u2, r2aWrap, r2bWrap]) convView.appendChild(el);
+
+  const inputBox = makeNode('div', { id: 'antigravity.agentSidePanelInputBox', attrs: { 'data-testid': 'agent-input-box' } });
+  const card = makeNode('div', { className: 'surface-composer-card' });
+  const editorEl = makeNode('div', { attrs: { contenteditable: 'true', 'data-lexical-editor': 'true' } });
+  const footer = makeNode('div', { className: 'agy-composer-footer' });
+  const modelBtn = makeNode('button', { attrs: { 'data-testid': 'model-selector-trigger' }, text: 'Gemini 4 Neon' });
+  footer.appendChild(modelBtn);
+  card.appendChild(editorEl);
+  card.appendChild(footer);
+  inputBox.appendChild(card);
+  convView.appendChild(inputBox);
+  body.appendChild(convView);
+
+  const traj = {
+    trajectory: {
+      steps: [
+        { status: 3, metadata: { createdAt: { seconds: '1700001000' } }, step: { case: 'userInput', value: { query: 'Inspect repo' } } },
+        { status: 3, metadata: { createdAt: { seconds: '1700001002' } }, step: { case: 'plannerResponse', value: { response: 'Step 1' } } },
+        { status: 3, metadata: { createdAt: { seconds: '1700001003' } }, step: { case: 'viewFile', value: {} } },
+        { status: 3, metadata: { createdAt: { seconds: '1700001005' } }, step: { case: 'plannerResponse', value: { response: 'Turn 1 final' } } },
+        { status: 3, metadata: { createdAt: { seconds: '1700002000' } }, step: { case: 'userInput', value: { query: 'Fix bug' } } },
+        { status: 3, metadata: { createdAt: { seconds: '1700002003' } }, step: { case: 'runCommand', value: {} } },
+        { status: 3, metadata: { createdAt: { seconds: '1700002006' } }, step: { case: 'plannerResponse', value: { response: 'Turn 2 final' } } },
+      ],
+      generatorMetadata: [
+        { stepIndices: [0, 1], metadata: { value: { modelDisplayName: 'Gemini 4 Neon', usage: { inputTokens: '5000', cacheReadTokens: '10000', outputTokens: '300' } } } },
+        { stepIndices: [2, 3], metadata: { value: { modelDisplayName: 'Gemini 4 Neon', usage: { inputTokens: '6000', cacheReadTokens: '15000', outputTokens: '500' } } } },
+        { stepIndices: [4, 5, 6], metadata: { value: { modelDisplayName: 'Gemini 4 Neon', usage: { inputTokens: '8000', cacheReadTokens: '25000', outputTokens: '700' } } } },
+      ],
+    },
+  };
+
+  const rootStore = {
+    getState: () => ({
+      trajectorySummaries: {
+        summaries: {
+          [cascadeId]: { stepCount: 7, status: 1, lastModifiedTime: { seconds: '1700002006' } },
+        },
+      },
+    }),
+    subscribe: () => () => {},
+  };
+  const rootFiber = {
+    memoizedProps: { store: rootStore },
+    dependencies: {
+      firstContext: {
+        memoizedValue: {
+          async getCascadeTrajectory() { return traj; },
+          async retrieveUserQuotaSummary() { return { groups: [] }; },
+        },
+      },
+    },
+    return: null,
+  };
+  inputBox.__reactFiber$test = {
+    memoizedProps: { cascadeId },
+    return: rootFiber,
+  };
+
+  const doc = {
+    documentElement: html,
+    head,
+    body,
+    hidden: false,
+    readyState: 'complete',
+    createElement: (t) => makeNode(t),
+    getElementById: (id) => {
+      const find = (n) => (n.id === id ? n : n.children.map(find).find(Boolean) || null);
+      return find(html);
+    },
+    querySelector: (s) => html.querySelector(s),
+    querySelectorAll: (s) => html.querySelectorAll(s),
+    addEventListener() {},
+    removeEventListener() {},
+  };
+
+  const sandbox = {
+    window: null,
+    globalThis: null,
+    document: doc,
+    navigator: { language: 'zh-CN' },
+    location: { pathname: '/conversation/multi-resp-1' },
+    localStorage: { _m: {}, getItem(k) { return this._m[k] || null; }, setItem(k, v) { this._m[k] = String(v); } },
+    getComputedStyle: () => ({ getPropertyValue: () => '' }),
+    matchMedia: () => ({ matches: false }),
+    MutationObserver: class { observe() {} disconnect() {} },
+    ResizeObserver: class { observe() {} disconnect() {} },
+    requestAnimationFrame: () => 1,
+    cancelAnimationFrame: () => {},
+    setTimeout: (fn, ms) => { const id = setTimeout(fn, ms); timers.add(id); return id; },
+    clearTimeout: (id) => { timers.delete(id); clearTimeout(id); },
+    setInterval: () => 1,
+    clearInterval: () => {},
+    performance: { now: () => Date.now() },
+    electronApi: {
+      async getCascadeTrajectory() { return traj; },
+      async getAllCascadeTrajectories() { return {}; },
+    },
+    Math, Date, JSON, Map, Set, Array, Object, String, Number, Boolean, Promise, Uint8Array, Float32Array, Intl,
+  };
+  sandbox.window = sandbox;
+  sandbox.globalThis = sandbox;
+
+  try {
+    const res = vm.runInNewContext(cdp.buildInjectExpression({ ...cdp.DEFAULT_CONFIG, turnBadges: true }), sandbox);
+    assert.equal(res.status, 'ok');
+    await new Promise((r) => setTimeout(r, 80));
+
+    const allBars = convView.querySelectorAll('.ag-cs-turn-bar');
+    assert.equal(allBars.length, 2, `Expected exactly 2 turn badges across 5 agent-response nodes, got ${allBars.length}`);
+
+    // Turn 1 badge MUST sit on turn1-resp-3 (NOT turn1-resp-1 or turn1-resp-2)
+    assert.equal(r1aWrap.querySelector('.ag-cs-turn-bar'), null);
+    assert.equal(r1bWrap.querySelector('.ag-cs-turn-bar'), null);
+    const bar1 = r1cWrap.querySelector('.ag-cs-turn-bar');
+    assert.ok(bar1, 'Expected #T1 badge on final agent-response of Turn 1');
+    assert.ok(bar1.innerHTML.includes('#T1'), `Expected #T1 in bar1, got ${bar1.innerHTML}`);
+
+    // Turn 2 badge MUST sit on turn2-resp-2 (NOT turn2-resp-1)
+    assert.equal(r2aWrap.querySelector('.ag-cs-turn-bar'), null);
+    const bar2 = r2bWrap.querySelector('.ag-cs-turn-bar');
+    assert.ok(bar2, 'Expected #T2 badge on final agent-response of Turn 2');
+    assert.ok(bar2.innerHTML.includes('#T2'), `Expected #T2 in bar2, got ${bar2.innerHTML}`);
+
+    vm.runInNewContext(cdp.REMOVE_EXPRESSION, sandbox);
+  } finally {
+    for (const id of timers) clearTimeout(id);
+  }
+});

@@ -2148,17 +2148,76 @@
 
   function extractFiberTurnContainer(el) {
     let fEl = el;
-    for (let d = 0; d < 5 && fEl; d++) {
+    let foundContainer = null;
+    let foundCascadeId = '';
+    let foundStepIdx = -1;
+    let foundStepTimeSec = 0;
+
+    const readStepIndexFromObj = (obj) => {
+      if (!obj || typeof obj !== 'object') return -1;
+      for (const k of ['stepIndex', 'startStepIndex', 'firstStepIndex', 'index']) {
+        const v = obj[k];
+        if (typeof v === 'number' && Number.isInteger(v) && v >= 0) return v;
+      }
+      if (Array.isArray(obj.stepIndices) && obj.stepIndices.length > 0) {
+        const valid = obj.stepIndices.filter((n) => Number.isInteger(n) && n >= 0);
+        if (valid.length > 0) return Math.min(...valid);
+      }
+      return -1;
+    };
+
+    for (let d = 0; d < 6 && fEl; d++) {
       const fk = Object.keys(fEl).find((k) => k.startsWith('__reactFiber$'));
       let f = fk ? fEl[fk] : null;
-      for (let fd = 0; fd < 15 && f; fd++) {
+      for (let fd = 0; fd < 16 && f; fd++) {
         const p = f.memoizedProps || f.pendingProps;
-        if (p && p.container && Array.isArray(p.container.steps)) {
-          return { container: p.container, cascadeId: p.cascadeId || '' };
+        if (p && typeof p === 'object') {
+          if (!foundCascadeId && typeof p.cascadeId === 'string' && p.cascadeId) {
+            foundCascadeId = p.cascadeId;
+          }
+          if (foundStepIdx < 0) {
+            const directIdx = readStepIndexFromObj(p);
+            if (directIdx >= 0) foundStepIdx = directIdx;
+          }
+          if (!foundContainer && p.container && Array.isArray(p.container.steps)) {
+            foundContainer = p.container;
+            if (!foundCascadeId && typeof p.container.cascadeId === 'string') {
+              foundCascadeId = p.container.cascadeId;
+            }
+            if (foundStepIdx < 0) {
+              const cIdx = readStepIndexFromObj(p.container);
+              if (cIdx >= 0) foundStepIdx = cIdx;
+            }
+            for (const s of p.container.steps) {
+              if (foundStepIdx < 0) {
+                const sIdx = readStepIndexFromObj(s);
+                if (sIdx >= 0) foundStepIdx = sIdx;
+              }
+              if (foundStepTimeSec === 0 && s?.metadata?.createdAt && typeof usageCore.tsSec === 'function') {
+                const sec = usageCore.tsSec(s.metadata.createdAt);
+                if (sec > 0) foundStepTimeSec = sec;
+              }
+              if (foundStepIdx >= 0 && foundStepTimeSec > 0) break;
+            }
+            return {
+              container: foundContainer,
+              cascadeId: foundCascadeId,
+              stepIndex: foundStepIdx,
+              stepTimeSec: foundStepTimeSec,
+            };
+          }
         }
         f = f.return;
       }
       fEl = fEl.parentElement;
+    }
+    if (foundCascadeId || foundStepIdx >= 0 || foundStepTimeSec > 0) {
+      return {
+        container: null,
+        cascadeId: foundCascadeId,
+        stepIndex: foundStepIdx,
+        stepTimeSec: foundStepTimeSec,
+      };
     }
     return null;
   }
@@ -2232,22 +2291,91 @@
       return;
     }
 
-    // Group responses by their cascadeId (main conversation vs subagent preview pane)
-    const mainTargets = [];
-    const otherTargets = [];
-    const seenHosts = new Set();
-    for (const resp of allResps) {
-      const host = resp.closest('[data-turn-content]') || resp.parentElement || resp;
-      if (seenHosts.has(host)) continue;
-      seenHosts.add(host);
-      const fiberInfo = extractFiberTurnContainer(resp);
-      const item = { host, resp, fiberInfo };
-      if (!fiberInfo || !fiberInfo.cascadeId || !data.cascadeId || fiberInfo.cascadeId === data.cascadeId) {
-        mainTargets.push(item);
-      } else {
-        otherTargets.push(item);
+    // Build DOM turn-group map from [data-testid="user-input-step"] boundaries in main conversation
+    const mainFlowNodes = Array.from(
+      cv.querySelectorAll('[data-testid="user-input-step"], [data-testid="agent-response"]')
+    ).filter((el) => !el.closest('[data-testid="subagent-tab-conversation"]'));
+    const hasDomUserSteps = mainFlowNodes.some((el) => el.matches('[data-testid="user-input-step"]'));
+    const domTurnGroupByResp = new Map();
+    if (hasDomUserSteps) {
+      let currentGroup = 0;
+      for (const node of mainFlowNodes) {
+        if (node.matches('[data-testid="user-input-step"]')) {
+          currentGroup++;
+        } else {
+          domTurnGroupByResp.set(node, currentGroup);
+        }
       }
     }
+
+    // Group responses by cascadeId and deduplicate multi-response turns (keeping the last response host per turn)
+    const rawMainTargets = [];
+    const mainByContainer = new Map();
+    const mainByDomGroup = new Map();
+    const otherTargets = [];
+    const otherByContainer = new Map();
+
+    for (const resp of allResps) {
+      const host = resp.closest('[data-turn-content]') || resp.parentElement || resp;
+      const fiberInfo = extractFiberTurnContainer(resp);
+      const inSubagentPane = Boolean(resp.closest('[data-testid="subagent-tab-conversation"]'));
+      const isMain =
+        !inSubagentPane &&
+        (!fiberInfo || !fiberInfo.cascadeId || !data.cascadeId || fiberInfo.cascadeId === data.cascadeId);
+      const item = {
+        host,
+        resp,
+        fiberInfo,
+        domTurnGroup: hasDomUserSteps && domTurnGroupByResp.has(resp) ? domTurnGroupByResp.get(resp) : -1,
+      };
+
+      if (isMain) {
+        const containerRef = fiberInfo && fiberInfo.container ? fiberInfo.container : null;
+        if (containerRef && mainByContainer.has(containerRef)) {
+          const existing = mainByContainer.get(containerRef);
+          existing.host = host;
+          existing.resp = resp;
+          if (fiberInfo && fiberInfo.stepIndex >= 0 && existing.fiberInfo.stepIndex < 0) {
+            existing.fiberInfo = fiberInfo;
+          }
+          continue;
+        }
+        if (item.domTurnGroup >= 0 && mainByDomGroup.has(item.domTurnGroup)) {
+          const existing = mainByDomGroup.get(item.domTurnGroup);
+          existing.host = host;
+          existing.resp = resp;
+          if (containerRef && !existing.fiberInfo?.container) {
+            existing.fiberInfo = fiberInfo;
+          }
+          if (containerRef) mainByContainer.set(containerRef, existing);
+          continue;
+        }
+        rawMainTargets.push(item);
+        if (containerRef) mainByContainer.set(containerRef, item);
+        if (item.domTurnGroup >= 0) mainByDomGroup.set(item.domTurnGroup, item);
+      } else {
+        const containerRef = fiberInfo && fiberInfo.container ? fiberInfo.container : null;
+        if (containerRef && otherByContainer.has(containerRef)) {
+          const existing = otherByContainer.get(containerRef);
+          existing.host = host;
+          existing.resp = resp;
+          continue;
+        }
+        otherTargets.push(item);
+        if (containerRef) otherByContainer.set(containerRef, item);
+      }
+    }
+
+    // Deduplicate any adjacent targets that share the exact same host element
+    const mainTargets = [];
+    const seenMainHosts = new Set();
+    for (let i = rawMainTargets.length - 1; i >= 0; i--) {
+      const item = rawMainTargets[i];
+      if (seenMainHosts.has(item.host)) continue;
+      seenMainHosts.add(item.host);
+      mainTargets.push(item);
+    }
+    mainTargets.reverse();
 
     const turns = data.turnDetails;
     const activeSet = new Set();
@@ -2291,12 +2419,65 @@
       }
     };
 
-    const count = Math.min(mainTargets.length, turns.length);
-    for (let i = 0; i < count; i++) {
-      const target = mainTargets[mainTargets.length - count + i];
-      const t = turns[turns.length - count + i];
-      if (!target || !t) continue;
-      renderBadgeOnHost(target.host, t);
+    const matchTurnByFiber = (fiberInfo) => {
+      if (!fiberInfo) return null;
+      if (typeof fiberInfo.stepIndex === 'number' && fiberInfo.stepIndex >= 0) {
+        for (let i = 0; i < turns.length; i++) {
+          const td = turns[i];
+          if (td.userStepIdx >= 0 && fiberInfo.stepIndex >= td.userStepIdx && fiberInfo.stepIndex < td.nextUserStepIdx) {
+            return td;
+          }
+        }
+      }
+      if (typeof fiberInfo.stepTimeSec === 'number' && fiberInfo.stepTimeSec > 0) {
+        let best = null;
+        for (let i = 0; i < turns.length; i++) {
+          const td = turns[i];
+          if (td.startTimeSec > 0 && fiberInfo.stepTimeSec >= td.startTimeSec - 2) {
+            best = td;
+          }
+        }
+        if (best) return best;
+      }
+      return null;
+    };
+
+    // Prefer exact Fiber step/timestamp binding; keep only the final host per turn
+    const turnToHost = new Map();
+    const matchedTargets = mainTargets.map((target) => ({ target, turn: matchTurnByFiber(target.fiberInfo) }));
+    const anyFiberMatched = matchedTargets.some((m) => m.turn !== null);
+
+    if (anyFiberMatched && matchedTargets.every((m) => m.turn !== null)) {
+      for (const m of matchedTargets) {
+        turnToHost.set(m.turn.turn, { host: m.target.host, turn: m.turn });
+      }
+    } else if (anyFiberMatched) {
+      const usedTurnIds = new Set();
+      for (const m of matchedTargets) {
+        if (m.turn) {
+          turnToHost.set(m.turn.turn, { host: m.target.host, turn: m.turn });
+          usedTurnIds.add(m.turn.turn);
+        }
+      }
+      const remainingTargets = matchedTargets.filter((m) => !m.turn).map((m) => m.target);
+      const remainingTurns = turns.filter((t) => !usedTurnIds.has(t.turn));
+      const count = Math.min(remainingTargets.length, remainingTurns.length);
+      for (let i = 0; i < count; i++) {
+        const target = remainingTargets[remainingTargets.length - count + i];
+        const t = remainingTurns[remainingTurns.length - count + i];
+        if (target && t) turnToHost.set(t.turn, { host: target.host, turn: t });
+      }
+    } else {
+      const count = Math.min(mainTargets.length, turns.length);
+      for (let i = 0; i < count; i++) {
+        const target = mainTargets[mainTargets.length - count + i];
+        const t = turns[turns.length - count + i];
+        if (target && t) turnToHost.set(t.turn, { host: target.host, turn: t });
+      }
+    }
+
+    for (const entry of turnToHost.values()) {
+      renderBadgeOnHost(entry.host, entry.turn);
     }
 
     // Also render badges for any subagent conversation turns visible in DOM

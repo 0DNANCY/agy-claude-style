@@ -627,6 +627,46 @@
     );
   }
 
+  function isUserTurnBoundary(step) {
+    if (!step || typeof step !== 'object') return false;
+    if (step?.step?.case === 'userInput') return true;
+    const t = String(step.type || '').trim().toUpperCase();
+    if (t === 'CORTEX_STEP_TYPE_USER_INPUT' || t === 'USER_INPUT') return true;
+    return Boolean(step.userInput && typeof step.userInput === 'object');
+  }
+
+  function cleanUserPromptText(raw) {
+    if (!raw) return '';
+    let s = String(raw);
+    const reqMatch = s.match(/<USER_REQUEST>([\s\S]*?)<\/USER_REQUEST>/i);
+    if (reqMatch && reqMatch[1]) {
+      s = reqMatch[1];
+    } else {
+      s = s
+        .replace(/<CONTEXT_SUMMARY>[\s\S]*?<\/CONTEXT_SUMMARY>/gi, ' ')
+        .replace(/<ADDITIONAL_METADATA>[\s\S]*?<\/ADDITIONAL_METADATA>/gi, ' ')
+        .replace(/<SYSTEM_MESSAGE>[\s\S]*?<\/SYSTEM_MESSAGE>/gi, ' ');
+    }
+    return s.replace(/\s+/g, ' ').trim();
+  }
+
+  function extractUserPromptText(step) {
+    if (!step || typeof step !== 'object') return '';
+    const v = step.step?.value || (typeof step.userInput === 'object' ? step.userInput : null) || {};
+    let raw = '';
+    if (typeof v.query === 'string' && v.query.trim()) raw = v.query;
+    else if (typeof v.text === 'string' && v.text.trim()) raw = v.text;
+    else if (typeof v.userInput === 'string' && v.userInput.trim()) raw = v.userInput;
+    else if (typeof step.userInput === 'string' && step.userInput.trim()) raw = step.userInput;
+    else if (Array.isArray(v.items) && v.items.length > 0) {
+      raw = v.items
+        .map((it) => (typeof it === 'string' ? it : it?.text || it?.query || ''))
+        .filter(Boolean)
+        .join(' ');
+    }
+    return cleanUserPromptText(raw);
+  }
+
   // Extract live active-conversation metrics, per-call telemetry, breakdown trees,
   // streaming speeds, and budgets for the composer footer, turn badges, and inspector popover.
   function analyzeActiveConversation(trajObj, opts = {}) {
@@ -800,9 +840,16 @@
         }
       }
 
+      const firstStepObj = firstStepIdx >= 0 ? steps[firstStepIdx] : null;
+      const callCreatedAtSec =
+        tsSec(val.createdAt || val.timestamp || val.startTime || gmList[i]?.createdAt) ||
+        tsSec(firstStepObj?.metadata?.createdAt) ||
+        0;
+
       callList.push({
         callNumber: callList.length + 1,
         stepIndices,
+        createdAtSec: callCreatedAtSec,
         stepRange: stepIndices.length
           ? stepIndices.length === 1
             ? `#${stepIndices[0]}`
@@ -1122,73 +1169,150 @@
       }
     }
 
-    // Build per-turn details (turnDetails) and tool leaderboard (toolBreakdown)
-    const userStepIndices = [];
+    // Build per-turn details (turnDetails) using a single-pass hasUnconsumedTurn state machine
+    const userBoundaries = [];
     for (let idx = 0; idx < steps.length; idx++) {
-      if (steps[idx]?.step?.case === 'userInput') userStepIndices.push(idx);
+      if (isUserTurnBoundary(steps[idx])) {
+        userBoundaries.push({
+          idx,
+          prompt: extractUserPromptText(steps[idx]),
+          startTimeSec: tsSec(steps[idx]?.metadata?.createdAt),
+        });
+      }
     }
 
     const turnDetails = [];
     if (callList.length > 0) {
-      if (userStepIndices.length > 0 && callList.some((c) => c.stepIndices.length > 0)) {
-        const turnBuckets = userStepIndices.map((uIdx, tIdx) => ({
-          turn: tIdx + 1,
-          userStepIdx: uIdx,
-          nextUserStepIdx: tIdx + 1 < userStepIndices.length ? userStepIndices[tIdx + 1] : Infinity,
-          calls: [],
-        }));
-        for (const c of callList) {
-          const firstStep = c.stepIndices.length > 0 ? c.stepIndices[0] : -1;
-          let bucket = turnBuckets[turnBuckets.length - 1];
-          for (let b = turnBuckets.length - 1; b >= 0; b--) {
-            if (firstStep >= turnBuckets[b].userStepIdx) {
-              bucket = turnBuckets[b];
-              break;
+      const callsByStep = new Map();
+      const unindexedCalls = [];
+      let lastMappedStep = -1;
+      for (const c of callList) {
+        const validSteps = Array.isArray(c.stepIndices)
+          ? c.stepIndices.filter((n) => Number.isInteger(n) && n >= 0)
+          : [];
+        if (validSteps.length > 0) {
+          const anchor = Math.min(...validSteps);
+          lastMappedStep = anchor;
+          if (!callsByStep.has(anchor)) callsByStep.set(anchor, []);
+          callsByStep.get(anchor).push(c);
+        } else if (lastMappedStep >= 0 && userBoundaries.length > 0) {
+          let targetStep = lastMappedStep;
+          if (c.createdAtSec > 0) {
+            for (let b = userBoundaries.length - 1; b >= 0; b--) {
+              if (userBoundaries[b].startTimeSec > 0 && c.createdAtSec >= userBoundaries[b].startTimeSec - 1) {
+                if (userBoundaries[b].idx >= lastMappedStep) targetStep = userBoundaries[b].idx;
+                break;
+              }
             }
           }
-          bucket.calls.push(c);
+          if (!callsByStep.has(targetStep)) callsByStep.set(targetStep, []);
+          callsByStep.get(targetStep).push(c);
+        } else {
+          unindexedCalls.push(c);
         }
-        let prevCtx = sysTokens + toolsTokens;
-        for (const b of turnBuckets) {
-          if (b.calls.length === 0) continue;
-          const lastC = b.calls[b.calls.length - 1];
-          const ctxU = lastC.contextUsed || prevCtx;
-          const ctxDelta = ctxU - prevCtx;
-          prevCtx = ctxU;
-          const outSum = b.calls.reduce((s, x) => s + (x.outputTokens || 0), 0);
-          const thinkSum = b.calls.reduce((s, x) => s + (x.thinkingTokens || 0), 0);
-          const uStepObj = steps[b.userStepIdx] || {};
-          const uStep = uStepObj.step?.value || {};
-          const rawPrompt = String(uStep.query || uStep.text || uStep.userInput || '').replace(/\s+/g, ' ').trim();
-          const startTimeSec = tsSec(uStepObj.metadata?.createdAt);
-          let turnToolCalls = 0;
-          const endIdx = Math.min(steps.length, b.nextUserStepIdx);
-          for (let sIdx = b.userStepIdx + 1; sIdx < endIdx; sIdx++) {
-            const sc = steps[sIdx]?.step?.case;
-            if (sc && sc !== 'userInput' && sc !== 'plannerResponse' && sc !== 'systemMessage' && sc !== 'checkpoint') {
-              turnToolCalls++;
+      }
+
+      const buckets = [];
+      let hasUnconsumedTurn = false;
+      let pendingPrompts = [];
+      let pendingUserStepIdx = -1;
+      let pendingStartTimeSec = 0;
+      let activeBucket = null;
+
+      const pushPendingPrompt = (text) => {
+        if (!text) return;
+        if (pendingPrompts.length === 0 || pendingPrompts[pendingPrompts.length - 1] !== text) {
+          pendingPrompts.push(text);
+        }
+      };
+
+      const startNewBucket = (fallbackStepIdx, fallbackTimeSec) => {
+        const uIdx = pendingUserStepIdx >= 0 ? pendingUserStepIdx : fallbackStepIdx;
+        if (activeBucket && uIdx >= 0 && uIdx > activeBucket.userStepIdx) {
+          activeBucket.nextUserStepIdx = uIdx;
+        }
+        const bucket = {
+          userStepIdx: uIdx,
+          nextUserStepIdx: Infinity,
+          lastStepIdx: uIdx,
+          startTimeSec: pendingStartTimeSec || fallbackTimeSec || 0,
+          prompts: pendingPrompts.slice(),
+          calls: [],
+        };
+        buckets.push(bucket);
+        activeBucket = bucket;
+        hasUnconsumedTurn = false;
+        pendingPrompts = [];
+        pendingUserStepIdx = -1;
+        pendingStartTimeSec = 0;
+        return bucket;
+      };
+
+      if (userBoundaries.length > 0 && callsByStep.size > 0) {
+        const maxStepIdx = Math.max(steps.length - 1, ...Array.from(callsByStep.keys()));
+        for (let idx = 0; idx <= maxStepIdx; idx++) {
+          const st = steps[idx];
+          if (st && isUserTurnBoundary(st)) {
+            if (!hasUnconsumedTurn) {
+              hasUnconsumedTurn = true;
+              pendingUserStepIdx = idx;
+              pendingStartTimeSec = tsSec(st.metadata?.createdAt);
+              pendingPrompts = [];
+            }
+            pushPendingPrompt(extractUserPromptText(st));
+          }
+          const stepCalls = callsByStep.get(idx);
+          if (stepCalls && stepCalls.length > 0) {
+            if (hasUnconsumedTurn || !activeBucket) {
+              startNewBucket(idx, tsSec(st?.metadata?.createdAt) || stepCalls[0]?.createdAtSec || 0);
+            }
+            for (const c of stepCalls) {
+              activeBucket.calls.push(c);
+              if (Array.isArray(c.stepIndices) && c.stepIndices.length > 0) {
+                activeBucket.lastStepIdx = Math.max(activeBucket.lastStepIdx, ...c.stepIndices);
+              } else {
+                activeBucket.lastStepIdx = Math.max(activeBucket.lastStepIdx, idx);
+              }
             }
           }
-          turnDetails.push({
-            turn: turnDetails.length + 1,
-            userStepIdx: b.userStepIdx,
-            nextUserStepIdx: b.nextUserStepIdx,
-            startTimeSec,
-            model: lastC.modelDisplayName || '',
-            calls: b.calls.length,
-            toolCalls: turnToolCalls,
-            ctxUsed: ctxU,
-            ctxDelta,
-            output: outSum,
-            thinking: thinkSum,
-            speed: lastC.speed || 0,
-            ttft: lastC.ttft || 0,
-            cacheHitPct: Math.round(lastC.cacheHitPct || 0),
-            userPreview: rawPrompt ? rawPrompt.slice(0, 80) : '',
-            subagentCount: 0,
-            subagentCalls: 0,
-            subagentTokens: 0,
-          });
+        }
+        if (unindexedCalls.length > 0 && buckets.length > 0) {
+          buckets[0].calls = [...unindexedCalls, ...buckets[0].calls];
+        }
+      } else if (userBoundaries.length > 0) {
+        const hasAnyCallTs = callList.some((c) => c.createdAtSec > 0);
+        const hasAnyUserTs = userBoundaries.some((u) => u.startTimeSec > 0);
+        if (hasAnyCallTs && hasAnyUserTs) {
+          let uCursor = 0;
+          for (const c of callList) {
+            while (
+              uCursor < userBoundaries.length &&
+              (userBoundaries[uCursor].startTimeSec === 0 ||
+                c.createdAtSec === 0 ||
+                userBoundaries[uCursor].startTimeSec <= c.createdAtSec + 1)
+            ) {
+              const ub = userBoundaries[uCursor];
+              if (!hasUnconsumedTurn) {
+                hasUnconsumedTurn = true;
+                pendingUserStepIdx = ub.idx;
+                pendingStartTimeSec = ub.startTimeSec;
+                pendingPrompts = [];
+              }
+              pushPendingPrompt(ub.prompt);
+              uCursor++;
+            }
+            if (hasUnconsumedTurn || !activeBucket) {
+              startNewBucket(pendingUserStepIdx >= 0 ? pendingUserStepIdx : 0, c.createdAtSec || 0);
+            }
+            activeBucket.calls.push(c);
+          }
+        } else {
+          const firstUb = userBoundaries[0];
+          pendingUserStepIdx = firstUb.idx;
+          pendingStartTimeSec = firstUb.startTimeSec;
+          for (const ub of userBoundaries) pushPendingPrompt(ub.prompt);
+          const b = startNewBucket(firstUb.idx, firstUb.startTimeSec);
+          b.calls.push(...callList);
         }
       } else {
         let prevCtx = sysTokens + toolsTokens;
@@ -1198,11 +1322,12 @@
           const ctxDelta = ctxU - prevCtx;
           prevCtx = ctxU;
           const firstIdx = c.stepIndices?.[0] ?? -1;
-          const startTimeSec = firstIdx >= 0 ? tsSec(steps[firstIdx]?.metadata?.createdAt) : 0;
+          const startTimeSec = firstIdx >= 0 ? tsSec(steps[firstIdx]?.metadata?.createdAt) : c.createdAtSec || 0;
           turnDetails.push({
             turn: i + 1,
             userStepIdx: firstIdx,
             nextUserStepIdx: Infinity,
+            lastStepIdx: firstIdx,
             startTimeSec,
             model: c.modelDisplayName || '',
             calls: 1,
@@ -1215,6 +1340,51 @@
             ttft: c.ttft || 0,
             cacheHitPct: Math.round(c.cacheHitPct || 0),
             userPreview: '',
+            subagentCount: 0,
+            subagentCalls: 0,
+            subagentTokens: 0,
+          });
+        }
+      }
+
+      if (buckets.length > 0) {
+        let prevCtx = sysTokens + toolsTokens;
+        for (const b of buckets) {
+          if (b.calls.length === 0) continue;
+          const lastC = b.calls[b.calls.length - 1];
+          const ctxU = lastC.contextUsed || prevCtx;
+          const ctxDelta = ctxU - prevCtx;
+          prevCtx = ctxU;
+          const outSum = b.calls.reduce((s, x) => s + (x.outputTokens || 0), 0);
+          const thinkSum = b.calls.reduce((s, x) => s + (x.thinkingTokens || 0), 0);
+          const mergedPrompt = b.prompts.join(' / ').trim();
+          let turnToolCalls = 0;
+          const endIdx = Math.min(steps.length, b.nextUserStepIdx);
+          for (let sIdx = Math.max(0, b.userStepIdx + 1); sIdx < endIdx; sIdx++) {
+            const st = steps[sIdx];
+            if (!st || isUserTurnBoundary(st)) continue;
+            const sc = st?.step?.case;
+            if (sc && sc !== 'plannerResponse' && sc !== 'systemMessage' && sc !== 'checkpoint') {
+              turnToolCalls++;
+            }
+          }
+          turnDetails.push({
+            turn: turnDetails.length + 1,
+            userStepIdx: b.userStepIdx,
+            nextUserStepIdx: b.nextUserStepIdx,
+            lastStepIdx: b.lastStepIdx,
+            startTimeSec: b.startTimeSec,
+            model: lastC.modelDisplayName || '',
+            calls: b.calls.length,
+            toolCalls: turnToolCalls,
+            ctxUsed: ctxU,
+            ctxDelta,
+            output: outSum,
+            thinking: thinkSum,
+            speed: lastC.speed || 0,
+            ttft: lastC.ttft || 0,
+            cacheHitPct: Math.round(lastC.cacheHitPct || 0),
+            userPreview: mergedPrompt ? mergedPrompt.slice(0, 80) : '',
             subagentCount: 0,
             subagentCalls: 0,
             subagentTokens: 0,
@@ -1335,7 +1505,21 @@
       if (!raw) continue;
       const id = String(raw.id || raw.cascadeId || '');
       const analysis = raw.analysis || (raw.trajectory ? analyzeActiveConversation(raw.trajectory, { cascadeId: id }) : null);
-      const createdAtSec = Number(raw.createdAtSec || tsSec(raw.createdAt || raw.createdTime) || 0);
+      const rawTrajSteps = raw.trajectory?.response?.trajectory?.steps || raw.trajectory?.trajectory?.steps || raw.trajectory?.steps || [];
+      let earliestStepSec = 0;
+      for (const st of rawTrajSteps) {
+        const sSec = tsSec(st?.metadata?.createdAt);
+        if (sSec > 0) {
+          earliestStepSec = sSec;
+          break;
+        }
+      }
+      const createdAtSec =
+        Number(raw.createdAtSec || 0) ||
+        (Number(raw.createdAtMs || 0) > 0 ? Number(raw.createdAtMs) / 1000 : 0) ||
+        tsSec(raw.createdAt || raw.createdTime) ||
+        earliestStepSec ||
+        0;
       const status = Number(raw.status ?? (analysis?.isRunning ? 2 : 1));
       const calls = Number(raw.calls ?? analysis?.totalCalls ?? 0);
       const totalTokens = Number(raw.totalTokens ?? analysis?.totalTokens ?? 0);
@@ -1391,6 +1575,7 @@
           }
         }
         if (targetTurn) {
+          sub.rootTurnIndex = targetTurn.turn;
           targetTurn.subagentCount = (targetTurn.subagentCount || 0) + 1;
           targetTurn.subagentCalls = (targetTurn.subagentCalls || 0) + (sub.calls || 1);
           targetTurn.subagentTokens = (targetTurn.subagentTokens || 0) + (sub.totalTokens || 0);
@@ -1756,6 +1941,8 @@
     fmtSec,
     fmtResetTime,
     estimateTextTokens,
+    isUserTurnBoundary,
+    extractUserPromptText,
     analyzeActiveConversation,
     attachSubagentSummaries,
     normalizeQuotaData,

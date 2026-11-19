@@ -545,3 +545,102 @@ test('analyzeActiveConversation handles post-checkpoint compaction and ISO/strin
   assert.equal(rec.lastModifiedSec, Math.floor(Date.parse('2026-11-17T12:04:00Z') / 1000));
   assert.equal(rec.calls, 2);
 });
+
+test('analyzeActiveConversation merges consecutive user inputs, handles alternate userInput shapes, and avoids counting tool calls as turns', () => {
+  assert.equal(usageCore.isUserTurnBoundary({ step: { case: 'userInput' } }), true);
+  assert.equal(usageCore.isUserTurnBoundary({ type: 'CORTEX_STEP_TYPE_USER_INPUT' }), true);
+  assert.equal(usageCore.isUserTurnBoundary({ type: 'USER_INPUT' }), true);
+  assert.equal(usageCore.isUserTurnBoundary({ userInput: { query: 'hi' } }), true);
+  assert.equal(usageCore.isUserTurnBoundary({ step: { case: 'plannerResponse' } }), false);
+
+  const cleaned = usageCore.extractUserPromptText({
+    type: 'CORTEX_STEP_TYPE_USER_INPUT',
+    userInput: {
+      query: '<CONTEXT_SUMMARY>ignore</CONTEXT_SUMMARY><USER_REQUEST>\nFix turn badge alignment\n</USER_REQUEST><ADDITIONAL_METADATA>ts</ADDITIONAL_METADATA>',
+    },
+  });
+  assert.equal(cleaned, 'Fix turn badge alignment');
+
+  // Consecutive user inputs (cancelled + follow-up + duplicate) before first model response,
+  // followed by multi-step tool loop including a call with missing stepIndices: []
+  const traj = {
+    steps: [
+      { status: 3, metadata: { createdAt: { seconds: '1700001000' } }, type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { query: 'First question' } },
+      { status: 3, metadata: { createdAt: { seconds: '1700001001' } }, step: { case: 'userInput', value: { query: 'First question' } } },
+      { status: 3, metadata: { createdAt: { seconds: '1700001002' } }, step: { case: 'userInput', value: { query: 'Extra detail' } } },
+      { status: 3, metadata: { createdAt: { seconds: '1700001005' } }, step: { case: 'plannerResponse', value: { response: 'Calling tool' } } },
+      { status: 3, metadata: { createdAt: { seconds: '1700001006' }, toolCall: { name: 'read_file' } }, step: { case: 'viewFile', value: {} } },
+      { status: 3, metadata: { createdAt: { seconds: '1700001010' } }, step: { case: 'plannerResponse', value: { response: 'Turn 1 done' } } },
+      { status: 3, metadata: { createdAt: { seconds: '1700002000' } }, type: 'USER_INPUT', userInput: { text: 'Second question' } },
+      { status: 3, metadata: { createdAt: { seconds: '1700002005' } }, step: { case: 'plannerResponse', value: { response: 'Turn 2 done' } } },
+    ],
+    generatorMetadata: [
+      {
+        stepIndices: [3],
+        metadata: { value: { modelDisplayName: 'Gemini 4 Neon', usage: { inputTokens: '5000', cacheReadTokens: '10000', outputTokens: '300' } } },
+      },
+      {
+        // Missing stepIndices in the middle of Turn 1 must stay in Turn 1, NOT jump to Turn 2
+        stepIndices: [],
+        metadata: { value: { modelDisplayName: 'Gemini 4 Neon', usage: { inputTokens: '6000', cacheReadTokens: '12000', outputTokens: '400' } } },
+      },
+      {
+        stepIndices: [5],
+        metadata: { value: { modelDisplayName: 'Gemini 4 Neon', usage: { inputTokens: '7000', cacheReadTokens: '15000', outputTokens: '500' } } },
+      },
+      {
+        stepIndices: [7],
+        metadata: { value: { modelDisplayName: 'Gemini 4 Neon', usage: { inputTokens: '8000', cacheReadTokens: '20000', outputTokens: '600' } } },
+      },
+    ],
+  };
+
+  const info = usageCore.analyzeActiveConversation(traj, {
+    cascadeId: 'turns-test-1',
+    subagents: [
+      {
+        id: 'sub-turn1',
+        createdAtMs: 1700001007000,
+        calls: 2,
+        totalTokens: 9000,
+      },
+    ],
+  });
+
+  assert.equal(info.turns, 2);
+  assert.equal(info.turnDetails.length, 2);
+  assert.equal(info.turnDetails[0].turn, 1);
+  assert.equal(info.turnDetails[0].calls, 3);
+  assert.equal(info.turnDetails[0].output, 1200);
+  assert.equal(info.turnDetails[0].toolCalls, 1);
+  assert.equal(info.turnDetails[0].userPreview, 'First question / Extra detail');
+  assert.equal(info.turnDetails[0].subagentCount, 1);
+  assert.equal(info.turnDetails[0].subagentTokens, 9000);
+  assert.equal(info.subagents[0].rootTurnIndex, 1);
+
+  assert.equal(info.turnDetails[1].turn, 2);
+  assert.equal(info.turnDetails[1].calls, 1);
+  assert.equal(info.turnDetails[1].output, 600);
+  assert.equal(info.turnDetails[1].userPreview, 'Second question');
+  assert.equal(info.turnDetails[1].subagentCount, 0);
+
+  // When ALL generatorMetadata lack stepIndices, 1 user turn with 3 model calls still counts as 1 turn
+  const noIndicesTraj = {
+    steps: [
+      { status: 3, step: { case: 'userInput', value: { query: 'Single turn tool loop' } } },
+      { status: 3, step: { case: 'plannerResponse', value: { response: 'Step 1' } } },
+      { status: 3, step: { case: 'viewFile', value: {} } },
+      { status: 3, step: { case: 'plannerResponse', value: { response: 'Step 2' } } },
+    ],
+    generatorMetadata: [
+      { metadata: { value: { usage: { inputTokens: '2000', outputTokens: '200' } } } },
+      { metadata: { value: { usage: { inputTokens: '4000', outputTokens: '300' } } } },
+      { metadata: { value: { usage: { inputTokens: '6000', outputTokens: '400' } } } },
+    ],
+  };
+  const noIdxInfo = usageCore.analyzeActiveConversation(noIndicesTraj);
+  assert.equal(noIdxInfo.turns, 1);
+  assert.equal(noIdxInfo.turnDetails.length, 1);
+  assert.equal(noIdxInfo.turnDetails[0].calls, 3);
+  assert.equal(noIdxInfo.turnDetails[0].output, 900);
+});

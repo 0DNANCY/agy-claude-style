@@ -121,6 +121,12 @@ Clawd 是由 [crab-assets.js](crab-assets.js) 与 [mascot-core.js](mascot-core.j
   - Windows：`%APPDATA%\Antigravity\DevToolsActivePort`
   - macOS：`~/Library/Application Support/Antigravity/DevToolsActivePort`
   - Linux：`${XDG_CONFIG_HOME:-~/.config}/Antigravity/DevToolsActivePort`
+
+> [!IMPORTANT]
+> **Antigravity 2.33.0+ 启动说明**：从 `2.33.0` 起，Antigravity 不再默认生成 `DevToolsActivePort`，需附加 `--remote-debugging-port=0` 启动参数：
+> - **macOS**：完全退出（`Cmd + Q`）后运行 `./launch.sh` 或 `open -a Antigravity --args --remote-debugging-port=0`（安装器也会在配置目录生成 `launch-antigravity.command`，并在界面提供一键「以 CDP 模式重启」）。
+> - **Windows**：完全退出后运行 `launch.bat` 或使用安装器创建的「开始菜单 → `Antigravity (AGY Claude Style)`」快捷方式（带 `--remote-debugging-port=0`）。
+> - **可选自动接管**：在 `config.json` 中设置 `"autoRelaunchWithCdp": true` 后，守护进程检测到 Antigravity 已运行但未开启 CDP 时会自动温和重启一次并附加调试参数。
 - **Node.js >= 22**（仅脚本模式、测试与从源码构建安装器需要）：项目零第三方 npm 依赖，直接使用 Node.js 内置的 `fetch`、`WebSocket` 与 `node:test`。
 - **.NET Framework 4.x (`csc.exe`)**（仅在 Windows 上从源码构建 `installer.exe` 时需要，Windows 10/11 系统默认自带）。
 - **Xcode Command Line Tools (`swiftc`)**（仅在 macOS 上从源码构建 `.app` / `.dmg` 时需要，macOS 安装命令行工具后自带）。
@@ -192,7 +198,8 @@ Clawd 是由 [crab-assets.js](crab-assets.js) 与 [mascot-core.js](mascot-core.j
 2. 按操作系统选择对应启动方式：
 
    - **Windows**：
-     - `watch.bat`（或 `npm run watch`）：**推荐**，无黑框后台启动守护进程（`watch-hidden.vbs`），每 2 秒自动检测并注入新窗口/重载页面，并在 `style.css`、`*.js`、`config.json` 变动时自动热更新。日志输出至 `watch.log`。
+     - `launch.bat`（或 `npm run launch` / `npm run relaunch`）：**Antigravity 2.33.0+ 推荐**，以 `--remote-debugging-port=0` 启动 Antigravity 并自动开启后台守护进程。
+     - `watch.bat`（或 `npm run watch`）：无黑框后台启动守护进程（`watch-hidden.vbs`），每 2 秒自动检测并注入新窗口/重载页面，并在 `style.css`、`*.js`、`config.json` 变动时自动热更新。日志输出至 `watch.log`。
      - `inject.bat`（或 `npm run inject`）：单次立即注入当前所有 Antigravity 窗口（窗口刷新后失效）。
      - `remove.bat`（或 `npm run remove`）：停止后台守护进程并无损清除所有注入节点与属性，恢复原生界面。
      - `autostart-on.bat` / `autostart-off.bat`：为当前脚本目录开启或取消 Windows 开机自启。
@@ -200,9 +207,10 @@ Clawd 是由 [crab-assets.js](crab-assets.js) 与 [mascot-core.js](mascot-core.j
    - **macOS / Linux**：
      ```bash
      chmod +x *.sh
-     ./watch.sh     # 启动后台守护（等价于 nohup node inject.js --watch）
-     ./inject.sh    # 单次注入
-     ./remove.sh    # 停止守护并恢复原生界面
+     ./launch.sh          # Antigravity 2.33.0+ 推荐：带 CDP 参数启动 Antigravity 并开启守护（加 --relaunch 可自动重启已运行实例）
+     ./watch.sh           # 启动后台守护（等价于 nohup node inject.js --watch --replace）
+     ./inject.sh          # 单次注入
+     ./remove.sh          # 停止守护并恢复原生界面
      ```
 
 > [!TIP]
@@ -239,6 +247,8 @@ Clawd 是由 [crab-assets.js](crab-assets.js) 与 [mascot-core.js](mascot-core.j
 | `hudRimProgress` | `boolean` | `false` | 🌈 输入框边框环绕上下文进度条 |
 | `hudFooterChip` | `boolean` | `false` | 💠 底栏剩余容量标签胶囊 |
 | `hudCompact` | `boolean` | `false` | 🧩 Token HUD 紧凑排版模式 |
+| `autoRelaunchWithCdp` | `boolean` | `false` | 🔄 Antigravity 2.33.0+ 运行中未开 CDP 时自动温和重启并附加调试参数 |
+| `exitOnHostClose` | `boolean` | `false` | 🛑 Antigravity 宿主关闭后自动退出后台守护进程（避免常驻） |
 | `pollIntervalMs` | `number`（最小 `1500`） | `2500` | ⏱️ 遥测轮询间隔（毫秒） |
 
 ---
@@ -284,6 +294,7 @@ agy-claude-style/
 │   ├── build-installer.mjs    # 编译生成 Windows 独立 installer.exe
 │   └── build-macos.mjs        # 编译生成 macOS Universal .app 与 .dmg
 ├── test/                      # 基于 node:test 的单元测试与安装器 E2E 测试套件
+├── launch.bat / launch.sh     # Antigravity 2.33.0+ 带 CDP 参数启动脚本
 ├── watch.bat / watch.sh       # 后台守护启动脚本（Windows 配合 watch-hidden.vbs）
 ├── inject.bat / inject.sh     # 单次注入脚本
 ├── remove.bat / remove.sh     # 停止守护与还原脚本

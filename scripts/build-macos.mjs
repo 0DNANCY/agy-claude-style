@@ -89,17 +89,30 @@ function compileUniversalSwift({ swiftc, lipo, sdkPath, sources, frameworks = []
   const slices = [];
   for (const arch of arches) {
     const sliceOut = path.join(stageDir, `${name}-${arch}`);
-    const args = [
-      '-swift-version', '5',
-      '-O',
-      '-sdk', sdkPath,
-      '-target', `${arch}-apple-macos11.0`,
-    ];
-    for (const fw of frameworks) {
-      args.push('-framework', fw);
+    const buildArgs = (minOs) => {
+      const args = [
+        '-swift-version', '5',
+        '-O',
+        '-sdk', sdkPath,
+        '-target', `${arch}-apple-macos${minOs}`,
+      ];
+      for (const fw of frameworks) {
+        args.push('-framework', fw);
+      }
+      args.push(...sources, '-o', sliceOut);
+      return args;
+    };
+    try {
+      execFileSync(swiftc, buildArgs('11.0'), { stdio: 'pipe' });
+    } catch (err) {
+      if (arch === 'x86_64') {
+        // Newer Xcode/CLT toolchains drop x86_64 from static libswiftCompatibility56.a;
+        // targeting macOS 13.0+ uses the OS dylib Swift concurrency runtime and links cleanly.
+        execFileSync(swiftc, buildArgs('13.0'), { stdio: 'inherit' });
+      } else {
+        throw err;
+      }
     }
-    args.push(...sources, '-o', sliceOut);
-    execFileSync(swiftc, args, { stdio: 'inherit' });
     slices.push(sliceOut);
   }
   execFileSync(lipo, ['-create', ...slices, '-output', outputPath], { stdio: 'inherit' });

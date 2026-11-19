@@ -47,7 +47,7 @@ final class PluginManifest {
         let manifestPath = (baseDir as NSString).appendingPathComponent("manifest.json")
         let text = try String(contentsOfFile: manifestPath, encoding: .utf8)
         let raw = try MiniJson.parseObject(text)
-        let version = raw["version"]?.stringValue ?? "1.0.0"
+        let version = raw["version"]?.stringValue ?? "1.1.0"
         let styleId = raw["styleId"]?.stringValue ?? "ag-claude-style-css"
         let settingBinding = raw["settingBinding"]?.stringValue ?? "__agClaudeStyleSetting"
         let removeExpression = raw["removeExpression"]?.stringValue ?? ""
@@ -572,5 +572,113 @@ enum CdpHelper {
             return String(t.prefix(57)) + "..."
         }
         return t
+    }
+
+    static func isProcessAlive(_ pid: Int32) -> Bool {
+        guard pid > 0 else { return false }
+        if kill(pid, 0) == 0 { return true }
+        return errno == EPERM
+    }
+
+    static func detectAntigravityProcessPids() -> [Int32] {
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/bin/ps")
+        proc.arguments = ["-ax", "-o", "pid=,comm="]
+        let outPipe = Pipe()
+        proc.standardOutput = outPipe
+        proc.standardError = FileHandle.nullDevice
+        proc.standardInput = FileHandle.nullDevice
+        do {
+            try proc.run()
+            let data = outPipe.fileHandleForReading.readDataToEndOfFile()
+            proc.waitUntilExit()
+            guard let text = String(data: data, encoding: .utf8) else { return [] }
+            var pids: [Int32] = []
+            for rawLine in text.components(separatedBy: CharacterSet.newlines) {
+                let line = rawLine.trimmingCharacters(in: .whitespaces)
+                if line.isEmpty { continue }
+                let parts = line.split(maxSplits: 1, omittingEmptySubsequences: true, whereSeparator: { $0.isWhitespace })
+                guard parts.count == 2, let pid = Int32(parts[0]) else { continue }
+                let comm = String(parts[1]).trimmingCharacters(in: .whitespaces).lowercased()
+                if comm.hasSuffix("/antigravity.app/contents/macos/antigravity") || comm == "antigravity" {
+                    pids.append(pid)
+                }
+            }
+            return pids.sorted()
+        } catch {
+            return []
+        }
+    }
+
+    static func findAntigravityAppPath() -> String? {
+        let fm = FileManager.default
+        let home = fm.homeDirectoryForCurrentUser.path
+        let candidates = [
+            "/Applications/Antigravity.app",
+            (home as NSString).appendingPathComponent("Applications/Antigravity.app"),
+        ]
+        for path in candidates {
+            if fm.fileExists(atPath: path) { return path }
+        }
+        return nil
+    }
+
+    static func removeStalePortFile() {
+        let portFile = getPortFilePath()
+        if FileManager.default.fileExists(atPath: portFile) {
+            try? FileManager.default.removeItem(atPath: portFile)
+        }
+    }
+
+    @discardableResult
+    static func launchAntigravityWithCdp(appPath: String? = nil, port: Int = 0) -> Bool {
+        let target = (appPath?.isEmpty == false) ? appPath! : (findAntigravityAppPath() ?? "Antigravity")
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        proc.arguments = ["-a", target, "--args", "--remote-debugging-port=\(max(0, port))"]
+        proc.standardInput = FileHandle.nullDevice
+        proc.standardOutput = FileHandle.nullDevice
+        proc.standardError = FileHandle.nullDevice
+        do {
+            try proc.run()
+            proc.waitUntilExit()
+            return proc.terminationStatus == 0
+        } catch {
+            return false
+        }
+    }
+
+    @discardableResult
+    static func relaunchAntigravityWithCdp(appPath: String? = nil, port: Int = 0, waitSeconds: Double = 8.0) -> Bool {
+        let quitProc = Process()
+        quitProc.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        quitProc.arguments = ["-e", "tell application \"Antigravity\" to quit"]
+        quitProc.standardInput = FileHandle.nullDevice
+        quitProc.standardOutput = FileHandle.nullDevice
+        quitProc.standardError = FileHandle.nullDevice
+        try? quitProc.run()
+        quitProc.waitUntilExit()
+
+        let deadline = Date().addingTimeInterval(waitSeconds)
+        while Date() < deadline {
+            if detectAntigravityProcessPids().isEmpty { break }
+            Thread.sleep(forTimeInterval: 0.25)
+        }
+        if !detectAntigravityProcessPids().isEmpty {
+            return false
+        }
+        removeStalePortFile()
+        return launchAntigravityWithCdp(appPath: appPath, port: port)
+    }
+
+    static func cdpUnavailableMessage(running: Bool, port: Int?) -> String {
+        if running {
+            let portDesc = port != nil ? "端口 \(port!) 无响应" : "未生成 DevToolsActivePort"
+            return "检测到 Antigravity 正在运行，但未开启远程调试端口（Antigravity 2.33.0+ 默认关闭 CDP，\(portDesc)）。请完全退出后执行：open -a Antigravity --args --remote-debugging-port=0"
+        }
+        if let port = port {
+            return "端口 \(port) 无响应：Antigravity 可能未运行。2.33.0+ 请以 --remote-debugging-port=0 启动"
+        }
+        return "未找到调试端口文件，Antigravity 未运行（2.33.0+ 请执行 open -a Antigravity --args --remote-debugging-port=0 启动）"
     }
 }

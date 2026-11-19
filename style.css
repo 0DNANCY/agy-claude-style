@@ -1464,24 +1464,53 @@ html[data-ag-cs-style][data-ag-cs-sidebar="on"] [data-testid="automations-button
   background: var(--ag-cs-hover-wash) !important;
 }
 
-html[data-ag-cs-style][data-ag-cs-sidebar="on"] [data-testid="conversation-row-sidebar"],
+html[data-ag-cs-style][data-ag-cs-sidebar="on"] [data-testid="conversation-row-sidebar"] {
+  min-height: 28px !important;
+  height: auto !important;
+  border-radius: 6px !important;
+  font-size: 13px !important;
+}
 html[data-ag-cs-style][data-ag-cs-sidebar="on"] button[data-testid="project-header"] {
   min-height: 28px !important;
   height: 28px !important;
   border-radius: 6px !important;
   font-size: 13px !important;
 }
-html[data-ag-cs-style][data-ag-cs-sidebar-compact="on"] [data-testid="conversation-row-sidebar"],
+html[data-ag-cs-style][data-ag-cs-sidebar-compact="on"] [data-testid="conversation-row-sidebar"] {
+  min-height: 24px !important;
+  height: auto !important;
+}
 html[data-ag-cs-style][data-ag-cs-sidebar-compact="on"] button[data-testid="project-header"] {
   min-height: 24px !important;
   height: 24px !important;
 }
+/* Adaptive height & padding for two-line conversation rows with project/workspace badge */
+html[data-ag-cs-style][data-ag-cs-sidebar="on"] [data-testid="conversation-row-sidebar"][data-subtext]:not([data-subtext=""]),
+html[data-ag-cs-style][data-ag-cs-sidebar="on"] [data-testid="conversation-row-sidebar"]:has([data-project-glyph]),
+html[data-ag-cs-style][data-ag-cs-sidebar-compact="on"] [data-testid="conversation-row-sidebar"][data-subtext]:not([data-subtext=""]),
+html[data-ag-cs-style][data-ag-cs-sidebar-compact="on"] [data-testid="conversation-row-sidebar"]:has([data-project-glyph]) {
+  min-height: 46px !important;
+  height: auto !important;
+  padding-top: 5px !important;
+  padding-bottom: 5px !important;
+}
 
 html[data-ag-cs-style][data-ag-cs-sidebar="on"] [data-testid="conversation-row-sidebar"]:hover,
 html[data-ag-cs-style][data-ag-cs-sidebar="on"] [data-testid="conversation-row-sidebar"][data-selected="true"],
+html[data-ag-cs-style][data-ag-cs-sidebar="on"] .agy-sidebar-row:hover,
 html[data-ag-cs-style][data-ag-cs-sidebar="on"] .agy-sidebar-row[data-selected="true"] {
   background: var(--ag-cs-hover-wash) !important;
+  --row-bg: color-mix(in srgb, var(--foreground) 8%, var(--sidebar)) !important;
+  --sidebar-muted: color-mix(in srgb, var(--foreground) 8%, var(--sidebar)) !important;
   box-shadow: none !important;
+}
+
+/* Override Antigravity compiled_tailwind.css triple-gradient backdrop on row action buttons */
+html[data-ag-cs-style][data-ag-cs-sidebar="on"] body[data-agy-theme] .agy-sidebar-row .agy-row-actions,
+html[data-ag-cs-style][data-ag-cs-sidebar="on"] .agy-sidebar-row .agy-row-actions,
+html[data-ag-cs-style][data-ag-cs-sidebar="on"] [data-testid="conversation-row-sidebar"] .agy-row-actions {
+  background: transparent !important;
+  background-image: none !important;
 }
 
 /* Conversation bottom clearance so last turn / badges clear pixel crab cleanly */
