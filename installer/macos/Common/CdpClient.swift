@@ -650,24 +650,24 @@ enum CdpHelper {
 
     @discardableResult
     static func relaunchAntigravityWithCdp(appPath: String? = nil, port: Int = 0, waitSeconds: Double = 8.0) -> Bool {
-        let quitProc = Process()
-        quitProc.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-        quitProc.arguments = ["-e", "tell application \"Antigravity\" to quit"]
-        quitProc.standardInput = FileHandle.nullDevice
-        quitProc.standardOutput = FileHandle.nullDevice
-        quitProc.standardError = FileHandle.nullDevice
-        try? quitProc.run()
-        quitProc.waitUntilExit()
+        let initialPids = detectAntigravityProcessPids()
+        for pid in initialPids {
+            if pid > 0 && pid != getpid() {
+                _ = kill(pid, SIGTERM)
+            }
+        }
 
         let deadline = Date().addingTimeInterval(waitSeconds)
         while Date() < deadline {
             if detectAntigravityProcessPids().isEmpty { break }
-            Thread.sleep(forTimeInterval: 0.25)
+            Thread.sleep(forTimeInterval: 0.2)
         }
-        if !detectAntigravityProcessPids().isEmpty {
+        let remaining = detectAntigravityProcessPids()
+        if !remaining.isEmpty {
             return false
         }
         removeStalePortFile()
+        Thread.sleep(forTimeInterval: 0.35)
         return launchAntigravityWithCdp(appPath: appPath, port: port)
     }
 

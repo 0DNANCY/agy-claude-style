@@ -383,7 +383,7 @@ async function watch() {
         if (proc.running) {
           noCdpRunningTicks++;
           const pidSig = proc.pids.slice().sort((a, b) => a - b).join(',');
-          if (noCdpRunningTicks >= 2 && warnedNoCdpSig !== pidSig) {
+          if (noCdpRunningTicks >= 3 && warnedNoCdpSig !== pidSig) {
             warnedNoCdpSig = pidSig;
             log(`[!] ${formatCdpUnavailableMessage({ running: true, port })}`);
             if (!currentConfig.autoRelaunchWithCdp) {
@@ -392,7 +392,7 @@ async function watch() {
           }
           if (
             currentConfig.autoRelaunchWithCdp === true &&
-            noCdpRunningTicks >= 2 &&
+            noCdpRunningTicks >= 3 &&
             relaunchedPidSig !== pidSig &&
             Date.now() - lastRelaunchAt >= 60000
           ) {

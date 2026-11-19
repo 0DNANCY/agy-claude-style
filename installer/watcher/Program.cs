@@ -590,7 +590,7 @@ namespace AgyClaudeStyle.Watcher
                                 {
                                     noCdpRunningTicks++;
                                     string pidSig = string.Join(",", runningPids);
-                                    if (noCdpRunningTicks >= 2 && warnedNoCdpSig != pidSig)
+                                    if (noCdpRunningTicks >= 3 && warnedNoCdpSig != pidSig)
                                     {
                                         warnedNoCdpSig = pidSig;
                                         Log("[!] " + CdpHelper.CdpUnavailableMessage(true, port));
@@ -599,7 +599,7 @@ namespace AgyClaudeStyle.Watcher
                                             Log("[*] 提示：可在 config.json 中设置 \"autoRelaunchWithCdp\": true 以启用自动温和重启接管");
                                         }
                                     }
-                                    if (autoRelaunch && noCdpRunningTicks >= 2 && relaunchedPidSig != pidSig &&
+                                    if (autoRelaunch && noCdpRunningTicks >= 3 && relaunchedPidSig != pidSig &&
                                         (DateTime.UtcNow - lastRelaunchUtc).TotalSeconds >= 60.0)
                                     {
                                         relaunchedPidSig = pidSig;

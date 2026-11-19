@@ -390,10 +390,24 @@ enum InstallerCore {
         }
 
         let launcherScriptPath = (installDir as NSString).appendingPathComponent("launch-antigravity.command")
+        let targetApp = ag.appPath ?? "/Applications/Antigravity.app"
         let launcherScript = """
         #!/usr/bin/env bash
-        # Launch Antigravity Desktop with CDP enabled for AGY Claude Style (Antigravity 2.33.0+)
-        open -a "\(ag.appPath ?? "Antigravity")" --args --remote-debugging-port=0
+        # Launch or restart Antigravity Desktop with CDP enabled for AGY Claude Style (Antigravity 2.33.0+)
+        PORT_FILE="$HOME/Library/Application Support/Antigravity/DevToolsActivePort"
+        if pgrep -x Antigravity >/dev/null 2>&1; then
+          if [ ! -f "$PORT_FILE" ] || ! curl -sf "http://127.0.0.1:$(head -n 1 "$PORT_FILE" 2>/dev/null)/json/list" >/dev/null 2>&1; then
+            echo "[*] Restarting Antigravity with CDP remote debugging enabled..."
+            pkill -TERM -x Antigravity 2>/dev/null || true
+            for _ in $(seq 1 30); do
+              pgrep -x Antigravity >/dev/null 2>&1 || break
+              sleep 0.2
+            done
+            rm -f "$PORT_FILE"
+            sleep 0.3
+          fi
+        fi
+        open -a "\(targetApp)" --args --remote-debugging-port=0
         """
         try? (launcherScript + "\n").write(toFile: launcherScriptPath, atomically: true, encoding: .utf8)
         try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: launcherScriptPath)

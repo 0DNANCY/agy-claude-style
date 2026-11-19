@@ -514,14 +514,14 @@ final class WatcherApp {
                 if !runningPids.isEmpty {
                     noCdpRunningTicks += 1
                     let pidSig = runningPids.map { String($0) }.joined(separator: ",")
-                    if noCdpRunningTicks >= 2 && warnedNoCdpSig != pidSig {
+                    if noCdpRunningTicks >= 3 && warnedNoCdpSig != pidSig {
                         warnedNoCdpSig = pidSig
                         log("[!] \(CdpHelper.cdpUnavailableMessage(running: true, port: port))")
                         if !autoRelaunch {
                             log("[*] 提示：可在 config.json 中设置 \"autoRelaunchWithCdp\": true 以启用自动温和重启接管")
                         }
                     }
-                    if autoRelaunch && noCdpRunningTicks >= 2 && relaunchedPidSig != pidSig && Date().timeIntervalSince(lastRelaunchAt) >= 60.0 {
+                    if autoRelaunch && noCdpRunningTicks >= 3 && relaunchedPidSig != pidSig && Date().timeIntervalSince(lastRelaunchAt) >= 60.0 {
                         relaunchedPidSig = pidSig
                         lastRelaunchAt = Date()
                         log("[↻] autoRelaunchWithCdp 已启用：正在温和重启 Antigravity 并附加 --remote-debugging-port=0 ...")

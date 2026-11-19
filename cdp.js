@@ -44,7 +44,7 @@ const DEFAULT_CONFIG = {
   sidebarRestyle: true,
   sidebarCompact: false,
   placeholderStyle: 'studio',
-  autoRelaunchWithCdp: false,
+  autoRelaunchWithCdp: true,
   exitOnHostClose: false,
   pollIntervalMs: 2500,
 };
@@ -442,12 +442,7 @@ function launchAntigravityWithCdp(opts = {}) {
 async function relaunchAntigravityWithCdp(opts = {}) {
   const waitMs = Number.isInteger(opts.waitMs) && opts.waitMs > 0 ? opts.waitMs : 8000;
   try {
-    if (IS_MAC) {
-      execFileSync('/usr/bin/osascript', ['-e', 'tell application "Antigravity" to quit'], {
-        timeout: 4000,
-        stdio: 'ignore',
-      });
-    } else if (IS_WIN) {
+    if (IS_WIN) {
       execFileSync('taskkill', ['/IM', 'Antigravity.exe'], {
         timeout: 4000,
         windowsHide: true,
@@ -456,9 +451,11 @@ async function relaunchAntigravityWithCdp(opts = {}) {
     } else {
       const { pids } = detectAntigravityProcess();
       for (const pid of pids) {
-        try {
-          process.kill(pid, 'SIGTERM');
-        } catch {}
+        if (pid > 0 && pid !== process.pid) {
+          try {
+            process.kill(pid, 'SIGTERM');
+          } catch {}
+        }
       }
     }
   } catch {}
@@ -466,12 +463,13 @@ async function relaunchAntigravityWithCdp(opts = {}) {
   const deadline = Date.now() + waitMs;
   while (Date.now() < deadline) {
     if (!detectAntigravityProcess().running) break;
-    await new Promise((r) => setTimeout(r, 250));
+    await new Promise((r) => setTimeout(r, 200));
   }
   if (detectAntigravityProcess().running) {
     return { relaunched: false, reason: 'still-running' };
   }
   removeStalePortFile();
+  await new Promise((r) => setTimeout(r, 350));
   const launched = launchAntigravityWithCdp(opts);
   return { relaunched: launched, reason: launched ? 'ok' : 'executable-not-found' };
 }
