@@ -739,3 +739,237 @@ test('timestamp-fallback turn bucketing does not let a 0-timestamp call swallow 
   assert.equal(info.turnDetails[1].calls, 1);
   assert.equal(info.turnDetails[1].userPreview, 'Second');
 });
+
+test('analyzeActiveConversation and analyzeTrajectoryForUsage parse remote/cloud AgentState step modelUsage, timings, prompts, and modelInfo limits', () => {
+  const remoteAgentState = {
+    conversationId: '9108d632-06be-4d5d-8338-3e81f464fbfd',
+    status: 1,
+    fullyIdle: true,
+    turns: [
+      { startStepIndex: 0, startTimeMs: 1795180381431 },
+      { startStepIndex: 4, startTimeMs: 1795181503618 },
+    ],
+    trajectorySlice: {
+      conversationId: '9108d632-06be-4d5d-8338-3e81f464fbfd',
+      totalStepsLength: 6,
+      stepsSlice: { startIndex: 0 },
+      stepsInSlice: [
+        {
+          status: 3,
+          metadata: {
+            createdAt: { seconds: '1795180381', nanos: 0 },
+            sourceTrajectoryStepInfo: { stepIndex: 0, cascadeId: 'v1/default/jetski_remote_agents_3p/9108d632-06be-4d5d-8338-3e81f464fbfd' },
+          },
+          step: {
+            case: 'userInput',
+            value: {
+              query: '',
+              userResponse: '看看 issue #4',
+              items: [{ chunk: { case: 'text', value: '看看 issue #4' } }],
+            },
+          },
+        },
+        {
+          status: 3,
+          metadata: {
+            createdAt: { seconds: '1795180385', nanos: 0 },
+            viewableAt: { seconds: '1795180388', nanos: 0 },
+            finishedGeneratingAt: { seconds: '1795180390', nanos: 0 },
+            modelUsage: {
+              inputTokens: '16834',
+              cacheReadTokens: '0',
+              cacheWriteTokens: '0',
+              outputTokens: '200',
+              thinkingOutputTokens: '120',
+              responseOutputTokens: '80',
+            },
+            modelInfo: {
+              displayName: 'Gemini 4 Neon (High)',
+              modelName: 'gemini-4-neon-high',
+              maxTokens: 1048576,
+              maxOutputTokens: 262144,
+            },
+            sourceTrajectoryStepInfo: { stepIndex: 1 },
+          },
+          step: { case: 'plannerResponse', value: { response: '' } },
+        },
+        {
+          status: 3,
+          metadata: {
+            createdAt: { seconds: '1795180390', nanos: 500000000 },
+            toolSummary: 'Read inject.js',
+            sourceTrajectoryStepInfo: { stepIndex: 2 },
+          },
+          step: {
+            case: 'viewFile',
+            value: { absolutePathUri: 'file:///home/antigravity/repo/inject.js', content: '', lineRangeBytes: 8372 },
+          },
+        },
+        {
+          status: 3,
+          metadata: {
+            createdAt: { seconds: '1795180392', nanos: 0 },
+            viewableAt: { seconds: '1795180395', nanos: 0 },
+            finishedGeneratingAt: { seconds: '1795180400', nanos: 0 },
+            modelUsage: {
+              inputTokens: '5000',
+              cacheReadTokens: '16834',
+              cacheWriteTokens: '0',
+              outputTokens: '1000',
+              thinkingOutputTokens: '400',
+              responseOutputTokens: '600',
+            },
+            modelInfo: {
+              displayName: 'Gemini 4 Neon (High)',
+              modelName: 'gemini-4-neon-high',
+              maxTokens: 1048576,
+            },
+            sourceTrajectoryStepInfo: { stepIndex: 3 },
+          },
+          step: { case: 'plannerResponse', value: { response: '分析完成。' } },
+        },
+        {
+          status: 3,
+          metadata: {
+            createdAt: { seconds: '1795181503', nanos: 0 },
+            sourceTrajectoryStepInfo: { stepIndex: 4 },
+          },
+          step: {
+            case: 'userInput',
+            value: {
+              query: '',
+              userResponse: '@[Quote] 就这个计划回复建议',
+              items: [
+                { chunk: { case: 'item', value: { scopeItem: { case: 'textBlock', value: { content: '方案 A' } } } } },
+                { chunk: { case: 'text', value: ' 就这个计划回复建议' } },
+              ],
+            },
+          },
+        },
+        {
+          status: 3,
+          metadata: {
+            createdAt: { seconds: '1795181510', nanos: 0 },
+            viewableAt: { seconds: '1795181513', nanos: 0 },
+            finishedGeneratingAt: { seconds: '1795181515', nanos: 0 },
+            modelUsage: {
+              inputTokens: '2345',
+              cacheReadTokens: '22434',
+              cacheWriteTokens: '0',
+              outputTokens: '400',
+              thinkingOutputTokens: '100',
+              responseOutputTokens: '300',
+            },
+            modelInfo: {
+              displayName: 'Gemini 4 Hydrogen (High)',
+              modelName: 'gemini-4-hydrogen-high',
+              maxTokens: 1048576,
+            },
+            sourceTrajectoryStepInfo: { stepIndex: 5 },
+          },
+          step: { case: 'plannerResponse', value: { response: '已回复 Issue #4。' } },
+        },
+      ],
+      // Remote/Cloud mode populates generatorMetadatasInSlice with empty metadata: {} stubs
+      generatorMetadatasInSlice: [0, 1, 2, 3, 4, 5].map((i) => ({
+        stepIndices: [i],
+        metadata: {},
+        plannerConfig: { modelName: i < 4 ? 'Gemini 4 Neon (High)' : 'Gemini 4 Hydrogen (High)' },
+      })),
+    },
+  };
+
+  const info = usageCore.analyzeActiveConversation(remoteAgentState, { cascadeId: remoteAgentState.conversationId });
+  assert.equal(info.calls, 3, 'Must count real model calls, not empty generatorMetadata stubs');
+  assert.equal(info.totalCalls, 3);
+  assert.equal(info.turns, 2);
+  assert.equal(info.steps, 6);
+  assert.equal(info.lastModel, 'Gemini 4 Hydrogen (High)');
+  assert.equal(info.maxContextTokens, 1048576);
+  assert.equal(info.hasActiveLimits, true);
+  assert.equal(info.hasExactContextLimits, false);
+  assert.equal(info.contextUsed, 2345 + 22434 + 300);
+  assert.equal(
+    info.sysTokens + info.toolsTokens + info.chatMsgTokens + info.toolResultsTokens + info.overheadTokens,
+    info.contextUsed
+  );
+  assert.ok(info.sysTokens > 15000, 'Should attribute Call 0 base prompt to sysTokens when tokenBreakdown is absent');
+  assert.equal(info.displaySpeed, 200);
+  assert.equal(info.avgTtft, 3);
+  assert.equal(info.turnDetails.length, 2);
+  assert.equal(info.turnDetails[0].userPreview, '看看 issue #4');
+  assert.equal(info.turnDetails[0].toolCalls, 1);
+  assert.equal(info.turnDetails[1].userPreview, '方案 A 就这个计划回复建议');
+  assert.equal(info.turnDetails[1].model, 'Gemini 4 Hydrogen (High)');
+  assert.equal(info.toolBreakdown[0].name, 'read_file');
+
+  const rollup = usageCore.analyzeTrajectoryForUsage(
+    remoteAgentState,
+    { stepCount: 0, cloud: true, lastModifiedTime: { seconds: '1795181515' } },
+    remoteAgentState.conversationId
+  );
+  assert.equal(rollup.calls, 3);
+  assert.equal(rollup.summaryStepCount, 0);
+  assert.equal(rollup.stepCount, 6);
+  const day = Object.values(rollup.days)[0];
+  assert.ok(day.models['Gemini 4 Neon (High)']);
+  assert.ok(day.models['Gemini 4 Hydrogen (High)']);
+  assert.equal(day.models.unknown, undefined);
+});
+
+test('normalizeAgentStateToTrajectory handles sliced steps, contextWindowUsage tokenGroups, and model slug prettification', () => {
+  const slicedState = {
+    conversationId: 'sliced-remote-1',
+    status: 1,
+    fullyIdle: true,
+    contextWindowUsage: {
+      estimatedTokensUsed: 290000,
+      maxContextTokens: 734000,
+      tokenGroups: [
+        { name: 'System Prompt', type: 1, numTokens: 4000, children: [] },
+        { name: 'Skills', type: 5, numTokens: 5000, children: [] },
+        { name: 'Plugins', type: 9, numTokens: 1000, children: [] },
+        { name: 'Tools', type: 2, numTokens: 8000, children: [] },
+        { name: 'Mcp Tools', type: 4, numTokens: 2000, children: [] },
+        { name: 'Chat Messages', type: 7, numTokens: 270000, children: [] },
+      ],
+    },
+    trajectorySlice: {
+      conversationId: 'sliced-remote-1',
+      totalStepsLength: 250,
+      stepsSlice: { startIndex: -2 },
+      stepsInSlice: [
+        {
+          status: 3,
+          metadata: { createdAt: { seconds: '1795180000' }, sourceTrajectoryStepInfo: { stepIndex: 248 } },
+          step: { case: 'userInput', value: { userResponse: 'Continue' } },
+        },
+        {
+          status: 3,
+          metadata: {
+            createdAt: { seconds: '1795180005' },
+            modelUsage: { inputTokens: '5000', cacheReadTokens: '280000', outputTokens: '600', thinkingOutputTokens: '100', responseOutputTokens: '500' },
+            modelInfo: { displayName: 'gemini-4-hydrogen-xhigh', modelName: 'gemini-4-hydrogen-xhigh', maxTokens: 1000000 },
+            sourceTrajectoryStepInfo: { stepIndex: 249 },
+          },
+          step: { case: 'plannerResponse', value: { response: 'Done' } },
+        },
+      ],
+      generatorMetadatasInSlice: [
+        { stepIndices: [249], metadata: {}, plannerConfig: { modelName: 'Gemini 4 Hydrogen (XHigh)' } },
+      ],
+    },
+  };
+
+  const info = usageCore.analyzeActiveConversation(slicedState);
+  assert.equal(info.steps, 250);
+  assert.equal(info.totalSteps, 250);
+  assert.equal(info.maxContextTokens, 734000);
+  assert.equal(info.hasExactContextLimits, true);
+  assert.equal(info.sysTokens, 10000);
+  assert.equal(info.toolsTokens, 10000);
+  assert.equal(info.lastModel, 'Gemini 4 Hydrogen (XHigh)');
+  assert.equal(info.turnDetails.length, 1);
+  assert.equal(info.turnDetails[0].userStepIdx, 248);
+  assert.equal(info.turnDetails[0].lastStepIdx, 249);
+});
