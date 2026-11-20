@@ -16,6 +16,7 @@ const {
   readPort,
   listPages,
   detectAntigravityProcess,
+  hasRemoteDebuggingFlag,
   launchAntigravityWithCdp,
   relaunchAntigravityWithCdp,
   formatCdpUnavailableMessage,
@@ -336,6 +337,7 @@ async function watch() {
   let warnedNoCdpSig = '';
   let relaunchedPidSig = '';
   let lastRelaunchAt = 0;
+  let cdpFlagCache = { pidSig: '', hasFlag: false };
 
   async function tick() {
     if (busy || shuttingDown) return;
@@ -360,6 +362,7 @@ async function watch() {
         consecutivePortFailures = 0;
         noCdpRunningTicks = 0;
         warnedNoCdpSig = '';
+        cdpFlagCache = { pidSig: '', hasFlag: false };
         if (port !== lastPort) {
           closeAllSessions();
           log(`[+] 连接到调试端口 ${port}`);
@@ -383,33 +386,46 @@ async function watch() {
         if (proc.running) {
           noCdpRunningTicks++;
           const pidSig = proc.pids.slice().sort((a, b) => a - b).join(',');
-          if (noCdpRunningTicks >= 3 && warnedNoCdpSig !== pidSig) {
-            warnedNoCdpSig = pidSig;
-            log(`[!] ${formatCdpUnavailableMessage({ running: true, port })}`);
-            if (!currentConfig.autoRelaunchWithCdp) {
-              log('[*] 提示：可在 config.json 中设置 "autoRelaunchWithCdp": true 以启用自动温和重启接管');
+          if (noCdpRunningTicks >= 3) {
+            if (cdpFlagCache.pidSig !== pidSig) {
+              cdpFlagCache = { pidSig, hasFlag: hasRemoteDebuggingFlag(proc.pids) };
             }
-          }
-          if (
-            currentConfig.autoRelaunchWithCdp === true &&
-            noCdpRunningTicks >= 3 &&
-            relaunchedPidSig !== pidSig &&
-            Date.now() - lastRelaunchAt >= 60000
-          ) {
-            relaunchedPidSig = pidSig;
-            lastRelaunchAt = Date.now();
-            log('[↻] autoRelaunchWithCdp 已启用：正在温和重启 Antigravity 并附加 --remote-debugging-port=0 ...');
-            const res = await relaunchAntigravityWithCdp({ port: 0 });
-            if (res.relaunched) {
-              log('[✓] 已以 CDP 模式重启 Antigravity，等待窗口就绪...');
-              noCdpRunningTicks = 0;
+            if (cdpFlagCache.hasFlag) {
+              if (warnedNoCdpSig !== `cdp:${pidSig}`) {
+                warnedNoCdpSig = `cdp:${pidSig}`;
+                log('[*] 检测到 Antigravity 已携带 --remote-debugging-port 参数，继续等待调试端口响应...');
+              }
             } else {
-              log(`[!] 自动重启未完成 (${res.reason})，请手动完全退出 Antigravity 后以 --remote-debugging-port=0 启动`);
+              if (warnedNoCdpSig !== pidSig) {
+                warnedNoCdpSig = pidSig;
+                log(`[!] ${formatCdpUnavailableMessage({ running: true, port })}`);
+                if (!currentConfig.autoRelaunchWithCdp) {
+                  log('[*] 提示：可在 config.json 中设置 "autoRelaunchWithCdp": true 以启用自动温和重启接管');
+                }
+              }
+              if (
+                currentConfig.autoRelaunchWithCdp === true &&
+                relaunchedPidSig !== pidSig &&
+                Date.now() - lastRelaunchAt >= 60000
+              ) {
+                relaunchedPidSig = pidSig;
+                lastRelaunchAt = Date.now();
+                log('[↻] autoRelaunchWithCdp 已启用：正在温和重启 Antigravity 并附加 --remote-debugging-port=0 ...');
+                const res = await relaunchAntigravityWithCdp({ port: 0 });
+                if (res.relaunched) {
+                  log('[✓] 已以 CDP 模式重启 Antigravity，等待窗口就绪...');
+                  noCdpRunningTicks = 0;
+                  cdpFlagCache = { pidSig: '', hasFlag: false };
+                } else {
+                  log(`[!] 自动重启未完成 (${res.reason})，请手动完全退出 Antigravity 后以 --remote-debugging-port=0 启动`);
+                }
+              }
             }
           }
         } else {
           noCdpRunningTicks = 0;
           warnedNoCdpSig = '';
+          cdpFlagCache = { pidSig: '', hasFlag: false };
           if (consecutivePortFailures >= 3) {
             nextDelayMs = 5000;
           }

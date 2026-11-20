@@ -391,12 +391,13 @@ enum InstallerCore {
 
         let launcherScriptPath = (installDir as NSString).appendingPathComponent("launch-antigravity.command")
         let targetApp = ag.appPath ?? "/Applications/Antigravity.app"
+        let escapedTargetApp = "'" + targetApp.replacingOccurrences(of: "'", with: "'\\''") + "'"
         let launcherScript = """
         #!/usr/bin/env bash
         # Launch or restart Antigravity Desktop with CDP enabled for AGY Claude Style (Antigravity 2.33.0+)
         PORT_FILE="$HOME/Library/Application Support/Antigravity/DevToolsActivePort"
         if pgrep -x Antigravity >/dev/null 2>&1; then
-          if [ ! -f "$PORT_FILE" ] || ! curl -sf "http://127.0.0.1:$(head -n 1 "$PORT_FILE" 2>/dev/null)/json/list" >/dev/null 2>&1; then
+          if [ ! -f "$PORT_FILE" ] || ! curl -sf --max-time 2 "http://127.0.0.1:$(head -n 1 "$PORT_FILE" 2>/dev/null)/json/list" >/dev/null 2>&1; then
             echo "[*] Restarting Antigravity with CDP remote debugging enabled..."
             pkill -TERM -x Antigravity 2>/dev/null || true
             for _ in $(seq 1 30); do
@@ -407,7 +408,7 @@ enum InstallerCore {
             sleep 0.3
           fi
         fi
-        open -a "\(targetApp)" --args --remote-debugging-port=0
+        open -a \(escapedTargetApp) --args --remote-debugging-port=0
         """
         try? (launcherScript + "\n").write(toFile: launcherScriptPath, atomically: true, encoding: .utf8)
         try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: launcherScriptPath)
@@ -421,6 +422,7 @@ enum InstallerCore {
         let palette = activeCfg["palette"]?.stringValue ?? "obsidian"
         let ringMode = activeCfg["ringMode"]?.stringValue ?? "context"
         let effortStyle = activeCfg["effortSliderStyle"]?.stringValue ?? "claude"
+        let autoRelaunchEnabled = activeCfg["autoRelaunchWithCdp"]?.boolValue ?? false
         result.configSummary = "语言=\(lang) | 配色=\(palette) | 圆环=\(ringMode) | 思考滑块=\(effortStyle)"
 
         if !opts.noAutostart {
@@ -493,7 +495,9 @@ enum InstallerCore {
         } else if ag.isRunning {
             result.antigravityRunningWithoutCdp = true
             result.headline = "已安装并启动守护！但当前 Antigravity 未开启 CDP 端口"
-            result.detail = "Antigravity 2.33.0+ 默认关闭远程调试端口。请点击下方「以 CDP 模式重启」，或退出后使用 --remote-debugging-port=0 启动即可生效。"
+            result.detail = autoRelaunchEnabled
+                ? "Antigravity 2.33.0+ 默认关闭远程调试端口。后台守护已启用自动接管，将在数秒内尝试温和重启；也可点击下方「以 CDP 模式重启」立即生效。"
+                : "Antigravity 2.33.0+ 默认关闭远程调试端口。请点击下方「以 CDP 模式重启」，或退出后使用 --remote-debugging-port=0 启动即可生效。"
             report(95, "[!] 检测到 Antigravity 正在运行但未开启 CDP（2.33.0+ 需带参 --remote-debugging-port=0 启动）")
         } else {
             result.headline = "安装成功！后台自动修补已就绪"
@@ -893,8 +897,19 @@ final class InstallerAppDelegate: NSObject, NSApplicationDelegate, NSWindowDeleg
         guard let appPath = antigravityApp, FileManager.default.fileExists(atPath: appPath) else { return }
         if needsCdpRelaunch {
             launchAgBtn.isEnabled = false
-            appendLog("[↻] 正在温和关闭 Antigravity 并以 --remote-debugging-port=0 重新启动...")
+            appendLog("[↻] 正在检查 CDP 状态并准备以 --remote-debugging-port=0 重启 Antigravity...")
             DispatchQueue.global(qos: .userInitiated).async {
+                if let port = CdpHelper.readPort(overridePort: nil),
+                   (try? CdpHelper.listPages(port: port)) != nil {
+                    DispatchQueue.main.async {
+                        self.needsCdpRelaunch = false
+                        self.statusHeadline.stringValue = "Antigravity 已处于 CDP 调试模式"
+                        self.statusHeadline.textColor = Self.srgb(21, 128, 61)
+                        self.statusDetail.stringValue = "后台守护进程已检测到调试端口 \(port)，将自动完成无损注入。"
+                        self.appendLog("[✓] 检测到 Antigravity 已开启 CDP 端口 \(port)，无需重复重启")
+                    }
+                    return
+                }
                 let ok = CdpHelper.relaunchAntigravityWithCdp(appPath: appPath, port: 0)
                 DispatchQueue.main.async {
                     if ok {

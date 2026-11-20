@@ -171,7 +171,7 @@
 
   function tsToMs(ts) {
     if (!ts) return 0;
-    if (typeof ts === 'number') return Number.isFinite(ts) && ts > 0 ? ts : 0;
+    if (typeof ts === 'number') return Number.isFinite(ts) && ts > 0 ? (ts > 1e11 ? ts : ts * 1000) : 0;
     if (ts instanceof Date) return Number.isFinite(ts.getTime()) && ts.getTime() > 0 ? ts.getTime() : 0;
     if (typeof ts === 'string') {
       const s = ts.trim();
@@ -268,6 +268,8 @@
       mod.calls += 1;
     }
 
+    let gmWithUsageCount = 0;
+    let gmWithoutStepIndicesCount = 0;
     for (let i = 0; i < gmList.length; i++) {
       const val = gmList[i]?.metadata?.value;
       if (!val) continue;
@@ -275,7 +277,12 @@
       if (!u) continue;
       const sIndices = Array.isArray(gmList[i].stepIndices) ? gmList[i].stepIndices : [];
       if (hasUsageTokens(u)) {
-        for (let k = 0; k < sIndices.length; k++) coveredStepIndices.add(sIndices[k]);
+        gmWithUsageCount += 1;
+        if (sIndices.length > 0) {
+          for (let k = 0; k < sIndices.length; k++) coveredStepIndices.add(sIndices[k]);
+        } else {
+          gmWithoutStepIndicesCount += 1;
+        }
       }
       let ts = 0;
       for (let k = 0; k < sIndices.length; k++) {
@@ -289,14 +296,16 @@
       addUsageSample(u, ts, cleanModelName(val));
     }
 
-    for (let i = 0; i < steps.length; i++) {
-      if (coveredStepIndices.has(i)) continue;
-      const st = steps[i];
-      if (!st) continue;
-      const mu = st.metadata?.modelUsage || st.step?.value?.metadata?.modelUsage;
-      if (!hasUsageTokens(mu)) continue;
-      const ts = stepTime.get(i) || fallbackMs;
-      addUsageSample(mu, ts, cleanModelName(mu));
+    if (gmWithUsageCount === 0 || gmWithoutStepIndicesCount === 0) {
+      for (let i = 0; i < steps.length; i++) {
+        if (coveredStepIndices.has(i)) continue;
+        const st = steps[i];
+        if (!st) continue;
+        const mu = st.metadata?.modelUsage || st.step?.value?.metadata?.modelUsage;
+        if (!hasUsageTokens(mu)) continue;
+        const ts = stepTime.get(i) || fallbackMs;
+        addUsageSample(mu, ts, cleanModelName(mu));
+      }
     }
 
     return {
@@ -921,8 +930,8 @@
       if (!st) continue;
       const sc = st.step?.case || '';
       const val = st.step?.value || {};
-      if (sc === 'userInput') {
-        const q = val.query || val.text || val.userInput || '';
+      if (isUserTurnBoundary(st)) {
+        const q = extractUserPromptText(st);
         if (q) pendingStepTokens += estimateTextTokens(q).tokens;
       } else if (sc === 'plannerResponse') {
         const tcText = Array.isArray(val.toolCalls)
@@ -1037,14 +1046,16 @@
         const st = steps[idx];
         if (!st) continue;
         const sc = st.step?.case || '';
-        if (!sc || sc === 'systemMessage' || sc === 'checkpoint') continue;
-        const val = st.step?.value || {};
-        if (sc === 'userInput') {
-          const q = val.query || val.text || val.userInput || '';
+        if (isUserTurnBoundary(st)) {
+          const q = extractUserPromptText(st);
           const w = Math.max(80, q ? estimateTextTokens(q).tokens : 40);
           postUserWeight += w;
           postChatWeight += w;
-        } else if (sc === 'plannerResponse') {
+          continue;
+        }
+        if (!sc || sc === 'systemMessage' || sc === 'checkpoint') continue;
+        const val = st.step?.value || {};
+        if (sc === 'plannerResponse') {
           const tcText = Array.isArray(val.toolCalls)
             ? val.toolCalls.map((tc) => `${tc.name || ''}${tc.argumentsJson || ''}`).join('')
             : '';
@@ -1226,16 +1237,35 @@
         }
       };
 
+      const closeActiveBucketAt = (nextIdx, nextTimeSec) => {
+        if (!activeBucket) return;
+        if (
+          activeBucket.nextUserStepIdx === Infinity &&
+          typeof nextIdx === 'number' &&
+          nextIdx > activeBucket.userStepIdx
+        ) {
+          activeBucket.nextUserStepIdx = nextIdx;
+        }
+        if (
+          !Number.isFinite(activeBucket.nextStartTimeSec) &&
+          typeof nextTimeSec === 'number' &&
+          nextTimeSec > 0 &&
+          nextTimeSec >= activeBucket.startTimeSec
+        ) {
+          activeBucket.nextStartTimeSec = nextTimeSec;
+        }
+      };
+
       const startNewBucket = (fallbackStepIdx, fallbackTimeSec) => {
         const uIdx = pendingUserStepIdx >= 0 ? pendingUserStepIdx : fallbackStepIdx;
-        if (activeBucket && uIdx >= 0 && uIdx > activeBucket.userStepIdx) {
-          activeBucket.nextUserStepIdx = uIdx;
-        }
+        const startTimeSec = pendingStartTimeSec || fallbackTimeSec || 0;
+        closeActiveBucketAt(uIdx, startTimeSec);
         const bucket = {
           userStepIdx: uIdx,
           nextUserStepIdx: Infinity,
           lastStepIdx: uIdx,
-          startTimeSec: pendingStartTimeSec || fallbackTimeSec || 0,
+          startTimeSec,
+          nextStartTimeSec: Infinity,
           prompts: pendingPrompts.slice(),
           calls: [],
         };
@@ -1253,10 +1283,12 @@
         for (let idx = 0; idx <= maxStepIdx; idx++) {
           const st = steps[idx];
           if (st && isUserTurnBoundary(st)) {
+            const boundaryTimeSec = tsSec(st.metadata?.createdAt);
+            closeActiveBucketAt(idx, boundaryTimeSec);
             if (!hasUnconsumedTurn) {
               hasUnconsumedTurn = true;
               pendingUserStepIdx = idx;
-              pendingStartTimeSec = tsSec(st.metadata?.createdAt);
+              pendingStartTimeSec = boundaryTimeSec;
               pendingPrompts = [];
             }
             pushPendingPrompt(extractUserPromptText(st));
@@ -1284,27 +1316,36 @@
         const hasAnyUserTs = userBoundaries.some((u) => u.startTimeSec > 0);
         if (hasAnyCallTs && hasAnyUserTs) {
           let uCursor = 0;
+          const consumeBoundary = (ub) => {
+            closeActiveBucketAt(ub.idx, ub.startTimeSec);
+            if (!hasUnconsumedTurn) {
+              hasUnconsumedTurn = true;
+              pendingUserStepIdx = ub.idx;
+              pendingStartTimeSec = ub.startTimeSec;
+              pendingPrompts = [];
+            }
+            pushPendingPrompt(ub.prompt);
+          };
           for (const c of callList) {
-            while (
-              uCursor < userBoundaries.length &&
-              (userBoundaries[uCursor].startTimeSec === 0 ||
-                c.createdAtSec === 0 ||
-                userBoundaries[uCursor].startTimeSec <= c.createdAtSec + 1)
-            ) {
-              const ub = userBoundaries[uCursor];
-              if (!hasUnconsumedTurn) {
-                hasUnconsumedTurn = true;
-                pendingUserStepIdx = ub.idx;
-                pendingStartTimeSec = ub.startTimeSec;
-                pendingPrompts = [];
+            if (c.createdAtSec > 0) {
+              while (uCursor < userBoundaries.length) {
+                const ub = userBoundaries[uCursor];
+                if (ub.startTimeSec > 0 && ub.startTimeSec > c.createdAtSec + 1) break;
+                if (ub.startTimeSec === 0 && (activeBucket || hasUnconsumedTurn)) break;
+                consumeBoundary(ub);
+                uCursor++;
               }
-              pushPendingPrompt(ub.prompt);
+            } else if (!activeBucket && !hasUnconsumedTurn && uCursor < userBoundaries.length) {
+              consumeBoundary(userBoundaries[uCursor]);
               uCursor++;
             }
             if (hasUnconsumedTurn || !activeBucket) {
               startNewBucket(pendingUserStepIdx >= 0 ? pendingUserStepIdx : 0, c.createdAtSec || 0);
             }
             activeBucket.calls.push(c);
+          }
+          if (uCursor < userBoundaries.length) {
+            closeActiveBucketAt(userBoundaries[uCursor].idx, userBoundaries[uCursor].startTimeSec);
           }
         } else {
           const firstUb = userBoundaries[0];
@@ -1329,6 +1370,7 @@
             nextUserStepIdx: Infinity,
             lastStepIdx: firstIdx,
             startTimeSec,
+            nextStartTimeSec: Infinity,
             model: c.modelDisplayName || '',
             calls: 1,
             toolCalls: 0,
@@ -1374,6 +1416,7 @@
             nextUserStepIdx: b.nextUserStepIdx,
             lastStepIdx: b.lastStepIdx,
             startTimeSec: b.startTimeSec,
+            nextStartTimeSec: b.nextStartTimeSec,
             model: lastC.modelDisplayName || '',
             calls: b.calls.length,
             toolCalls: turnToolCalls,

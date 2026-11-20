@@ -57,6 +57,7 @@ function buildInstaller({ outputPath = path.join(ROOT_DIR, 'installer.exe'), con
       `/out:${watcherOut}`,
       '/r:System.dll',
       '/r:System.Core.dll',
+      '/r:System.Management.dll',
       '/r:System.Net.Http.dll',
       commonMiniJson,
       commonCdpClient,

@@ -644,3 +644,98 @@ test('analyzeActiveConversation merges consecutive user inputs, handles alternat
   assert.equal(noIdxInfo.turnDetails[0].calls, 3);
   assert.equal(noIdxInfo.turnDetails[0].output, 900);
 });
+
+test('streaming new turn closes previous turn boundary and prevents tool/badge bleed, plus alternate userInput pending estimation', () => {
+  const traj = {
+    steps: [
+      { status: 3, metadata: { createdAt: { seconds: '1700001000' } }, type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { query: 'Turn 1' } },
+      { status: 3, metadata: { createdAt: { seconds: '1700001005' } }, step: { case: 'plannerResponse', value: { response: 'Done 1' } } },
+      { status: 3, metadata: { createdAt: { seconds: '1700002000' } }, type: 'CORTEX_STEP_TYPE_USER_INPUT', userInput: { query: 'Turn 2 streaming prompt with detail' } },
+      { status: 3, metadata: { createdAt: { seconds: '1700002001' }, toolCall: { name: 'read_file' } }, step: { case: 'viewFile', value: { content: 'abc' } } },
+      { status: 2, metadata: { createdAt: { seconds: '1700002002' } }, step: { case: 'plannerResponse', value: { response: 'Streaming...' } } },
+    ],
+    generatorMetadata: [
+      {
+        stepIndices: [1],
+        metadata: {
+          value: {
+            modelDisplayName: 'Gemini 4 Neon',
+            usage: { inputTokens: '4000', cacheReadTokens: '6000', outputTokens: '500' },
+          },
+        },
+      },
+    ],
+  };
+
+  const info = usageCore.analyzeActiveConversation(traj, { cascadeId: 'streaming-boundary-1' });
+  assert.equal(info.turns, 1);
+  assert.equal(info.turnDetails.length, 1);
+  assert.equal(info.turnDetails[0].userStepIdx, 0);
+  assert.equal(info.turnDetails[0].nextUserStepIdx, 2, 'Turn 1 must be closed at Turn 2 user boundary');
+  assert.equal(info.turnDetails[0].nextStartTimeSec, 1700002000);
+  assert.equal(info.turnDetails[0].toolCalls, 0, 'Turn 2 tool call must not leak into Turn 1');
+  assert.ok(info.contextUsed > 10500, 'Pending Turn 2 userInput/tool/streaming tokens should increment contextUsed');
+});
+
+test('analyzeTrajectoryForUsage avoids double-counting when generatorMetadata omits stepIndices and normalizes numeric epoch seconds', () => {
+  const traj = {
+    steps: [
+      { status: 3, metadata: { createdAt: 1700001000 }, step: { case: 'userInput', value: { query: 'Q1' } } },
+      {
+        status: 3,
+        metadata: {
+          createdAt: 1700001005,
+          modelUsage: { modelDisplayName: 'Gemini 4 Neon', inputTokens: '3000', outputTokens: '400' },
+        },
+        step: { case: 'plannerResponse', value: { response: 'A1' } },
+      },
+      { status: 3, metadata: { createdAt: 1700002000 }, step: { case: 'userInput', value: { query: 'Q2' } } },
+      {
+        status: 3,
+        metadata: {
+          createdAt: 1700002005,
+          modelUsage: { modelDisplayName: 'Gemini 4 Neon', inputTokens: '5000', outputTokens: '600' },
+        },
+        step: { case: 'plannerResponse', value: { response: 'A2' } },
+      },
+    ],
+    generatorMetadata: [
+      {
+        metadata: { value: { modelDisplayName: 'Gemini 4 Neon', usage: { inputTokens: '3000', outputTokens: '400' } } },
+      },
+      {
+        metadata: { value: { modelDisplayName: 'Gemini 4 Neon', usage: { inputTokens: '5000', outputTokens: '600' } } },
+      },
+    ],
+  };
+
+  const rec = usageCore.analyzeTrajectoryForUsage(traj, { stepCount: 4, lastModifiedTime: 1700002005 }, 'no-idx-usage');
+  assert.equal(rec.calls, 2, 'Must not double-count step modelUsage when generatorMetadata lacks stepIndices');
+  const dayKeys = Object.keys(rec.days);
+  assert.equal(dayKeys.length, 1);
+  assert.ok(/^2023-11-1[45]$/.test(dayKeys[0]), `Expected numeric epoch seconds to normalize to 2023-11-14/15, got ${dayKeys[0]}`);
+  assert.equal(rec.days[dayKeys[0]].total, 9000);
+});
+
+test('timestamp-fallback turn bucketing does not let a 0-timestamp call swallow later user turns', () => {
+  const traj = {
+    steps: [
+      { status: 3, metadata: { createdAt: { seconds: '1700001000' } }, step: { case: 'userInput', value: { query: 'First' } } },
+      { status: 3, metadata: { createdAt: { seconds: '1700001005' } }, step: { case: 'plannerResponse', value: { response: 'R1' } } },
+      { status: 3, metadata: { createdAt: { seconds: '1700002000' } }, step: { case: 'userInput', value: { query: 'Second' } } },
+      { status: 3, metadata: { createdAt: { seconds: '1700002005' } }, step: { case: 'plannerResponse', value: { response: 'R2' } } },
+    ],
+    generatorMetadata: [
+      { metadata: { value: { usage: { inputTokens: '1000', outputTokens: '100' } } } },
+      { metadata: { value: { createdAt: { seconds: '1700001005' }, usage: { inputTokens: '2000', outputTokens: '200' } } } },
+      { metadata: { value: { createdAt: { seconds: '1700002005' }, usage: { inputTokens: '3000', outputTokens: '300' } } } },
+    ],
+  };
+
+  const info = usageCore.analyzeActiveConversation(traj, { cascadeId: 'zero-ts-fallback' });
+  assert.equal(info.turns, 2);
+  assert.equal(info.turnDetails[0].calls, 2);
+  assert.equal(info.turnDetails[0].userPreview, 'First');
+  assert.equal(info.turnDetails[1].calls, 1);
+  assert.equal(info.turnDetails[1].userPreview, 'Second');
+});

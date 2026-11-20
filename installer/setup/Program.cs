@@ -659,9 +659,14 @@ namespace AgyClaudeStyle.Installer
             }
             else if (ag.IsRunning)
             {
+                bool autoRelaunchEnabled = activeCfg.ContainsKey("autoRelaunchWithCdp") &&
+                    activeCfg["autoRelaunchWithCdp"] is bool &&
+                    (bool)activeCfg["autoRelaunchWithCdp"];
                 result.AntigravityRunningWithoutCdp = true;
                 result.Headline = "已安装并启动守护！但当前 Antigravity 未开启 CDP 端口";
-                result.Detail = "Antigravity 2.33.0+ 默认关闭远程调试端口。请点击下方「以 CDP 模式重启」，或通过带 --remote-debugging-port=0 参数的快捷方式启动。";
+                result.Detail = autoRelaunchEnabled
+                    ? "Antigravity 2.33.0+ 默认关闭远程调试端口。后台守护已启用自动接管，将在数秒内尝试温和重启；也可点击下方「以 CDP 模式重启」立即生效。"
+                    : "Antigravity 2.33.0+ 默认关闭远程调试端口。请点击下方「以 CDP 模式重启」，或通过带 --remote-debugging-port=0 参数的快捷方式启动。";
                 report(95, "[!] 检测到 Antigravity 正在运行但未开启 CDP（2.33.0+ 需带参 --remote-debugging-port=0 启动）");
             }
             else
@@ -957,7 +962,30 @@ namespace AgyClaudeStyle.Installer
                 if (_needsCdpRelaunch)
                 {
                     _launchAgBtn.Enabled = false;
-                    AppendLog("[↻] 正在温和关闭 Antigravity 并以 --remote-debugging-port=0 重新启动...");
+                    AppendLog("[↻] 正在检查 CDP 状态并准备以 --remote-debugging-port=0 重启 Antigravity...");
+                    int? activeCdpPort = await Task.Run(() =>
+                    {
+                        int? p = CdpHelper.ReadPort(null);
+                        if (!p.HasValue) return (int?)null;
+                        try
+                        {
+                            List<CdpPageInfo> existingPages = CdpHelper.ListPagesAsync(p.Value).GetAwaiter().GetResult();
+                            return existingPages != null ? p : (int?)null;
+                        }
+                        catch
+                        {
+                            return (int?)null;
+                        }
+                    });
+                    if (activeCdpPort.HasValue)
+                    {
+                        _needsCdpRelaunch = false;
+                        _statusHeadline.Text = "Antigravity 已处于 CDP 调试模式";
+                        _statusHeadline.ForeColor = Color.FromArgb(21, 128, 61);
+                        _statusDetail.Text = "后台守护进程已检测到调试端口 " + activeCdpPort.Value + "，将自动完成无损注入。";
+                        AppendLog("[✓] 检测到 Antigravity 已开启 CDP 端口 " + activeCdpPort.Value + "，无需重复重启");
+                        return;
+                    }
                     bool ok = await Task.Run(() => CdpHelper.RelaunchAntigravityWithCdp(_antigravityExe, 0, 8000));
                     if (ok)
                     {

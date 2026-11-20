@@ -410,6 +410,106 @@ function findAntigravityExecutable() {
   return null;
 }
 
+function resolveRunningAntigravityPath(pids = []) {
+  const validPids = Array.isArray(pids) ? pids.filter((p) => Number.isInteger(p) && p > 0) : [];
+  try {
+    if (IS_MAC) {
+      const args = validPids.length > 0 ? ['-p', validPids.join(','), '-o', 'comm='] : ['-ax', '-o', 'comm='];
+      const out = execFileSync('/bin/ps', args, {
+        encoding: 'utf8',
+        timeout: 2000,
+        stdio: ['ignore', 'pipe', 'ignore'],
+      });
+      const suffix = '/contents/macos/antigravity';
+      for (const rawLine of out.split(/\r?\n/)) {
+        const comm = rawLine.trim();
+        const lower = comm.toLowerCase();
+        if (lower.endsWith(`.app${suffix}`) && comm.length > suffix.length) {
+          const appPath = comm.slice(0, comm.length - suffix.length);
+          if (fs.existsSync(appPath)) return appPath;
+        }
+      }
+      return null;
+    }
+    if (IS_WIN) {
+      const out = execFileSync(
+        'powershell.exe',
+        [
+          '-NoProfile',
+          '-NonInteractive',
+          '-Command',
+          "Get-CimInstance Win32_Process -Filter \"Name='Antigravity.exe'\" | Select-Object -ExpandProperty ExecutablePath",
+        ],
+        {
+          encoding: 'utf8',
+          timeout: 3000,
+          windowsHide: true,
+          stdio: ['ignore', 'pipe', 'ignore'],
+        }
+      );
+      for (const rawLine of out.split(/\r?\n/)) {
+        const exePath = rawLine.trim();
+        if (exePath && fs.existsSync(exePath)) return exePath;
+      }
+      return null;
+    }
+    for (const pid of validPids) {
+      try {
+        const target = fs.readlinkSync(`/proc/${pid}/exe`).replace(/ \(deleted\)$/, '');
+        if (target && fs.existsSync(target)) return target;
+      } catch {}
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function hasRemoteDebuggingFlag(pids = []) {
+  const validPids = Array.isArray(pids) ? pids.filter((p) => Number.isInteger(p) && p > 0) : [];
+  if (validPids.length === 0) return false;
+  try {
+    if (IS_MAC) {
+      const out = execFileSync('/bin/ps', ['-p', validPids.join(','), '-o', 'args='], {
+        encoding: 'utf8',
+        timeout: 2000,
+        stdio: ['ignore', 'pipe', 'ignore'],
+      });
+      return /--remote-debugging-port(?:=|\s|$)/i.test(out);
+    }
+    if (IS_WIN) {
+      const out = execFileSync(
+        'powershell.exe',
+        [
+          '-NoProfile',
+          '-NonInteractive',
+          '-Command',
+          "Get-CimInstance Win32_Process -Filter \"Name='Antigravity.exe'\" | Select-Object -ExpandProperty CommandLine",
+        ],
+        {
+          encoding: 'utf8',
+          timeout: 3000,
+          windowsHide: true,
+          stdio: ['ignore', 'pipe', 'ignore'],
+        }
+      );
+      return /--remote-debugging-port(?:=|\s|$)/i.test(out);
+    }
+    for (const pid of validPids) {
+      try {
+        const raw = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8');
+        const args = raw.split('\0').filter(Boolean);
+        if (args.some((arg) => /^--remote-debugging-port(?:=|$)/i.test(arg))) {
+          return true;
+        }
+      } catch {}
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
 function removeStalePortFile() {
   try {
     if (fs.existsSync(PORT_FILE)) fs.unlinkSync(PORT_FILE);
@@ -441,36 +541,57 @@ function launchAntigravityWithCdp(opts = {}) {
 
 async function relaunchAntigravityWithCdp(opts = {}) {
   const waitMs = Number.isInteger(opts.waitMs) && opts.waitMs > 0 ? opts.waitMs : 8000;
+  const detectFn = typeof opts.detectProcess === 'function' ? opts.detectProcess : detectAntigravityProcess;
+  const resolveRunningFn =
+    typeof opts.resolveRunningPath === 'function' ? opts.resolveRunningPath : resolveRunningAntigravityPath;
+  const findExeFn = typeof opts.findExecutable === 'function' ? opts.findExecutable : findAntigravityExecutable;
+  const launchFn = typeof opts.launch === 'function' ? opts.launch : launchAntigravityWithCdp;
+  const killFn =
+    typeof opts.terminate === 'function'
+      ? opts.terminate
+      : (pids) => {
+          if (IS_WIN) {
+            execFileSync('taskkill', ['/IM', 'Antigravity.exe'], {
+              timeout: 4000,
+              windowsHide: true,
+              stdio: 'ignore',
+            });
+          } else {
+            for (const pid of pids) {
+              if (pid > 0 && pid !== process.pid) {
+                try {
+                  process.kill(pid, 'SIGTERM');
+                } catch {}
+              }
+            }
+          }
+        };
+
+  const initialProc = detectFn();
+  const initialPids = Array.isArray(initialProc?.pids) ? initialProc.pids : [];
+  const resolvedPath = opts.appPath || resolveRunningFn(initialPids) || findExeFn();
+  const hasValidTarget = Boolean(
+    resolvedPath && (typeof opts.launch === 'function' || fs.existsSync(resolvedPath))
+  );
+  if (!hasValidTarget) {
+    return { relaunched: false, reason: 'executable-not-found' };
+  }
+
   try {
-    if (IS_WIN) {
-      execFileSync('taskkill', ['/IM', 'Antigravity.exe'], {
-        timeout: 4000,
-        windowsHide: true,
-        stdio: 'ignore',
-      });
-    } else {
-      const { pids } = detectAntigravityProcess();
-      for (const pid of pids) {
-        if (pid > 0 && pid !== process.pid) {
-          try {
-            process.kill(pid, 'SIGTERM');
-          } catch {}
-        }
-      }
-    }
+    killFn(initialPids);
   } catch {}
 
   const deadline = Date.now() + waitMs;
   while (Date.now() < deadline) {
-    if (!detectAntigravityProcess().running) break;
+    if (!detectFn().running) break;
     await new Promise((r) => setTimeout(r, 200));
   }
-  if (detectAntigravityProcess().running) {
+  if (detectFn().running) {
     return { relaunched: false, reason: 'still-running' };
   }
   removeStalePortFile();
   await new Promise((r) => setTimeout(r, 350));
-  const launched = launchAntigravityWithCdp(opts);
+  const launched = launchFn({ ...opts, appPath: resolvedPath });
   return { relaunched: launched, reason: launched ? 'ok' : 'executable-not-found' };
 }
 
@@ -507,6 +628,8 @@ module.exports = {
   listPages,
   detectAntigravityProcess,
   findAntigravityExecutable,
+  resolveRunningAntigravityPath,
+  hasRemoteDebuggingFlag,
   removeStalePortFile,
   launchAntigravityWithCdp,
   relaunchAntigravityWithCdp,

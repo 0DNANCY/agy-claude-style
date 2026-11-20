@@ -126,7 +126,7 @@ Clawd 是由 [crab-assets.js](crab-assets.js) 与 [mascot-core.js](mascot-core.j
 > **Antigravity 2.33.0+ 启动说明**：从 `2.33.0` 起，Antigravity 不再默认生成 `DevToolsActivePort`，需附加 `--remote-debugging-port=0` 启动参数：
 > - **macOS**：完全退出（`Cmd + Q`）后运行 `./launch.sh` 或 `open -a Antigravity --args --remote-debugging-port=0`（安装器也会在配置目录生成 `launch-antigravity.command`，并在界面提供一键「以 CDP 模式重启」）。
 > - **Windows**：完全退出后运行 `launch.bat` 或使用安装器创建的「开始菜单 → `Antigravity (AGY Claude Style)`」快捷方式（带 `--remote-debugging-port=0`）。
-> - **可选自动接管**：在 `config.json` 中设置 `"autoRelaunchWithCdp": true` 后，守护进程检测到 Antigravity 已运行但未开启 CDP 时会自动温和重启一次并附加调试参数。
+> - **默认自动接管**：默认启用 `"autoRelaunchWithCdp": true`，守护进程检测到 Antigravity 已运行但未开启 CDP（且未携带 `--remote-debugging-port` 启动参数）时会自动温和重启一次并附加调试参数；如需关闭可在 `config.json` 中设为 `false`。
 - **Node.js >= 22**（仅脚本模式、测试与从源码构建安装器需要）：项目零第三方 npm 依赖，直接使用 Node.js 内置的 `fetch`、`WebSocket` 与 `node:test`。
 - **.NET Framework 4.x (`csc.exe`)**（仅在 Windows 上从源码构建 `installer.exe` 时需要，Windows 10/11 系统默认自带）。
 - **Xcode Command Line Tools (`swiftc`)**（仅在 macOS 上从源码构建 `.app` / `.dmg` 时需要，macOS 安装命令行工具后自带）。
@@ -247,9 +247,9 @@ Clawd 是由 [crab-assets.js](crab-assets.js) 与 [mascot-core.js](mascot-core.j
 | `hudRimProgress` | `boolean` | `false` | 🌈 输入框边框环绕上下文进度条 |
 | `hudFooterChip` | `boolean` | `false` | 💠 底栏剩余容量标签胶囊 |
 | `hudCompact` | `boolean` | `false` | 🧩 Token HUD 紧凑排版模式 |
-| `autoRelaunchWithCdp` | `boolean` | `false` | 🔄 Antigravity 2.33.0+ 运行中未开 CDP 时自动温和重启并附加调试参数 |
+| `autoRelaunchWithCdp` | `boolean` | `true` | 🔄 Antigravity 2.33.0+ 运行中未开 CDP 时自动温和重启并附加调试参数 |
 | `exitOnHostClose` | `boolean` | `false` | 🛑 Antigravity 宿主关闭后自动退出后台守护进程（避免常驻） |
-| `pollIntervalMs` | `number`（最小 `1500`） | `2500` | ⏱️ 遥测轮询间隔（毫秒） |
+| `pollIntervalMs` | `number`（最小 `1000`） | `2500` | ⏱️ 遥测轮询间隔（毫秒） |
 
 ---
 

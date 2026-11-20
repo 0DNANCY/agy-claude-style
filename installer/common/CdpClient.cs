@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Management;
 using System.Net.Http;
 using System.Net.WebSockets;
 using System.Text;
@@ -681,6 +682,37 @@ namespace AgyClaudeStyle
             catch { }
             pids.Sort();
             return pids;
+        }
+
+        public static bool HasAntigravityCdpFlag()
+        {
+            try
+            {
+                using (ManagementObjectSearcher searcher = new ManagementObjectSearcher(
+                    "SELECT CommandLine FROM Win32_Process WHERE Name = 'Antigravity.exe'"))
+                using (ManagementObjectCollection results = searcher.Get())
+                {
+                    foreach (ManagementBaseObject obj in results)
+                    {
+                        try
+                        {
+                            string cmd = obj["CommandLine"] as string;
+                            if (!string.IsNullOrEmpty(cmd) &&
+                                cmd.IndexOf("--remote-debugging-port", StringComparison.OrdinalIgnoreCase) >= 0)
+                            {
+                                return true;
+                            }
+                        }
+                        catch { }
+                        finally
+                        {
+                            try { obj.Dispose(); } catch { }
+                        }
+                    }
+                }
+            }
+            catch { }
+            return false;
         }
 
         public static string FindAntigravityExePath()

@@ -257,3 +257,67 @@ test('inject.js --watch --parent-pid exits cleanly when parent process is gone',
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('relaunchAntigravityWithCdp verifies executable before terminating and preserves resolved running path', async () => {
+  let terminateCalled = 0;
+  let launchedWith = null;
+
+  // Missing executable must NOT terminate the running process
+  const missingRes = await cdp.relaunchAntigravityWithCdp({
+    detectProcess: () => ({ running: true, pids: [4242] }),
+    resolveRunningPath: () => null,
+    findExecutable: () => null,
+    terminate: () => {
+      terminateCalled++;
+    },
+    launch: (opts) => {
+      launchedWith = opts;
+      return true;
+    },
+  });
+  assert.deepEqual(missingRes, { relaunched: false, reason: 'executable-not-found' });
+  assert.equal(terminateCalled, 0, 'Must not terminate running process when executable cannot be resolved');
+  assert.equal(launchedWith, null);
+
+  // When running executable path is resolved, terminate first then launch with that exact path
+  let running = true;
+  const okRes = await cdp.relaunchAntigravityWithCdp({
+    port: 0,
+    waitMs: 1000,
+    detectProcess: () => ({ running, pids: running ? [5151] : [] }),
+    resolveRunningPath: (pids) => (pids.includes(5151) ? '/custom/path/Antigravity' : null),
+    findExecutable: () => null,
+    terminate: (pids) => {
+      terminateCalled++;
+      assert.deepEqual(pids, [5151]);
+      running = false;
+    },
+    launch: (opts) => {
+      launchedWith = opts;
+      return true;
+    },
+  });
+  assert.deepEqual(okRes, { relaunched: true, reason: 'ok' });
+  assert.equal(terminateCalled, 1);
+  assert.equal(launchedWith.appPath, '/custom/path/Antigravity');
+});
+
+test('hasRemoteDebuggingFlag detects --remote-debugging-port on running processes', async () => {
+  assert.equal(cdp.hasRemoteDebuggingFlag([]), false);
+  if (process.platform === 'win32') return;
+
+  const withFlag = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 10000)', '--', '--remote-debugging-port=0'], {
+    stdio: 'ignore',
+  });
+  const withoutFlag = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 10000)'], {
+    stdio: 'ignore',
+  });
+  try {
+    await new Promise((r) => setTimeout(r, 120));
+    assert.equal(cdp.hasRemoteDebuggingFlag([withFlag.pid]), true);
+    assert.equal(cdp.hasRemoteDebuggingFlag([withoutFlag.pid]), false);
+  } finally {
+    try { withFlag.kill('SIGKILL'); } catch {}
+    try { withoutFlag.kill('SIGKILL'); } catch {}
+  }
+});

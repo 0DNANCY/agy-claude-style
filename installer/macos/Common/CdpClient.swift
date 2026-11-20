@@ -623,6 +623,55 @@ enum CdpHelper {
         return nil
     }
 
+    static func detectRunningAntigravityAppPath() -> String? {
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/bin/ps")
+        proc.arguments = ["-ax", "-o", "comm="]
+        let outPipe = Pipe()
+        proc.standardOutput = outPipe
+        proc.standardError = FileHandle.nullDevice
+        proc.standardInput = FileHandle.nullDevice
+        do {
+            try proc.run()
+            let data = outPipe.fileHandleForReading.readDataToEndOfFile()
+            proc.waitUntilExit()
+            guard let text = String(data: data, encoding: .utf8) else { return nil }
+            let suffix = "/contents/macos/antigravity"
+            for rawLine in text.components(separatedBy: CharacterSet.newlines) {
+                let comm = rawLine.trimmingCharacters(in: .whitespaces)
+                let lower = comm.lowercased()
+                if lower.hasSuffix(".app" + suffix) && comm.count > suffix.count {
+                    let endIdx = comm.index(comm.endIndex, offsetBy: -suffix.count)
+                    let appPath = String(comm[..<endIdx])
+                    if FileManager.default.fileExists(atPath: appPath) {
+                        return appPath
+                    }
+                }
+            }
+        } catch {}
+        return nil
+    }
+
+    static func hasAntigravityCdpFlag(pids: [Int32]) -> Bool {
+        guard !pids.isEmpty else { return false }
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/bin/ps")
+        proc.arguments = ["-p", pids.map { String($0) }.joined(separator: ","), "-o", "args="]
+        let outPipe = Pipe()
+        proc.standardOutput = outPipe
+        proc.standardError = FileHandle.nullDevice
+        proc.standardInput = FileHandle.nullDevice
+        do {
+            try proc.run()
+            let data = outPipe.fileHandleForReading.readDataToEndOfFile()
+            proc.waitUntilExit()
+            guard let text = String(data: data, encoding: .utf8) else { return false }
+            return text.lowercased().contains("--remote-debugging-port")
+        } catch {
+            return false
+        }
+    }
+
     static func removeStalePortFile() {
         let portFile = getPortFilePath()
         if FileManager.default.fileExists(atPath: portFile) {
@@ -650,6 +699,10 @@ enum CdpHelper {
 
     @discardableResult
     static func relaunchAntigravityWithCdp(appPath: String? = nil, port: Int = 0, waitSeconds: Double = 8.0) -> Bool {
+        let resolvedApp = (appPath?.isEmpty == false) ? appPath! : (detectRunningAntigravityAppPath() ?? findAntigravityAppPath())
+        guard let targetApp = resolvedApp, FileManager.default.fileExists(atPath: targetApp) else {
+            return false
+        }
         let initialPids = detectAntigravityProcessPids()
         for pid in initialPids {
             if pid > 0 && pid != getpid() {
@@ -668,7 +721,7 @@ enum CdpHelper {
         }
         removeStalePortFile()
         Thread.sleep(forTimeInterval: 0.35)
-        return launchAntigravityWithCdp(appPath: appPath, port: port)
+        return launchAntigravityWithCdp(appPath: targetApp, port: port)
     }
 
     static func cdpUnavailableMessage(running: Bool, port: Int?) -> String {

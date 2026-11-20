@@ -16,5 +16,5 @@ if [ -f .watch.pid ]; then
   fi
 fi
 
-nohup node inject.js --watch --replace > watch.log 2>&1 </dev/null &
+nohup node inject.js --watch --replace >/dev/null 2>>watch.log </dev/null &
 echo "[✓] AGY Claude Style watcher started (PID $!)"

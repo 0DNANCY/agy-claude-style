@@ -491,6 +491,8 @@ namespace AgyClaudeStyle.Watcher
                 string warnedNoCdpSig = "";
                 string relaunchedPidSig = "";
                 DateTime lastRelaunchUtc = DateTime.MinValue;
+                string cdpFlagCheckedSig = "";
+                bool cdpFlagCheckedVal = false;
 
                 try
                 {
@@ -524,6 +526,8 @@ namespace AgyClaudeStyle.Watcher
                                 consecutivePortFailures = 0;
                                 noCdpRunningTicks = 0;
                                 warnedNoCdpSig = "";
+                                cdpFlagCheckedSig = "";
+                                cdpFlagCheckedVal = false;
 
                                 if (!lastPort.HasValue || lastPort.Value != port.Value)
                                 {
@@ -590,30 +594,51 @@ namespace AgyClaudeStyle.Watcher
                                 {
                                     noCdpRunningTicks++;
                                     string pidSig = string.Join(",", runningPids);
-                                    if (noCdpRunningTicks >= 3 && warnedNoCdpSig != pidSig)
+                                    if (noCdpRunningTicks >= 3)
                                     {
-                                        warnedNoCdpSig = pidSig;
-                                        Log("[!] " + CdpHelper.CdpUnavailableMessage(true, port));
-                                        if (!autoRelaunch)
+                                        if (cdpFlagCheckedSig != pidSig)
                                         {
-                                            Log("[*] 提示：可在 config.json 中设置 \"autoRelaunchWithCdp\": true 以启用自动温和重启接管");
+                                            cdpFlagCheckedSig = pidSig;
+                                            cdpFlagCheckedVal = CdpHelper.HasAntigravityCdpFlag();
                                         }
-                                    }
-                                    if (autoRelaunch && noCdpRunningTicks >= 3 && relaunchedPidSig != pidSig &&
-                                        (DateTime.UtcNow - lastRelaunchUtc).TotalSeconds >= 60.0)
-                                    {
-                                        relaunchedPidSig = pidSig;
-                                        lastRelaunchUtc = DateTime.UtcNow;
-                                        Log("[↻] autoRelaunchWithCdp 已启用：正在温和重启 Antigravity 并附加 --remote-debugging-port=0 ...");
-                                        bool ok = CdpHelper.RelaunchAntigravityWithCdp(null, 0, 8000);
-                                        if (ok)
+                                        if (cdpFlagCheckedVal)
                                         {
-                                            Log("[✓] 已以 CDP 模式重启 Antigravity，等待窗口就绪...");
-                                            noCdpRunningTicks = 0;
+                                            if (warnedNoCdpSig != "cdp:" + pidSig)
+                                            {
+                                                warnedNoCdpSig = "cdp:" + pidSig;
+                                                Log("[*] 检测到 Antigravity 已携带 --remote-debugging-port 参数，继续等待调试端口响应...");
+                                            }
                                         }
                                         else
                                         {
-                                            Log("[!] 自动重启未完成，请手动完全退出 Antigravity 后以 --remote-debugging-port=0 启动");
+                                            if (warnedNoCdpSig != pidSig)
+                                            {
+                                                warnedNoCdpSig = pidSig;
+                                                Log("[!] " + CdpHelper.CdpUnavailableMessage(true, port));
+                                                if (!autoRelaunch)
+                                                {
+                                                    Log("[*] 提示：可在 config.json 中设置 \"autoRelaunchWithCdp\": true 以启用自动温和重启接管");
+                                                }
+                                            }
+                                            if (autoRelaunch && relaunchedPidSig != pidSig &&
+                                                (DateTime.UtcNow - lastRelaunchUtc).TotalSeconds >= 60.0)
+                                            {
+                                                relaunchedPidSig = pidSig;
+                                                lastRelaunchUtc = DateTime.UtcNow;
+                                                Log("[↻] autoRelaunchWithCdp 已启用：正在温和重启 Antigravity 并附加 --remote-debugging-port=0 ...");
+                                                bool ok = CdpHelper.RelaunchAntigravityWithCdp(null, 0, 8000);
+                                                if (ok)
+                                                {
+                                                    Log("[✓] 已以 CDP 模式重启 Antigravity，等待窗口就绪...");
+                                                    noCdpRunningTicks = 0;
+                                                    cdpFlagCheckedSig = "";
+                                                    cdpFlagCheckedVal = false;
+                                                }
+                                                else
+                                                {
+                                                    Log("[!] 自动重启未完成，请手动完全退出 Antigravity 后以 --remote-debugging-port=0 启动");
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -621,6 +646,8 @@ namespace AgyClaudeStyle.Watcher
                                 {
                                     noCdpRunningTicks = 0;
                                     warnedNoCdpSig = "";
+                                    cdpFlagCheckedSig = "";
+                                    cdpFlagCheckedVal = false;
                                     if (consecutivePortFailures >= 3)
                                     {
                                         sleepMs = 5000;
