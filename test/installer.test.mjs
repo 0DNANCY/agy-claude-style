@@ -29,6 +29,7 @@ function runExe(exePath, args, timeoutMs = 20000) {
   });
 }
 
+import { createManifest, getArtifactNames, normalizeVersion } from '../scripts/build-common.mjs';
 import { VALIDATORS, buildInstaller } from '../scripts/build-installer.mjs';
 
 const require = createRequire(import.meta.url);
@@ -254,6 +255,29 @@ test('installer manifest validators match inject.js and cdp.js defaults', () => 
   for (const k of keysInInject) {
     assert.ok(k in cdp.DEFAULT_CONFIG, `DEFAULT_CONFIG includes ${k}`);
   }
+});
+
+test('unified artifact naming and version parity stay consistent across package, runtime, and installers', () => {
+  const pkg = JSON.parse(fs.readFileSync(path.join(ROOT_DIR, 'package.json'), 'utf8'));
+  const csClient = fs.readFileSync(path.join(ROOT_DIR, 'installer', 'common', 'CdpClient.cs'), 'utf8');
+  const csSetup = fs.readFileSync(path.join(ROOT_DIR, 'installer', 'setup', 'Program.cs'), 'utf8');
+  const swiftClient = fs.readFileSync(path.join(ROOT_DIR, 'installer', 'macos', 'Common', 'CdpClient.swift'), 'utf8');
+
+  assert.equal(cdp.PLUGIN_VERSION, pkg.version);
+  assert.equal(csClient.match(/GetString\(raw, "version", "([^"]+)"\)/)?.[1], pkg.version);
+  assert.equal(csSetup.match(/SetValue\("DisplayVersion", version \?\? "([^"]+)"/)?.[1], pkg.version);
+  assert.equal(swiftClient.match(/raw\["version"\]\?\.stringValue \?\? "([^"]+)"/)?.[1], pkg.version);
+
+  assert.equal(normalizeVersion('v1.3.0'), '1.3.0');
+  assert.equal(normalizeVersion('1.3.0'), '1.3.0');
+
+  assert.deepEqual(getArtifactNames('v1.3.0'), {
+    version: '1.3.0',
+    windowsInstaller: 'AGY-Claude-Style-v1.3.0-Windows-x64.exe',
+    macosDmg: 'AGY-Claude-Style-v1.3.0-macOS-universal.dmg',
+    macosApp: 'AGY Claude Style.app',
+  });
+  assert.equal(createManifest('v1.3.0').version, '1.3.0');
 });
 
 test(

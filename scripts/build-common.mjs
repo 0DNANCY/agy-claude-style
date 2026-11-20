@@ -39,9 +39,24 @@ const VALIDATORS = {
   exitOnHostClose: 'boolean',
 };
 
-function createManifest() {
+function normalizeVersion(version = cdp.PLUGIN_VERSION) {
+  const raw = String(version || cdp.PLUGIN_VERSION).trim().replace(/^v/i, '');
+  return raw || cdp.PLUGIN_VERSION;
+}
+
+function getArtifactNames(version = cdp.PLUGIN_VERSION) {
+  const cleanVersion = normalizeVersion(version);
   return {
-    version: cdp.PLUGIN_VERSION,
+    version: cleanVersion,
+    windowsInstaller: `AGY-Claude-Style-v${cleanVersion}-Windows-x64.exe`,
+    macosDmg: `AGY-Claude-Style-v${cleanVersion}-macOS-universal.dmg`,
+    macosApp: 'AGY Claude Style.app',
+  };
+}
+
+function createManifest(version = cdp.PLUGIN_VERSION) {
+  return {
+    version: normalizeVersion(version),
     styleId: cdp.STYLE_ID,
     settingBinding: cdp.SETTING_BINDING,
     parts: cdp.RUNTIME_PARTS,
@@ -313,6 +328,8 @@ export {
   ROOT_DIR,
   cdp,
   VALIDATORS,
+  normalizeVersion,
+  getArtifactNames,
   createManifest,
   resolveActiveConfigFile,
   renderCrabIconPng,

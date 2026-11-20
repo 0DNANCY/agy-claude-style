@@ -128,7 +128,7 @@ Clawd 是由 [crab-assets.js](crab-assets.js) 与 [mascot-core.js](mascot-core.j
 > - **Windows**：完全退出后运行 `launch.bat` 或使用安装器创建的「开始菜单 → `Antigravity (AGY Claude Style)`」快捷方式（带 `--remote-debugging-port=0`）。
 > - **默认自动接管**：默认启用 `"autoRelaunchWithCdp": true`，守护进程检测到 Antigravity 已运行但未开启 CDP（且未携带 `--remote-debugging-port` 启动参数）时会自动温和重启一次并附加调试参数；如需关闭可在 `config.json` 中设为 `false`。
 - **Node.js >= 22**（仅脚本模式、测试与从源码构建安装器需要）：项目零第三方 npm 依赖，直接使用 Node.js 内置的 `fetch`、`WebSocket` 与 `node:test`。
-- **.NET Framework 4.x (`csc.exe`)**（仅在 Windows 上从源码构建 `installer.exe` 时需要，Windows 10/11 系统默认自带）。
+- **.NET Framework 4.x (`csc.exe`)**（仅在 Windows 上从源码构建独立安装包时需要，Windows 10/11 系统默认自带）。
 - **Xcode Command Line Tools (`swiftc`)**（仅在 macOS 上从源码构建 `.app` / `.dmg` 时需要，macOS 安装命令行工具后自带）。
 
 ---
@@ -138,19 +138,19 @@ Clawd 是由 [crab-assets.js](crab-assets.js) 与 [mascot-core.js](mascot-core.j
 ## 🚀 快速开始
 
 > [!TIP]
-> **开箱即用**：不想自己编译？可直接前往仓库 [Releases](https://github.com/0DNANCY/agy-claude-style/releases) 下载 GitHub Actions 自动编译发布的 `installer.exe`（Windows）或 `AGY-Claude-Style-macOS-universal.dmg`（macOS Universal，支持 Apple Silicon 与 Intel），目标机器无需安装 Node.js！
+> **开箱即用**：不想自己编译？可直接前往仓库 [Releases](https://github.com/0DNANCY/agy-claude-style/releases) 下载 GitHub Actions 自动编译发布的 `AGY-Claude-Style-v<version>-Windows-x64.exe`（Windows）或 `AGY-Claude-Style-v<version>-macOS-universal.dmg`（macOS Universal，支持 Apple Silicon 与 Intel），目标机器无需安装 Node.js！
 
 ### 🪟 方式一：Windows 独立安装器（目标机器无需 Node.js）
 
-1. 直接从 [Releases](https://github.com/0DNANCY/agy-claude-style/releases) 下载 `installer.exe`，或在已安装 Node.js >= 22 的 Windows 环境克隆仓库从源码构建：
+1. 直接从 [Releases](https://github.com/0DNANCY/agy-claude-style/releases) 下载 `AGY-Claude-Style-v1.3.0-Windows-x64.exe`（对应版本），或在已安装 Node.js >= 22 的 Windows 环境克隆仓库从源码构建：
    ```bash
    git clone https://github.com/0DNANCY/agy-claude-style.git
    cd agy-claude-style
    npm run build:installer
    ```
-   构建完成后会在项目根目录生成带有像素螃蟹图标的单文件 `installer.exe` 🦀。
+   构建完成后会在项目根目录生成带有像素螃蟹图标的单文件 `AGY-Claude-Style-v<version>-Windows-x64.exe` 🦀。
 
-2. 双击运行 `installer.exe`（可分发到未安装 Node.js 的 Windows 电脑直接运行）：
+2. 双击运行 `AGY-Claude-Style-v<version>-Windows-x64.exe`（可分发到未安装 Node.js 的 Windows 电脑直接运行）：
    - 自动检测本机 Antigravity Desktop，并将独立运行环境与插件资源部署至 `%LOCALAPPDATA%\agy-claude-style`。
    - 若安装目录已存在 `config.json`，升级/重装时自动保留原有用户配置；全新安装则写入默认配置。
    - 自动注册 Windows 开机自启快捷方式（`AGY-Claude-Style.lnk`）与「设置 → 应用」卸载项，并启动后台静默守护进程 `agy-claude-style-watcher.exe` 实时注入当前及后续新开窗口。
@@ -158,10 +158,10 @@ Clawd 是由 [crab-assets.js](crab-assets.js) 与 [mascot-core.js](mascot-core.j
 
 3. 安装器支持的命令行参数：
    ```text
-   installer.exe [--silent | /S | -s] [--uninstall] [--status]
-                 [--no-autostart] [--no-kill-legacy]
-                 [--install-dir <路径>] [--cdp-port <端口>]
-                 [--out <结果JSON路径>] [--popup]
+   AGY-Claude-Style-v1.3.0-Windows-x64.exe [--silent | /S | -s] [--uninstall] [--status]
+                                           [--no-autostart] [--no-kill-legacy]
+                                           [--install-dir <路径>] [--cdp-port <端口>]
+                                           [--out <结果JSON路径>] [--popup]
    ```
 
 ---
@@ -169,13 +169,13 @@ Clawd 是由 [crab-assets.js](crab-assets.js) 与 [mascot-core.js](mascot-core.j
 <a id="方式二macos-独立应用目标机器无需-nodejs"></a>
 ### 🍎 方式二：macOS 独立应用（目标机器无需 Node.js）
 
-1. 直接从 [Releases](https://github.com/0DNANCY/agy-claude-style/releases) 下载 `AGY-Claude-Style-macOS-universal.dmg`，或在已安装 Node.js >= 22 与 Xcode Command Line Tools 的 macOS 环境从源码构建：
+1. 直接从 [Releases](https://github.com/0DNANCY/agy-claude-style/releases) 下载 `AGY-Claude-Style-v1.3.0-macOS-universal.dmg`（对应版本），或在已安装 Node.js >= 22 与 Xcode Command Line Tools 的 macOS 环境从源码构建：
    ```bash
    git clone https://github.com/0DNANCY/agy-claude-style.git
    cd agy-claude-style
    npm run build:macos
    ```
-   构建完成后会在项目根目录生成通用架构（`arm64` + `x86_64`）的 `AGY Claude Style.app` 与 `AGY-Claude-Style-macOS-universal.dmg` 🦀。
+   构建完成后会在项目根目录生成通用架构（`arm64` + `x86_64`）的 `AGY Claude Style.app` 与 `AGY-Claude-Style-v<version>-macOS-universal.dmg` 🦀。
 
 2. 打开 `.dmg`，将 `AGY Claude Style.app` 拖入「应用程序」（或直接双击运行）：
    - 若首次打开时 macOS 提示“无法验证开发者”（Release 构建采用 Ad-hoc 签名），请**右键点击 `AGY Claude Style.app` → 打开**，或在终端执行 `xattr -cr "/Applications/AGY Claude Style.app"`。
@@ -259,6 +259,7 @@ Clawd 是由 [crab-assets.js](crab-assets.js) 与 [mascot-core.js](mascot-core.j
 ```text
 agy-claude-style/
 ├── .github/workflows/         # GitHub Actions CI 测试与自动构建发布 Release 工作流
+│   ├── _build-and-test.yml    # 共享可复用工作流（统一版本解析、跨平台测试与产物命名）
 │   ├── ci.yml                 # PR / main 分支跨平台测试与编译验证
 │   └── release.yml            # 推送 v* 标签或手动触发自动发布 Windows/macOS 安装包
 ├── assets/                    # README 可爱像素螃蟹 Clawd 视觉插图资源
@@ -291,7 +292,7 @@ agy-claude-style/
 │       └── Watcher/main.swift # macOS 原生后台 CDP 守护进程
 ├── scripts/
 │   ├── build-common.mjs       # 共享构建工具（图标生成、清单、ZIP 打包）
-│   ├── build-installer.mjs    # 编译生成 Windows 独立 installer.exe
+│   ├── build-installer.mjs    # 编译生成 Windows 独立 AGY-Claude-Style-v<version>-Windows-x64.exe
 │   └── build-macos.mjs        # 编译生成 macOS Universal .app 与 .dmg
 ├── test/                      # 基于 node:test 的单元测试与安装器 E2E 测试套件
 ├── launch.bat / launch.sh     # Antigravity 2.33.0+ 带 CDP 参数启动脚本
@@ -310,10 +311,10 @@ agy-claude-style/
 # 运行全部单元测试与对应平台的安装器端到端测试（Node.js >= 22）
 npm test
 
-# 在 Windows 上从源码编译生成独立 installer.exe
+# 在 Windows 上从源码编译生成独立 AGY-Claude-Style-v<version>-Windows-x64.exe
 npm run build:installer
 
-# 在 macOS 上从源码编译生成 Universal .app 与 .dmg
+# 在 macOS 上从源码编译生成 Universal .app 与 AGY-Claude-Style-v<version>-macOS-universal.dmg
 npm run build:macos
 
 # 运行单次注入 / 监听热更新 / 卸载还原
@@ -324,8 +325,8 @@ npm run remove
 
 ### 🚀 自动构建与发布 Release
 
-仓库已配置 GitHub Actions 工作流（[release.yml](.github/workflows/release.yml) 与 [ci.yml](.github/workflows/ci.yml)）：
-- **推送版本标签自动发布**：推送形如 `v1.0.0` 的标签（`git tag v1.0.0 && git push origin v1.0.0`），会自动在 `windows-latest` 与 `macos-latest` 上完成测试、编译 `installer.exe` 与 `AGY-Claude-Style-macOS-universal.dmg`（附带 `SHA256SUMS.txt`）并自动创建 GitHub Release。
+仓库已配置 GitHub Actions 工作流（[_build-and-test.yml](.github/workflows/_build-and-test.yml)、[release.yml](.github/workflows/release.yml) 与 [ci.yml](.github/workflows/ci.yml)）：
+- **推送版本标签自动发布**：推送形如 `v1.3.0` 的标签（`git tag v1.3.0 && git push origin v1.3.0`），会自动在 `ubuntu-latest`、`windows-latest` 与 `macos-latest` 上完成测试、编译 `AGY-Claude-Style-v1.3.0-Windows-x64.exe` 与 `AGY-Claude-Style-v1.3.0-macOS-universal.dmg`（附带 `SHA256SUMS.txt`）并自动创建 GitHub Release。
 - **手动触发**：也可以在 GitHub 仓库 **Actions → Release → Run workflow** 手动触发编译并发布。
 
 测试套件包含对注入包语法、模拟 DOM 挂载/无损卸载、5 语言翻译引擎、思考强度滑块数学模型、用量统计与配额匹配、二维波纹场、螃蟹状态机，以及 Windows `installer.exe` 与 macOS `.app` 编译/静默安装/CDP 注入/设置同步热更新/保留配置升级/卸载清理全流程的自动化验证。
