@@ -2292,7 +2292,12 @@ test('syncTurnBadges mounts exactly one #T badge on the final agent-response of 
       get textContent() { return children.length ? children.map((c) => c.textContent).join('') : this._text; },
       set textContent(v) { children.length = 0; this._text = String(v); },
       get innerHTML() { return this._html; },
-      set innerHTML(v) { this._html = String(v); },
+      set innerHTML(v) {
+        this._html = String(v);
+        children.length = 0;
+        const mSpan = /<span>([^<]*)<\/span>/.exec(this._html);
+        if (mSpan) this.appendChild(makeNode('span', { text: mSpan[1] }));
+      },
       get lastElementChild() { return children[children.length - 1] || null; },
       appendChild(ch) { ch.parentElement = this; ch.parentNode = this; children.push(ch); return ch; },
       removeChild(ch) { const i = children.indexOf(ch); if (i >= 0) children.splice(i, 1); ch.parentElement = null; ch.parentNode = null; return ch; },
@@ -2573,7 +2578,12 @@ test('streaming Turn 2 response does not hijack #T1 badge, observer ignores exte
       set className(v) { classes.clear(); String(v).split(/\s+/).filter(Boolean).forEach((c) => classes.add(c)); },
       get textContent() { return children.length ? children.map((c) => c.textContent).join('') : this._text; },
       set textContent(v) { children.length = 0; this._text = String(v); },
-      set innerHTML(v) { this._html = String(v); },
+      set innerHTML(v) {
+        this._html = String(v);
+        children.length = 0;
+        const mSpan = /<span>([^<]*)<\/span>/.exec(this._html);
+        if (mSpan) this.appendChild(makeNode('span', { text: mSpan[1] }));
+      },
       get innerHTML() { return this._html; },
       get lastElementChild() { return children[children.length - 1] || null; },
       appendChild(c) { c.parentElement = this; c.parentNode = this; children.push(c); return c; },
@@ -2778,6 +2788,649 @@ test('streaming Turn 2 response does not hijack #T1 badge, observer ignores exte
     const rafBefore = rafCalls;
     observerCb([{ type: 'characterData', target: { nodeType: 3, parentElement: codeEditor } }]);
     assert.equal(rafCalls, rafBefore, 'External editor characterData must not trigger scheduleSync');
+
+    vm.runInNewContext(cdp.REMOVE_EXPRESSION, sandbox);
+  } finally {
+    for (const id of timers) clearTimeout(id);
+  }
+});
+
+test('remote (cloud) conversation populates Token HUD, top bar, turn badges, and popover via live agentStateProvider when getCascadeTrajectory is unimplemented', async () => {
+  const timers = new Set();
+  const makeNode = (tag, opts = {}) => {
+    const attrs = new Map(Object.entries(opts.attrs || {}));
+    const classes = new Set((opts.className || '').split(/\s+/).filter(Boolean));
+    const listeners = new Map();
+    const children = [];
+    const matchesSimple = (n, sel) => {
+      if (!n || n.nodeType !== 1) return false;
+      let rest = sel.trim();
+      const tm = /^[a-zA-Z0-9_-]+/.exec(rest);
+      if (tm) {
+        if (n.tagName !== tm[0].toUpperCase()) return false;
+        rest = rest.slice(tm[0].length);
+      }
+      while (rest) {
+        if (rest[0] === '#') {
+          const m = /^#([a-zA-Z0-9_-]+)/.exec(rest);
+          if (!m || n.id !== m[1]) return false;
+          rest = rest.slice(m[0].length);
+        } else if (rest[0] === '.') {
+          const m = /^\.([a-zA-Z0-9_-]+)/.exec(rest);
+          if (!m || !n.classList.contains(m[1])) return false;
+          rest = rest.slice(m[0].length);
+        } else if (rest[0] === '[') {
+          const m = /^\[([^\]=]+)(?:="([^"]*)")?\]/.exec(rest);
+          if (!m) return false;
+          const ok = m[2] === undefined ? n.hasAttribute(m[1]) : n.getAttribute(m[1]) === m[2];
+          if (!ok) return false;
+          rest = rest.slice(m[0].length);
+        } else {
+          return false;
+        }
+      }
+      return true;
+    };
+    const matchesSel = (n, sel) =>
+      sel.split(',').some((part) => {
+        const cleaned = part.trim().replace(/^:scope\s*>\s*/, '');
+        const tokens = cleaned.split(/\s+/).filter(Boolean);
+        if (tokens.length === 0 || !matchesSimple(n, tokens[tokens.length - 1])) return false;
+        let cur = n.parentElement;
+        let idx = tokens.length - 2;
+        while (cur && idx >= 0) {
+          if (matchesSimple(cur, tokens[idx])) idx -= 1;
+          cur = cur.parentElement;
+        }
+        return idx < 0;
+      });
+    const node = {
+      nodeType: 1,
+      tagName: tag.toUpperCase(),
+      id: opts.id || attrs.get('id') || '',
+      children,
+      parentElement: null,
+      parentNode: null,
+      isConnected: true,
+      clientWidth: 600,
+      offsetWidth: 600,
+      clientHeight: 32,
+      offsetHeight: 32,
+      _text: opts.text || '',
+      _html: '',
+      style: { setProperty() {}, getPropertyValue() { return ''; }, removeProperty() {} },
+      classList: { contains: (c) => classes.has(c), add: (c) => classes.add(c), remove: (c) => classes.delete(c) },
+      get className() { return Array.from(classes).join(' '); },
+      set className(v) { classes.clear(); String(v).split(/\s+/).filter(Boolean).forEach((c) => classes.add(c)); },
+      get textContent() { return children.length ? children.map((c) => c.textContent).join('') : this._text; },
+      set textContent(v) { children.length = 0; this._text = String(v); },
+      set innerHTML(v) {
+        this._html = String(v);
+        children.length = 0;
+        const mSpan = /<span>([^<]*)<\/span>/.exec(this._html);
+        if (mSpan) this.appendChild(makeNode('span', { text: mSpan[1] }));
+      },
+      get innerHTML() { return this._html; },
+      get firstChild() { return children[0] || null; },
+      get lastElementChild() { return children[children.length - 1] || null; },
+      appendChild(c) { c.parentElement = this; c.parentNode = this; children.push(c); return c; },
+      insertBefore(c, ref) {
+        c.parentElement = this;
+        c.parentNode = this;
+        const i = ref ? children.indexOf(ref) : -1;
+        if (i >= 0) children.splice(i, 0, c);
+        else children.push(c);
+        return c;
+      },
+      removeChild(c) { const i = children.indexOf(c); if (i >= 0) children.splice(i, 1); c.parentElement = null; c.parentNode = null; return c; },
+      remove() { if (this.parentElement) this.parentElement.removeChild(this); },
+      setAttribute(k, v) { attrs.set(k, String(v)); if (k === 'id') node.id = String(v); if (k === 'class') node.className = String(v); },
+      getAttribute(k) { return attrs.has(k) ? attrs.get(k) : null; },
+      hasAttribute(k) { return attrs.has(k); },
+      removeAttribute(k) { attrs.delete(k); },
+      toggleAttribute(k, f) { const on = f === undefined ? !attrs.has(k) : Boolean(f); if (on) attrs.set(k, ''); else attrs.delete(k); return on; },
+      addEventListener(ev, cb) { if (!listeners.has(ev)) listeners.set(ev, []); listeners.get(ev).push(cb); },
+      removeEventListener() {},
+      dispatch(ev, extra = {}) {
+        const e = { type: ev, stopPropagation() {}, preventDefault() {}, ...extra };
+        for (const cb of [...(listeners.get(ev) || [])]) cb(e);
+      },
+      matches(sel) { return matchesSel(this, sel); },
+      closest(sel) { let c = this; while (c) { if (matchesSel(c, sel)) return c; c = c.parentElement; } return null; },
+      getBoundingClientRect: () => ({ left: 100, top: 400, right: 620, bottom: 432, width: 520, height: 32 }),
+      animate: () => ({ cancel() {}, finished: Promise.resolve() }),
+      querySelector(sel) { return this.querySelectorAll(sel)[0] || null; },
+      querySelectorAll(sel) {
+        const parts = sel.split(',').map((s) => s.trim()).filter(Boolean);
+        const out = [];
+        const walk = (n, depth) => {
+          for (const ch of n.children) {
+            const matched = parts.some((p) => {
+              if (p.startsWith(':scope >')) return depth === 0 && matchesSel(ch, p);
+              return matchesSel(ch, p);
+            });
+            if (matched) out.push(ch);
+            walk(ch, depth + 1);
+          }
+        };
+        walk(this, 0);
+        return out;
+      },
+    };
+    return node;
+  };
+
+  const cascadeId = '9108d632-06be-4d5d-8338-3e81f464fbfd';
+  const prefixedCascadeId = `v1/default/jetski_remote_agents_3p/${cascadeId}`;
+  const html = makeNode('html');
+  const head = makeNode('head');
+  const body = makeNode('body', { className: 'theme-dark' });
+  html.appendChild(head);
+  html.appendChild(body);
+
+  const convView = makeNode('div', { attrs: { 'data-testid': 'conversation-view', 'data-cascade-id': cascadeId } });
+  const u1 = makeNode('div', { attrs: { 'data-testid': 'user-input-step' }, text: 'Issue #4' });
+  const r1Wrap = makeNode('div', { id: 'remote-turn1' });
+  const r1 = makeNode('div', { attrs: { 'data-testid': 'agent-response' }, text: 'Analysis' });
+  r1.__reactFiber$test = {
+    memoizedProps: {
+      cascadeId: prefixedCascadeId,
+      stepIndex: 2,
+      container: { cascadeId: prefixedCascadeId, steps: [{ stepIndex: 2 }] },
+    },
+    return: null,
+  };
+  r1Wrap.appendChild(r1);
+  const u2 = makeNode('div', { attrs: { 'data-testid': 'user-input-step' }, text: 'Reply plan A' });
+  const r2Wrap = makeNode('div', { id: 'remote-turn2' });
+  const r2 = makeNode('div', { attrs: { 'data-testid': 'agent-response' }, text: 'Replied' });
+  r2.__reactFiber$test = {
+    memoizedProps: {
+      cascadeId: prefixedCascadeId,
+      stepIndex: 4,
+      container: { cascadeId: prefixedCascadeId, steps: [{ stepIndex: 4 }] },
+    },
+    return: null,
+  };
+  r2Wrap.appendChild(r2);
+  for (const el of [u1, r1Wrap, u2, r2Wrap]) convView.appendChild(el);
+
+  const inputBox = makeNode('div', { id: 'antigravity.agentSidePanelInputBox', attrs: { 'data-testid': 'agent-input-box' } });
+  const card = makeNode('div', { className: 'surface-composer-card' });
+  const editorEl = makeNode('div', { attrs: { contenteditable: 'true', 'data-lexical-editor': 'true' } });
+  const footer = makeNode('div', { className: 'agy-composer-footer' });
+  footer.appendChild(makeNode('button', { attrs: { 'data-testid': 'model-selector-trigger' }, text: 'Gemini 4 Hydrogen High' }));
+  card.appendChild(editorEl);
+  card.appendChild(footer);
+  inputBox.appendChild(card);
+  convView.appendChild(inputBox);
+  body.appendChild(convView);
+
+  // Live agentStateProvider starts empty (connecting), then streams cloud steps!
+  let liveAgentState = {
+    conversationId: cascadeId,
+    status: 2,
+    fullyIdle: false,
+    trajectorySlice: {
+      conversationId: cascadeId,
+      totalStepsLength: 0,
+      stepsSlice: { startIndex: 0 },
+      stepsInSlice: [],
+      generatorMetadatasInSlice: [],
+    },
+  };
+  const providerListeners = new Set();
+  let disposedListenerCount = 0;
+  const liveProvider = {
+    getState: () => liveAgentState,
+    onDidChange: (cb) => {
+      providerListeners.add(cb);
+      return {
+        dispose: () => {
+          providerListeners.delete(cb);
+          disposedListenerCount++;
+        },
+      };
+    },
+  };
+
+  let getCascadeCalls = 0;
+  const rootStore = {
+    getState: () => ({
+      conversation: { convoState: { type: 'active', cascadeId } },
+      trajectorySummaries: {
+        summaries: {
+          [cascadeId]: {
+            cloud: true,
+            stepCount: 0,
+            status: 1,
+            lastModifiedTime: { seconds: '1795181631' },
+          },
+        },
+      },
+    }),
+    subscribe: () => () => {},
+  };
+
+  const trajCtx = {
+    peek: (id) => (id === cascadeId ? liveProvider : undefined),
+    getAgentStates: () => new Map([[cascadeId, { provider: liveProvider }]]),
+    subscribe: (id) => (id === cascadeId ? { agentStateProvider: liveProvider, unsubscribe: () => {} } : undefined),
+  };
+
+  const rootFiber = {
+    memoizedProps: { store: rootStore },
+    dependencies: {
+      firstContext: {
+        memoizedValue: {
+          async getCascadeTrajectory() {
+            getCascadeCalls++;
+            throw new Error('ConnectError: [unimplemented] unimplemented: cloudproxy: GetConversation: unimplemented');
+          },
+          async retrieveUserQuotaSummary() {
+            return {
+              groups: [{ name: 'Gemini', buckets: [{ window: '5h', disabled: false, remainingPct: 72 }] }],
+            };
+          },
+        },
+        next: {
+          memoizedValue: trajCtx,
+          next: null,
+        },
+      },
+    },
+    return: null,
+  };
+  inputBox.__reactFiber$test = { memoizedProps: { cascadeId }, return: rootFiber };
+
+  const doc = {
+    documentElement: html,
+    head,
+    body,
+    hidden: false,
+    readyState: 'complete',
+    createElement: (t) => makeNode(t),
+    getElementById: (id) => {
+      const find = (n) => (n.id === id ? n : n.children.map(find).find(Boolean) || null);
+      return find(html);
+    },
+    querySelector: (s) => html.querySelector(s),
+    querySelectorAll: (s) => html.querySelectorAll(s),
+    addEventListener() {},
+    removeEventListener() {},
+  };
+
+  const sandbox = {
+    window: null,
+    globalThis: null,
+    document: doc,
+    navigator: { language: 'zh-CN' },
+    location: { pathname: `/c/${cascadeId}` },
+    localStorage: { _m: {}, getItem(k) { return this._m[k] || null; }, setItem(k, v) { this._m[k] = String(v); } },
+    getComputedStyle: () => ({ getPropertyValue: () => '' }),
+    matchMedia: () => ({ matches: false }),
+    MutationObserver: class { observe() {} disconnect() {} },
+    ResizeObserver: class { observe() {} disconnect() {} },
+    requestAnimationFrame: (fn) => {
+      const id = setTimeout(() => fn(Date.now()), 5);
+      timers.add(id);
+      return id;
+    },
+    cancelAnimationFrame: (id) => { timers.delete(id); clearTimeout(id); },
+    setTimeout: (fn, ms) => { const id = setTimeout(fn, ms); timers.add(id); return id; },
+    clearTimeout: (id) => { timers.delete(id); clearTimeout(id); },
+    setInterval: () => 1,
+    clearInterval: () => {},
+    performance: { now: () => Date.now() },
+    Math, Date, JSON, Map, Set, Array, Object, String, Number, Boolean, Promise, Uint8Array, Float32Array, Intl,
+  };
+  sandbox.window = sandbox;
+  sandbox.globalThis = sandbox;
+
+  try {
+    const res = vm.runInNewContext(
+      cdp.buildInjectExpression({
+        ...cdp.DEFAULT_CONFIG,
+        ringMode: 'quota',
+        hudTopBar: true,
+        hudBottomBar: true,
+        turnBadges: true,
+      }),
+      sandbox
+    );
+    assert.equal(res.status, 'ok');
+    await new Promise((r) => setTimeout(r, 60));
+
+    // Must not call unimplemented getCascadeTrajectory for cloud: true summary
+    assert.equal(getCascadeCalls, 0);
+    assert.equal(providerListeners.size, 1, 'Expected live subscription to cloud agentStateProvider.onDidChange');
+
+    // Now cloud stream delivers steps with step-level modelUsage & empty generatorMetadata stubs
+    liveAgentState = {
+      conversationId: cascadeId,
+      status: 1,
+      fullyIdle: true,
+      trajectorySlice: {
+        conversationId: cascadeId,
+        totalStepsLength: 5,
+        stepsSlice: { startIndex: 0 },
+        stepsInSlice: [
+          {
+            status: 3,
+            metadata: { createdAt: { seconds: '1795180381' }, sourceTrajectoryStepInfo: { stepIndex: 0 } },
+            step: { case: 'userInput', value: { query: '', userResponse: '看看 issue #4' } },
+          },
+          {
+            status: 3,
+            metadata: { createdAt: { seconds: '1795180385' }, sourceTrajectoryStepInfo: { stepIndex: 1 } },
+            step: { case: 'viewFile', value: { absolutePathUri: 'file:///home/antigravity/repo/inject.js', lineRangeBytes: 9000 } },
+          },
+          {
+            status: 3,
+            metadata: {
+              createdAt: { seconds: '1795180390' },
+              viewableAt: { seconds: '1795180393' },
+              finishedGeneratingAt: { seconds: '1795180398' },
+              modelUsage: { inputTokens: '16000', cacheReadTokens: '30000', outputTokens: '1000', thinkingOutputTokens: '400', responseOutputTokens: '600' },
+              modelInfo: { displayName: 'Gemini 4 Neon (High)', modelName: 'gemini-4-neon-high', maxTokens: 1048576 },
+              sourceTrajectoryStepInfo: { stepIndex: 2 },
+            },
+            step: { case: 'plannerResponse', value: { response: '分析完成' } },
+          },
+          {
+            status: 3,
+            metadata: { createdAt: { seconds: '1795181503' }, sourceTrajectoryStepInfo: { stepIndex: 3 } },
+            step: { case: 'userInput', value: { query: '', userResponse: '按方案 A 回复' } },
+          },
+          {
+            status: 3,
+            metadata: {
+              createdAt: { seconds: '1795181510' },
+              viewableAt: { seconds: '1795181513' },
+              finishedGeneratingAt: { seconds: '1795181515' },
+              modelUsage: { inputTokens: '4000', cacheReadTokens: '50000', outputTokens: '400', thinkingOutputTokens: '100', responseOutputTokens: '300' },
+              modelInfo: { displayName: 'Gemini 4 Hydrogen (High)', modelName: 'gemini-4-hydrogen-high', maxTokens: 1048576 },
+              sourceTrajectoryStepInfo: { stepIndex: 4 },
+            },
+            step: { case: 'plannerResponse', value: { response: '已回复' } },
+          },
+        ],
+        generatorMetadatasInSlice: [0, 1, 2, 3, 4].map((i) => ({
+          stepIndices: [i],
+          metadata: {},
+          plannerConfig: { modelName: 'Gemini 4 Hydrogen (High)' },
+        })),
+      },
+    };
+    for (const cb of [...providerListeners]) cb(liveAgentState);
+    await new Promise((r) => setTimeout(r, 260));
+
+    const statsBtn = footer.querySelector('.ag-cs-inline-stats');
+    const ringBtn = footer.querySelector('.ag-cs-context-ring');
+    const topBar = card.querySelector('.ag-cs-hud-top-bar');
+    const botBar = card.querySelector('.ag-cs-hud-bottom-bar');
+    assert.ok(statsBtn && ringBtn && topBar && botBar);
+
+    // Inline stats reflects real remote calls, steps, speed, total tokens & cache hit
+    assert.match(statsBtn.textContent, /^2 轮 5 步 · 200 tok\/s · 101\.4k tok · 80% 缓存$/);
+    // Ring stays in quota mode (72%) while Top HUD bar consistently shows context % & 1.05M window!
+    assert.equal(ringBtn.querySelector('span')?.textContent, '72%');
+    assert.ok(topBar.innerHTML.includes('剩余 95%'), `Expected top bar context remaining 95%, got ${topBar.innerHTML}`);
+    assert.ok(topBar.innerHTML.includes('/ 1.05M'), `Expected top bar 1.05M window, got ${topBar.innerHTML}`);
+    assert.ok(topBar.innerHTML.includes('已用 54.3K'), `Expected top bar used 54.3K, got ${topBar.innerHTML}`);
+    assert.ok(topBar.innerHTML.includes('缓存 80%'), `Expected top bar cache 80%, got ${topBar.innerHTML}`);
+
+    // Per-turn badges mount on BOTH turns even with prefixed v1/default/jetski_remote_agents_3p/ Fiber cascadeId!
+    const bar1 = r1Wrap.querySelector('.ag-cs-turn-bar');
+    const bar2 = r2Wrap.querySelector('.ag-cs-turn-bar');
+    assert.ok(bar1 && bar1.innerHTML.includes('#T1'), 'Expected #T1 badge in remote conversation');
+    assert.ok(bar2 && bar2.innerHTML.includes('#T2'), 'Expected #T2 badge in remote conversation');
+
+    // Clicking stats opens popover with full remote telemetry
+    statsBtn.dispatch('click');
+    await new Promise((r) => setTimeout(r, 40));
+    const pop = body.querySelector('.ag-cs-ctx-popover');
+    assert.ok(pop);
+    assert.ok(pop.innerHTML.includes('1.05M'));
+    assert.ok(pop.innerHTML.includes('Gemini 4 Hydrogen (High)'));
+
+    assert.equal(getCascadeCalls, 0);
+
+    // Teardown must dispose agentStateProvider listener cleanly
+    vm.runInNewContext(cdp.REMOVE_EXPRESSION, sandbox);
+    assert.equal(providerListeners.size, 0);
+    assert.ok(disposedListenerCount >= 1);
+  } finally {
+    for (const id of timers) clearTimeout(id);
+  }
+});
+
+test('fallback to createAgentStateProviderForConvo when getCascadeTrajectory throws cloudproxy unimplemented without cloud summary flag', async () => {
+  const timers = new Set();
+  const makeNode = (tag, opts = {}) => {
+    const attrs = new Map(Object.entries(opts.attrs || {}));
+    const classes = new Set((opts.className || '').split(/\s+/).filter(Boolean));
+    const children = [];
+    const matchesSimple = (n, sel) => {
+      if (!n || n.nodeType !== 1) return false;
+      let rest = sel.trim();
+      const tm = /^[a-zA-Z0-9_-]+/.exec(rest);
+      if (tm) {
+        if (n.tagName !== tm[0].toUpperCase()) return false;
+        rest = rest.slice(tm[0].length);
+      }
+      while (rest) {
+        if (rest[0] === '.') {
+          const m = /^\.([a-zA-Z0-9_-]+)/.exec(rest);
+          if (!m || !n.classList.contains(m[1])) return false;
+          rest = rest.slice(m[0].length);
+        } else if (rest[0] === '[') {
+          const m = /^\[([^\]=]+)(?:="([^"]*)")?\]/.exec(rest);
+          if (!m) return false;
+          const ok = m[2] === undefined ? n.hasAttribute(m[1]) : n.getAttribute(m[1]) === m[2];
+          if (!ok) return false;
+          rest = rest.slice(m[0].length);
+        } else {
+          return false;
+        }
+      }
+      return true;
+    };
+    const matchesSel = (n, sel) =>
+      sel.split(',').some((part) => {
+        const tokens = part.trim().split(/\s+/).filter(Boolean);
+        if (tokens.length === 0 || !matchesSimple(n, tokens[tokens.length - 1])) return false;
+        let cur = n.parentElement;
+        let idx = tokens.length - 2;
+        while (cur && idx >= 0) {
+          if (matchesSimple(cur, tokens[idx])) idx -= 1;
+          cur = cur.parentElement;
+        }
+        return idx < 0;
+      });
+    return {
+      nodeType: 1,
+      tagName: tag.toUpperCase(),
+      id: opts.id || '',
+      children,
+      parentElement: null,
+      parentNode: null,
+      isConnected: true,
+      clientWidth: 400,
+      offsetWidth: 400,
+      clientHeight: 30,
+      offsetHeight: 30,
+      _text: opts.text || '',
+      _html: '',
+      style: { setProperty() {}, getPropertyValue() { return ''; }, removeProperty() {} },
+      classList: { contains: (c) => classes.has(c), add: (c) => classes.add(c), remove: (c) => classes.delete(c) },
+      get className() { return Array.from(classes).join(' '); },
+      set className(v) { classes.clear(); String(v).split(/\s+/).filter(Boolean).forEach((c) => classes.add(c)); },
+      get textContent() { return children.length ? children.map((c) => c.textContent).join('') : this._text; },
+      set textContent(v) { children.length = 0; this._text = String(v); },
+      set innerHTML(v) {
+        this._html = String(v);
+        children.length = 0;
+        const mSpan = /<span>([^<]*)<\/span>/.exec(this._html);
+        if (mSpan) this.appendChild(makeNode('span', { text: mSpan[1] }));
+      },
+      get innerHTML() { return this._html; },
+      get firstChild() { return children[0] || null; },
+      get lastElementChild() { return children[children.length - 1] || null; },
+      appendChild(c) { c.parentElement = this; c.parentNode = this; children.push(c); return c; },
+      insertBefore(c, ref) { c.parentElement = this; c.parentNode = this; const i = ref ? children.indexOf(ref) : -1; if (i >= 0) children.splice(i, 0, c); else children.push(c); return c; },
+      removeChild(c) { const i = children.indexOf(c); if (i >= 0) children.splice(i, 1); c.parentElement = null; c.parentNode = null; return c; },
+      remove() { if (this.parentElement) this.parentElement.removeChild(this); },
+      setAttribute(k, v) { attrs.set(k, String(v)); },
+      getAttribute(k) { return attrs.has(k) ? attrs.get(k) : null; },
+      hasAttribute(k) { return attrs.has(k); },
+      removeAttribute(k) { attrs.delete(k); },
+      toggleAttribute(k, f) { const on = f === undefined ? !attrs.has(k) : Boolean(f); if (on) attrs.set(k, ''); else attrs.delete(k); return on; },
+      addEventListener() {},
+      removeEventListener() {},
+      matches(sel) { return matchesSel(this, sel); },
+      closest(sel) { let c = this; while (c) { if (matchesSel(c, sel)) return c; c = c.parentElement; } return null; },
+      getBoundingClientRect: () => ({ left: 10, top: 100, right: 310, bottom: 130, width: 300, height: 30 }),
+      animate: () => ({ cancel() {}, finished: Promise.resolve() }),
+      querySelector(sel) { return this.querySelectorAll(sel)[0] || null; },
+      querySelectorAll(sel) {
+        const out = [];
+        const walk = (n) => {
+          for (const ch of n.children) {
+            if (matchesSel(ch, sel)) out.push(ch);
+            walk(ch);
+          }
+        };
+        walk(this);
+        return out;
+      },
+    };
+  };
+
+  const cascadeId = '87822bdb-220b-46cb-b17e-eb9cbad81014';
+  const html = makeNode('html');
+  const head = makeNode('head');
+  const body = makeNode('body', { className: 'theme-dark' });
+  html.appendChild(head);
+  html.appendChild(body);
+  const convView = makeNode('div', { attrs: { 'data-testid': 'conversation-view', 'data-cascade-id': cascadeId } });
+  const inputBox = makeNode('div', { attrs: { 'data-testid': 'agent-input-box' } });
+  const card = makeNode('div', { className: 'surface-composer-card' });
+  const footer = makeNode('div', { className: 'agy-composer-footer' });
+  footer.appendChild(makeNode('button', { attrs: { 'data-testid': 'model-selector-trigger' }, text: 'Gemini 4 Neon High' }));
+  card.appendChild(footer);
+  inputBox.appendChild(card);
+  convView.appendChild(inputBox);
+  body.appendChild(convView);
+
+  let getCascadeAttempts = 0;
+  let tempProviderDisposed = 0;
+  const rootStore = {
+    getState: () => ({ trajectorySummaries: { summaries: {} } }),
+    subscribe: () => () => {},
+  };
+  const rootFiber = {
+    memoizedProps: { store: rootStore },
+    dependencies: {
+      firstContext: {
+        memoizedValue: {
+          async getCascadeTrajectory() {
+            getCascadeAttempts++;
+            throw new Error('ConnectError: [unimplemented] unimplemented: cloudproxy: GetConversation: unimplemented');
+          },
+          createAgentStateProviderForConvo(id) {
+            let st = { conversationId: id, status: 2, trajectorySlice: { stepsInSlice: [] } };
+            const listeners = new Set();
+            const t = setTimeout(() => {
+              st = {
+                conversationId: id,
+                status: 1,
+                fullyIdle: true,
+                trajectorySlice: {
+                  conversationId: id,
+                  totalStepsLength: 2,
+                  stepsSlice: { startIndex: 0 },
+                  stepsInSlice: [
+                    { status: 3, metadata: { createdAt: { seconds: '1795189880' } }, step: { case: 'userInput', value: { userResponse: '环境信息' } } },
+                    {
+                      status: 3,
+                      metadata: {
+                        createdAt: { seconds: '1795189882' },
+                        viewableAt: { seconds: '1795189884' },
+                        finishedGeneratingAt: { seconds: '1795189886' },
+                        modelUsage: { inputTokens: '12000', cacheReadTokens: '18000', outputTokens: '300', thinkingOutputTokens: '100', responseOutputTokens: '200' },
+                        modelInfo: { displayName: 'Gemini 4 Neon (High)', maxTokens: 1048576 },
+                      },
+                      step: { case: 'plannerResponse', value: { response: 'Linux x86_64' } },
+                    },
+                  ],
+                  generatorMetadatasInSlice: [{ stepIndices: [1], metadata: {} }],
+                },
+              };
+              for (const cb of [...listeners]) cb(st);
+            }, 25);
+            timers.add(t);
+            return {
+              getState: () => st,
+              onDidChange: (cb) => {
+                listeners.add(cb);
+                return { dispose: () => listeners.delete(cb) };
+              },
+              dispose: () => { tempProviderDisposed++; listeners.clear(); },
+            };
+          },
+        },
+      },
+    },
+    return: null,
+  };
+  inputBox.__reactFiber$test = { memoizedProps: { cascadeId }, return: rootFiber };
+
+  const doc = {
+    documentElement: html,
+    head,
+    body,
+    hidden: false,
+    readyState: 'complete',
+    createElement: (t) => makeNode(t),
+    getElementById: () => null,
+    querySelector: (s) => html.querySelector(s),
+    querySelectorAll: (s) => html.querySelectorAll(s),
+    addEventListener() {},
+    removeEventListener() {},
+  };
+  const sandbox = {
+    window: null,
+    globalThis: null,
+    document: doc,
+    navigator: { language: 'zh-CN' },
+    location: { pathname: `/c/${cascadeId}` },
+    localStorage: { _m: {}, getItem(k) { return this._m[k] || null; }, setItem(k, v) { this._m[k] = String(v); } },
+    getComputedStyle: () => ({ getPropertyValue: () => '' }),
+    matchMedia: () => ({ matches: false }),
+    MutationObserver: class { observe() {} disconnect() {} },
+    ResizeObserver: class { observe() {} disconnect() {} },
+    requestAnimationFrame: (fn) => { const id = setTimeout(() => fn(Date.now()), 5); timers.add(id); return id; },
+    cancelAnimationFrame: (id) => { timers.delete(id); clearTimeout(id); },
+    setTimeout: (fn, ms) => { const id = setTimeout(fn, ms); timers.add(id); return id; },
+    clearTimeout: (id) => { timers.delete(id); clearTimeout(id); },
+    setInterval: () => 1,
+    clearInterval: () => {},
+    performance: { now: () => Date.now() },
+    Math, Date, JSON, Map, Set, Array, Object, String, Number, Boolean, Promise, Uint8Array, Float32Array, Intl,
+  };
+  sandbox.window = sandbox;
+  sandbox.globalThis = sandbox;
+
+  try {
+    const res = vm.runInNewContext(cdp.buildInjectExpression({ ...cdp.DEFAULT_CONFIG, ringMode: 'context' }), sandbox);
+    assert.equal(res.status, 'ok');
+    await new Promise((r) => setTimeout(r, 120));
+
+    assert.equal(getCascadeAttempts, 1, 'Should attempt getCascadeTrajectory once then remember cloud-only failure');
+    assert.ok(tempProviderDisposed >= 1, 'Temporary agentStateProvider must be disposed after snapshot');
+    assert.match(footer.querySelector('.ag-cs-inline-stats')?.textContent || '', /^1 轮 2 步 · 150 tok\/s · 30\.3k tok · 60% 缓存$/);
+    assert.equal(footer.querySelector('.ag-cs-context-ring span')?.textContent, '97%');
 
     vm.runInNewContext(cdp.REMOVE_EXPRESSION, sandbox);
   } finally {

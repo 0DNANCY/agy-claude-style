@@ -292,6 +292,7 @@ test('relaunchAntigravityWithCdp verifies executable before terminating and pres
       assert.deepEqual(pids, [5151]);
       running = false;
     },
+    removePortFile: () => {},
     launch: (opts) => {
       launchedWith = opts;
       return true;

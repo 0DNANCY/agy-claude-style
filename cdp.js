@@ -546,6 +546,8 @@ async function relaunchAntigravityWithCdp(opts = {}) {
     typeof opts.resolveRunningPath === 'function' ? opts.resolveRunningPath : resolveRunningAntigravityPath;
   const findExeFn = typeof opts.findExecutable === 'function' ? opts.findExecutable : findAntigravityExecutable;
   const launchFn = typeof opts.launch === 'function' ? opts.launch : launchAntigravityWithCdp;
+  const removePortFileFn =
+    typeof opts.removePortFile === 'function' ? opts.removePortFile : removeStalePortFile;
   const killFn =
     typeof opts.terminate === 'function'
       ? opts.terminate
@@ -589,7 +591,7 @@ async function relaunchAntigravityWithCdp(opts = {}) {
   if (detectFn().running) {
     return { relaunched: false, reason: 'still-running' };
   }
-  removeStalePortFile();
+  removePortFileFn();
   await new Promise((r) => setTimeout(r, 350));
   const launched = launchFn({ ...opts, appPath: resolvedPath });
   return { relaunched: launched, reason: launched ? 'ok' : 'executable-not-found' };

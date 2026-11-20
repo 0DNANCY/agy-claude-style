@@ -186,9 +186,85 @@
     return sec > 0 ? sec * 1000 + Math.floor(nanos / 1e6) : 0;
   }
 
-  function cleanModelName(val) {
-    const raw = String(val?.modelDisplayName || val?.responseModel || (val?.model ? 'Model #' + val.model : 'unknown')).trim();
-    return raw || 'unknown';
+  function getStepRealIndex(step, arrIdx, stepOffset = 0) {
+    const srcIdx = step?.metadata?.sourceTrajectoryStepInfo?.stepIndex;
+    if (typeof srcIdx === 'number' && Number.isInteger(srcIdx) && srcIdx >= 0) return srcIdx;
+    return (Number.isInteger(stepOffset) && stepOffset > 0 ? stepOffset : 0) + arrIdx;
+  }
+
+  function normalizeAgentStateToTrajectory(agentState, cascadeId = '') {
+    if (!agentState || typeof agentState !== 'object') return null;
+    if (agentState.response?.trajectory || agentState.trajectory) return agentState;
+    const slice = agentState.trajectorySlice && typeof agentState.trajectorySlice === 'object' ? agentState.trajectorySlice : null;
+    const steps = Array.isArray(slice?.stepsInSlice)
+      ? slice.stepsInSlice
+      : Array.isArray(agentState.steps)
+      ? agentState.steps
+      : [];
+    const generatorMetadata = Array.isArray(slice?.generatorMetadatasInSlice)
+      ? slice.generatorMetadatasInSlice
+      : Array.isArray(agentState.generatorMetadata)
+      ? agentState.generatorMetadata
+      : [];
+    const executorMetadatas = Array.isArray(slice?.executorMetadatasInSlice)
+      ? slice.executorMetadatasInSlice
+      : Array.isArray(agentState.executorMetadatas)
+      ? agentState.executorMetadatas
+      : agentState.executorMetadata
+      ? [agentState.executorMetadata]
+      : [];
+    const totalStepsLength = Math.max(steps.length, Number(slice?.totalStepsLength || 0));
+    let stepOffset = 0;
+    const firstSrcIdx = steps[0]?.metadata?.sourceTrajectoryStepInfo?.stepIndex;
+    if (typeof firstSrcIdx === 'number' && Number.isInteger(firstSrcIdx) && firstSrcIdx >= 0) {
+      stepOffset = firstSrcIdx;
+    } else if (slice?.stepsSlice && typeof slice.stepsSlice.startIndex === 'number' && Number.isFinite(slice.stepsSlice.startIndex)) {
+      const start = Math.trunc(slice.stepsSlice.startIndex);
+      stepOffset = start < 0 ? Math.max(0, totalStepsLength + start) : start;
+    }
+    return {
+      trajectory: {
+        cascadeId: String(cascadeId || agentState.conversationId || slice?.conversationId || ''),
+        trajectoryId: String(slice?.trajectoryId || ''),
+        metadata: slice?.metadata || agentState.metadata || null,
+        steps,
+        generatorMetadata,
+        executorMetadatas,
+        stepOffset,
+        totalStepsLength,
+        turns: Array.isArray(agentState.turns) ? agentState.turns : [],
+        contextWindowUsage: agentState.contextWindowUsage || null,
+        agentStatus: Number(agentState.status || 0),
+        fullyIdle: typeof agentState.fullyIdle === 'boolean' ? agentState.fullyIdle : undefined,
+      },
+    };
+  }
+
+  function unwrapTrajectoryInput(trajObj) {
+    if (!trajObj || typeof trajObj !== 'object') return {};
+    if (trajObj.response?.trajectory) return trajObj.response.trajectory;
+    if (trajObj.trajectory) return trajObj.trajectory;
+    if (trajObj.trajectorySlice) return normalizeAgentStateToTrajectory(trajObj)?.trajectory || {};
+    return trajObj;
+  }
+
+  function cleanModelName(val, stepMeta, gmEntry) {
+    const directDisplay = String(val?.modelDisplayName || '').trim();
+    if (directDisplay) return directDisplay;
+    const infoDisplay = String(stepMeta?.modelInfo?.displayName || '').trim();
+    const gmPlanName = String(gmEntry?.plannerConfig?.modelName || '').trim();
+    if (infoDisplay && gmPlanName) {
+      const infoLooksSlug = /^[a-z0-9._-]+$/.test(infoDisplay);
+      const gmLooksPretty = /[A-Z\s]/.test(gmPlanName);
+      if (infoLooksSlug && gmLooksPretty) return gmPlanName;
+    }
+    if (infoDisplay) return infoDisplay;
+    if (gmPlanName) return gmPlanName;
+    const respModel = String(val?.responseModel || stepMeta?.modelInfo?.modelName || '').trim();
+    if (respModel) return respModel;
+    const modelNum = Number(val?.model || stepMeta?.generatorModel || stepMeta?.requestedModel?.choice?.value || 0);
+    if (modelNum) return 'Model #' + modelNum;
+    return 'unknown';
   }
 
   function isSubagentSummary(summary) {
@@ -199,13 +275,26 @@
 
   // Extract a compact, JSON-serializable per-conversation usage record for caching.
   function analyzeTrajectoryForUsage(trajObj, summaryObj, cascadeId) {
-    const t = trajObj?.response?.trajectory || trajObj?.trajectory || trajObj || {};
+    const t = unwrapTrajectoryInput(trajObj);
     const steps = Array.isArray(t.steps) ? t.steps : [];
     const gmList = Array.isArray(t.generatorMetadata) ? t.generatorMetadata : [];
+    const stepOffset = Number.isInteger(t.stepOffset) && t.stepOffset > 0 ? t.stepOffset : 0;
+    const totalStepsLength = Math.max(steps.length, Number(t.totalStepsLength || 0));
     const stepTime = new Map();
+    const stepTimeByRealIdx = new Map();
     for (let i = 0; i < steps.length; i++) {
       const ms = tsToMs(steps[i]?.metadata?.createdAt);
-      if (ms > 0) stepTime.set(i, ms);
+      if (ms > 0) {
+        stepTime.set(i, ms);
+        stepTimeByRealIdx.set(getStepRealIndex(steps[i], i, stepOffset), ms);
+      }
+    }
+    const gmByStepIdx = new Map();
+    for (let i = 0; i < gmList.length; i++) {
+      const sIndices = Array.isArray(gmList[i]?.stepIndices) ? gmList[i].stepIndices : [];
+      for (let k = 0; k < sIndices.length; k++) {
+        if (!gmByStepIdx.has(sIndices[k])) gmByStepIdx.set(sIndices[k], gmList[i]);
+      }
     }
     const fallbackMs =
       tsToMs(summaryObj?.lastModifiedTime) ||
@@ -286,31 +375,39 @@
       }
       let ts = 0;
       for (let k = 0; k < sIndices.length; k++) {
-        const hit = stepTime.get(sIndices[k]);
+        const hit = stepTimeByRealIdx.get(sIndices[k]) || stepTime.get(sIndices[k]);
         if (hit) {
           ts = hit;
           break;
         }
       }
       if (!ts) ts = fallbackMs;
-      addUsageSample(u, ts, cleanModelName(val));
+      addUsageSample(u, ts, cleanModelName(val, null, gmList[i]));
     }
 
     if (gmWithUsageCount === 0 || gmWithoutStepIndicesCount === 0) {
       for (let i = 0; i < steps.length; i++) {
-        if (coveredStepIndices.has(i)) continue;
         const st = steps[i];
         if (!st) continue;
-        const mu = st.metadata?.modelUsage || st.step?.value?.metadata?.modelUsage;
+        const realIdx = getStepRealIndex(st, i, stepOffset);
+        if (coveredStepIndices.has(realIdx) || coveredStepIndices.has(i)) continue;
+        const md = st.metadata || st.step?.value?.metadata || {};
+        const mu = md.modelUsage;
         if (!hasUsageTokens(mu)) continue;
+        const hasPrompt =
+          Number(mu.inputTokens || 0) + Number(mu.cacheReadTokens || 0) + Number(mu.cacheWriteTokens || 0) > 0;
+        const isCompletedStep = st.status !== 1 && st.status !== 2;
+        if (!hasPrompt && !isCompletedStep) continue;
         const ts = stepTime.get(i) || fallbackMs;
-        addUsageSample(mu, ts, cleanModelName(mu));
+        addUsageSample(mu, ts, cleanModelName(mu, md, gmByStepIdx.get(realIdx)));
       }
     }
 
+    const summaryStepCount = summaryObj?.stepCount !== undefined ? Number(summaryObj.stepCount || 0) : totalStepsLength;
     return {
       cascadeId: String(cascadeId || t.cascadeId || ''),
-      stepCount: Number(summaryObj?.stepCount ?? steps.length ?? 0),
+      stepCount: summaryStepCount > 0 ? summaryStepCount : totalStepsLength,
+      summaryStepCount,
       lastModifiedSec: Math.floor(tsSec(summaryObj?.lastModifiedTime)),
       subagent: isSubagentSummary(summaryObj),
       calls,
@@ -669,27 +766,76 @@
     else if (typeof step.userInput === 'string' && step.userInput.trim()) raw = step.userInput;
     else if (Array.isArray(v.items) && v.items.length > 0) {
       raw = v.items
-        .map((it) => (typeof it === 'string' ? it : it?.text || it?.query || ''))
+        .map((it) => {
+          if (typeof it === 'string') return it;
+          if (!it || typeof it !== 'object') return '';
+          if (typeof it.text === 'string' && it.text) return it.text;
+          if (typeof it.query === 'string' && it.query) return it.query;
+          if (it.chunk?.case === 'text' && typeof it.chunk.value === 'string') return it.chunk.value;
+          const scopeContent = it.chunk?.value?.scopeItem?.value?.content;
+          if (typeof scopeContent === 'string' && scopeContent) return scopeContent;
+          return '';
+        })
         .filter(Boolean)
         .join(' ');
     }
+    if (!raw && typeof v.userResponse === 'string' && v.userResponse.trim()) {
+      raw = v.userResponse;
+    }
     return cleanUserPromptText(raw);
+  }
+
+  function estimateToolStepTokens(val) {
+    if (!val || typeof val !== 'object') return 0;
+    const rawOut =
+      typeof val.output === 'string' && val.output
+        ? val.output
+        : typeof val.content === 'string' && val.content
+        ? val.content
+        : typeof val.result === 'string' && val.result
+        ? val.result
+        : typeof val.result?.result === 'string' && val.result.result
+        ? val.result.result
+        : typeof val.result?.stepRenderInfo?.markdown === 'string' && val.result.stepRenderInfo.markdown
+        ? val.result.stepRenderInfo.markdown
+        : typeof val.combinedOutput === 'string' && val.combinedOutput
+        ? val.combinedOutput
+        : typeof val.combinedOutput?.full === 'string' && val.combinedOutput.full
+        ? val.combinedOutput.full
+        : typeof val.combinedOutput?.truncated === 'string' && val.combinedOutput.truncated
+        ? val.combinedOutput.truncated
+        : typeof val.stdout === 'string' && val.stdout
+        ? val.stdout
+        : typeof val.summary === 'string' && val.summary
+        ? val.summary
+        : '';
+    if (rawOut) return estimateTextTokens(rawOut).tokens;
+    const byteCount = Number(val.lineRangeBytes || val.numBytes || 0);
+    if (byteCount > 0) return Math.max(1, Math.round(byteCount / 3.8));
+    return 0;
   }
 
   // Extract live active-conversation metrics, per-call telemetry, breakdown trees,
   // streaming speeds, and budgets for the composer footer, turn badges, and inspector popover.
   function analyzeActiveConversation(trajObj, opts = {}) {
-    const t = trajObj?.response?.trajectory || trajObj?.trajectory || trajObj || {};
+    const t = unwrapTrajectoryInput(trajObj);
     const gmList = Array.isArray(t.generatorMetadata) ? t.generatorMetadata : [];
     const steps = Array.isArray(t.steps) ? t.steps : [];
     const execList = Array.isArray(t.executorMetadatas) ? t.executorMetadatas : [];
     const known = opts.knownLimits || {};
     const cascadeId = String(opts.cascadeId || t.cascadeId || '');
+    const stepOffset = Number.isInteger(t.stepOffset) && t.stepOffset > 0 ? t.stepOffset : 0;
+    const totalStepsLength = Math.max(steps.length, Number(t.totalStepsLength || 0));
 
-    // Build step index lookup for tool names & step cases
+    // Build step index lookup (both array-index & real-index) for tool names, step cases, and slice mapping
     const stepInfoMap = new Map();
+    const stepRealIndices = new Array(steps.length);
+    const realToArrIdx = new Map();
     for (let idx = 0; idx < steps.length; idx++) {
       const st = steps[idx];
+      const realIdx = getStepRealIndex(st, idx, stepOffset);
+      stepRealIndices[idx] = realIdx;
+      realToArrIdx.set(realIdx, idx);
       if (!st) continue;
       const stepCase = st.step?.case || 'unknown';
       const val = st.step?.value || {};
@@ -712,8 +858,9 @@
       } else if (baseName && !toolName.includes(':')) {
         toolName = `${toolName}: ${baseName}`;
       }
-      stepInfoMap.set(idx, {
-        idx,
+      stepInfoMap.set(realIdx, {
+        idx: realIdx,
+        arrIdx: idx,
         stepCase,
         toolName,
         toolSummary: st.metadata?.toolSummary || '',
@@ -721,7 +868,22 @@
       });
     }
 
+    const gmByStepIdx = new Map();
+    for (let i = 0; i < gmList.length; i++) {
+      const sIndices = Array.isArray(gmList[i]?.stepIndices) ? gmList[i].stepIndices : [];
+      for (let k = 0; k < sIndices.length; k++) {
+        if (!gmByStepIdx.has(sIndices[k])) gmByStepIdx.set(sIndices[k], gmList[i]);
+      }
+    }
+
+    const resolveArrIdx = (realIdx) => {
+      if (realToArrIdx.has(realIdx)) return realToArrIdx.get(realIdx);
+      const rel = realIdx - stepOffset;
+      return rel >= 0 && rel < steps.length ? rel : -1;
+    };
+
     const callList = [];
+    const callArrIndicesMap = new Map();
     let sumInput = 0;
     let sumCacheRead = 0;
     let sumCacheWrite = 0;
@@ -738,6 +900,7 @@
     let latestCw = null;
     let latestCwMaxTokens = 0;
     let latestCwUsed = 0;
+    let latestModelInfoMaxTokens = 0;
     let latestChatStart = null;
     let latestBreakdown = null;
     let latestBudgets = null;
@@ -809,6 +972,7 @@
       }
 
       const stepIndices = Array.isArray(gmList[i].stepIndices) ? gmList[i].stepIndices : [];
+      const arrIndices = stepIndices.map(resolveArrIdx).filter((n) => n >= 0);
       const callPromptTokens = inp + cr + cw;
       const callCacheHitPct = callPromptTokens > 0 ? (cr / callPromptTokens) * 100 : 0;
       const ownCwUsed = Number(cwMeta?.estimatedTokensUsed || 0);
@@ -816,10 +980,10 @@
       const callCtxUsed = Math.max(ownCwUsed, usageCtxAfterCall);
 
       const csCheckpointIdx = Number(cs?.checkpointIndex ?? -1);
-      const firstStepIdx = stepIndices.length > 0 ? stepIndices[0] : -1;
+      const firstArrIdx = arrIndices.length > 0 ? arrIndices[0] : -1;
       let checkpointBetween = false;
-      if (lastContextStepIdx >= 0 && firstStepIdx > lastContextStepIdx) {
-        for (let s = lastContextStepIdx + 1; s < firstStepIdx; s++) {
+      if (lastContextStepIdx >= 0 && firstArrIdx > lastContextStepIdx) {
+        for (let s = lastContextStepIdx + 1; s < firstArrIdx; s++) {
           if (steps[s]?.step?.case === 'checkpoint') {
             checkpointBetween = true;
             break;
@@ -843,19 +1007,19 @@
           callCtxUsed >= activeContextUsed
         ) {
           activeContextUsed = callCtxUsed;
-          if (stepIndices.length > 0) {
-            lastContextStepIdx = stepIndices[stepIndices.length - 1];
+          if (arrIndices.length > 0) {
+            lastContextStepIdx = arrIndices[arrIndices.length - 1];
           }
         }
       }
 
-      const firstStepObj = firstStepIdx >= 0 ? steps[firstStepIdx] : null;
+      const firstStepObj = firstArrIdx >= 0 ? steps[firstArrIdx] : null;
       const callCreatedAtSec =
         tsSec(val.createdAt || val.timestamp || val.startTime || gmList[i]?.createdAt) ||
         tsSec(firstStepObj?.metadata?.createdAt) ||
         0;
 
-      callList.push({
+      const callObj = {
         callNumber: callList.length + 1,
         stepIndices,
         createdAtSec: callCreatedAtSec,
@@ -864,7 +1028,7 @@
             ? `#${stepIndices[0]}`
             : `#${stepIndices[0]}–${stepIndices[stepIndices.length - 1]}`
           : '—',
-        modelDisplayName: cleanModelName(val),
+        modelDisplayName: cleanModelName(val, firstStepObj?.metadata, gmList[i]),
         responseModel: val.responseModel || '',
         modelId: Number(val.model || 0),
         contextUsed: callCtxUsed,
@@ -880,7 +1044,128 @@
         stream,
         speed,
         retries: Number(val.retries || 0),
-      });
+      };
+      callList.push(callObj);
+      if (arrIndices.length > 0) callArrIndicesMap.set(callObj, arrIndices);
+    }
+
+    // Ingest AgentState.contextWindowUsage if present (live stream or remote future support)
+    const cwUsage = t.contextWindowUsage && typeof t.contextWindowUsage === 'object' ? t.contextWindowUsage : null;
+    if (cwUsage) {
+      if (!latestCwMaxTokens && Number(cwUsage.maxContextTokens || 0) > 0) {
+        latestCwMaxTokens = Number(cwUsage.maxContextTokens);
+      }
+      if (!latestCwUsed && Number(cwUsage.estimatedTokensUsed || 0) > 0) {
+        latestCwUsed = Number(cwUsage.estimatedTokensUsed);
+      }
+      if (!latestBreakdown && Array.isArray(cwUsage.tokenGroups) && cwUsage.tokenGroups.length > 0) {
+        latestBreakdown = { groups: cwUsage.tokenGroups };
+      }
+    }
+
+    // Capture modelInfo.maxTokens across steps (used in remote/cloud mode where contextWindowMetadata is omitted)
+    let hasCheckpointStep = false;
+    for (let idx = 0; idx < steps.length; idx++) {
+      const st = steps[idx];
+      if (!st) continue;
+      if (st.step?.case === 'checkpoint') hasCheckpointStep = true;
+      const md = st.metadata || st.step?.value?.metadata;
+      if (Number(md?.modelInfo?.maxTokens || 0) > 0) {
+        latestModelInfoMaxTokens = Number(md.modelInfo.maxTokens);
+      }
+    }
+
+    // Step-level modelUsage fallback (Remote/Cloud mode where generatorMetadata[i].metadata is empty {})
+    if (callList.length === 0) {
+      for (let idx = 0; idx < steps.length; idx++) {
+        const st = steps[idx];
+        if (!st) continue;
+        if (st.step?.case === 'checkpoint') {
+          activeContextUsed = 0;
+          lastContextStepIdx = idx;
+          continue;
+        }
+        const md = st.metadata || st.step?.value?.metadata || {};
+        const mu = md.modelUsage;
+        if (!hasUsageTokens(mu)) continue;
+        const inp = Number(mu.inputTokens || 0);
+        const cr = Number(mu.cacheReadTokens || 0);
+        const cw = Number(mu.cacheWriteTokens || 0);
+        const out = Number(mu.outputTokens || 0);
+        const callPromptTokens = inp + cr + cw;
+        const isCompletedStep = st.status !== 1 && st.status !== 2;
+        if (callPromptTokens === 0 && !isCompletedStep) continue;
+
+        const think = Number(mu.thinkingOutputTokens || 0);
+        const resp = Number(mu.responseOutputTokens || Math.max(0, out - think) || 0);
+
+        sumInput += inp;
+        sumCacheRead += cr;
+        sumCacheWrite += cw;
+        sumOutput += out;
+        sumThinking += think;
+        sumResponse += resp;
+
+        const createdSec = tsSec(md.createdAt);
+        const viewableSec = tsSec(md.viewableAt);
+        const finSec = tsSec(md.finishedGeneratingAt) || tsSec(md.completedAt);
+        const ttft =
+          createdSec > 0 && viewableSec > createdSec && viewableSec - createdSec < 600
+            ? viewableSec - createdSec
+            : 0;
+        const stream =
+          viewableSec > 0 && finSec > viewableSec && finSec - viewableSec < 3600
+            ? finSec - viewableSec
+            : 0;
+        if (ttft > 0) {
+          lastTtft = ttft;
+          ttftSum += ttft;
+          ttftCount++;
+        }
+        const speed = stream > 0.05 && out > 0 ? Math.round(out / stream) : 0;
+        if (speed > 0) {
+          lastSpeed = speed;
+          latestValidSpeed = speed;
+          timedOutputSum += out;
+          timedStreamSum += stream;
+          if (speed > peakSpeed) peakSpeed = speed;
+          if (stream >= 0.5 && speed > sustainedPeakSpeed) sustainedPeakSpeed = speed;
+        }
+
+        const callCacheHitPct = callPromptTokens > 0 ? (cr / callPromptTokens) * 100 : 0;
+        const callCtxUsed = callPromptTokens > 0 ? callPromptTokens + resp : 0;
+        if (callCtxUsed > 0) {
+          activeContextUsed = callCtxUsed;
+          lastContextStepIdx = idx;
+        }
+
+        const realIdx = stepRealIndices[idx];
+        const gmEntry = gmByStepIdx.get(realIdx);
+        const callObj = {
+          callNumber: callList.length + 1,
+          stepIndices: [realIdx],
+          createdAtSec: createdSec,
+          stepRange: `#${realIdx}`,
+          modelDisplayName: cleanModelName(mu, md, gmEntry),
+          responseModel: md.modelInfo?.modelName || '',
+          modelId: Number(mu.model || md.generatorModel || md.requestedModel?.choice?.value || 0),
+          contextUsed: callCtxUsed,
+          contextMax: Number(latestCwMaxTokens || md.modelInfo?.maxTokens || latestModelInfoMaxTokens || 0),
+          inputTokens: inp,
+          cacheReadTokens: cr,
+          cacheWriteTokens: cw,
+          cacheHitPct: callCacheHitPct,
+          outputTokens: out,
+          thinkingTokens: think,
+          responseTokens: resp,
+          ttft,
+          stream,
+          speed,
+          retries: Array.isArray(md.retryInfos) ? md.retryInfos.length : 0,
+        };
+        callList.push(callObj);
+        callArrIndicesMap.set(callObj, [idx]);
+      }
     }
 
     for (let i = execList.length - 1; i >= 0; i--) {
@@ -894,15 +1179,18 @@
     }
 
     const hasAnyStepIndices = callList.some((c) => c.stepIndices.length > 0);
-    const lastCoveredStepIdx =
+    const lastCoveredArrIdx =
       callList.length === 0
         ? -1
         : hasAnyStepIndices
-        ? callList.reduce((mx, c) => (c.stepIndices.length ? Math.max(mx, ...c.stepIndices) : mx), -1)
+        ? callList.reduce((mx, c) => {
+            const arr = callArrIndicesMap.get(c);
+            return arr && arr.length ? Math.max(mx, ...arr) : mx;
+          }, -1)
         : steps.length - 1;
-    let lastMeasuredStepIdx = lastCoveredStepIdx;
+    let lastMeasuredStepIdx = lastCoveredArrIdx;
 
-    for (let idx = lastCoveredStepIdx + 1; idx < steps.length; idx++) {
+    for (let idx = lastCoveredArrIdx + 1; idx < steps.length; idx++) {
       const st = steps[idx];
       if (!st) continue;
       if (st.step?.case === 'checkpoint') {
@@ -943,15 +1231,8 @@
         const estVis = visText ? estimateTextTokens(visText).tokens : 0;
         pendingStepTokens += Math.max(Math.max(0, muOut - muThink), estVis);
       } else if (sc && sc !== 'systemMessage' && sc !== 'checkpoint') {
-        const rawOut =
-          typeof val.output === 'string'
-            ? val.output
-            : typeof val.content === 'string'
-            ? val.content
-            : typeof val.result === 'string'
-            ? val.result
-            : '';
-        if (rawOut) pendingStepTokens += estimateTextTokens(rawOut).tokens;
+        const estTool = estimateToolStepTokens(val);
+        if (estTool > 0) pendingStepTokens += estTool;
       }
     }
     if (pendingStepTokens > 0) {
@@ -964,6 +1245,7 @@
 
     const maxContextTokens =
       latestCwMaxTokens ||
+      latestModelInfoMaxTokens ||
       Number(known.maxContextTokens || 0) ||
       256000;
     const contextUsed = activeContextUsed > 0 ? activeContextUsed : latestCwUsed;
@@ -981,9 +1263,11 @@
     let userMsgTokens = 0;
     let botMsgTokens = 0;
     let toolIoTokens = 0;
-    let maxBreakdownStepIdx = -1;
+    let maxBreakdownArrIdx = -1;
 
     if (latestBreakdown && Array.isArray(latestBreakdown.groups)) {
+      let sysGroupCount = 0;
+      let toolsGroupCount = 0;
       for (const grp of latestBreakdown.groups) {
         const gName = String(grp.name || '');
         const gTokens = Number(grp.numTokens || 0);
@@ -991,18 +1275,23 @@
           name: String(c.name || ''),
           tokens: Number(c.numTokens || 0),
         }));
-        if (grp.type === 1 || /system/i.test(gName)) {
-          sysTokens = gTokens;
-          sysChildren = children.sort((a, b) => b.tokens - a.tokens);
-        } else if (grp.type === 2 || /tool/i.test(gName)) {
-          toolsTokens = gTokens;
-          toolsChildren = children.sort((a, b) => b.tokens - a.tokens);
+        if (grp.type === 1 || grp.type === 5 || grp.type === 6 || grp.type === 9 || /system|skill|subagent|plugin/i.test(gName)) {
+          sysTokens += gTokens;
+          sysGroupCount++;
+          if (children.length > 0) sysChildren.push(...children);
+          else if (gTokens > 0 && gName) sysChildren.push({ name: gName, tokens: gTokens });
+        } else if (grp.type === 2 || grp.type === 4 || /tool/i.test(gName)) {
+          toolsTokens += gTokens;
+          toolsGroupCount++;
+          if (children.length > 0) toolsChildren.push(...children);
+          else if (gTokens > 0 && gName) toolsChildren.push({ name: gName, tokens: gTokens });
         } else if (grp.type === 7 || /message|chat/i.test(gName)) {
-          msgTokens = gTokens;
-          msgChildren = children.map((c) => {
+          msgTokens += gTokens;
+          const mapped = children.map((c) => {
             const m = /^(\d+):\s*(\S+)/.exec(c.name);
             const sIdx = m ? parseInt(m[1], 10) : -1;
-            if (sIdx > maxBreakdownStepIdx) maxBreakdownStepIdx = sIdx;
+            const aIdx = sIdx >= 0 ? resolveArrIdx(sIdx) : -1;
+            if (aIdx > maxBreakdownArrIdx) maxBreakdownArrIdx = aIdx;
             const kind = m ? m[2] : c.name;
             const sInfo = sIdx >= 0 ? stepInfoMap.get(sIdx) : null;
             if (kind === 'USER_INPUT') userMsgTokens += c.tokens;
@@ -1024,7 +1313,18 @@
               label,
             };
           });
+          msgChildren.push(...mapped);
         }
+      }
+      if (sysGroupCount === 1 && sysChildren.length === 1 && sysChildren[0].tokens === sysTokens && !latestBreakdown.groups.some((g) => g.children?.length)) {
+        sysChildren = [];
+      } else {
+        sysChildren.sort((a, b) => b.tokens - a.tokens);
+      }
+      if (toolsGroupCount === 1 && toolsChildren.length === 1 && toolsChildren[0].tokens === toolsTokens && !latestBreakdown.groups.some((g) => g.children?.length)) {
+        toolsChildren = [];
+      } else {
+        toolsChildren.sort((a, b) => b.tokens - a.tokens);
       }
     }
 
@@ -1036,13 +1336,47 @@
         if (kTools > 0) toolsTokens = kTools;
       }
     }
-    if (contextUsed > sysTokens + toolsTokens + msgTokens && steps.length - 1 > maxBreakdownStepIdx) {
+    // In remote/cloud mode (no server tokenBreakdown), derive base system+tools prompt from Call 0 when clean
+    if (
+      !latestBreakdown &&
+      sysTokens === 0 &&
+      toolsTokens === 0 &&
+      stepOffset === 0 &&
+      !hasCheckpointStep &&
+      callList.length > 0 &&
+      contextUsed > 0
+    ) {
+      const firstCall = callList[0];
+      const firstArr = callArrIndicesMap.get(firstCall);
+      const firstArrIdx = firstArr && firstArr.length > 0 ? Math.min(...firstArr) : -1;
+      if (firstArrIdx >= 0) {
+        let hadToolBefore = false;
+        let preUserTok = 0;
+        for (let i = 0; i < firstArrIdx; i++) {
+          const st = steps[i];
+          if (!st) continue;
+          if (isUserTurnBoundary(st)) {
+            const q = extractUserPromptText(st);
+            preUserTok += q ? estimateTextTokens(q).tokens : 40;
+          } else if (st.step?.case && st.step.case !== 'systemMessage' && st.step.case !== 'plannerResponse') {
+            hadToolBefore = true;
+            break;
+          }
+        }
+        const firstPrompt = firstCall.inputTokens + firstCall.cacheReadTokens + firstCall.cacheWriteTokens;
+        const estBase = firstPrompt - preUserTok;
+        if (!hadToolBefore && estBase > 1000 && estBase <= contextUsed) {
+          sysTokens = estBase;
+        }
+      }
+    }
+    if (contextUsed > sysTokens + toolsTokens + msgTokens && steps.length - 1 > maxBreakdownArrIdx) {
       const extraTokens = contextUsed - (sysTokens + toolsTokens + msgTokens);
       let postChatWeight = 0;
       let postUserWeight = 0;
       let postToolWeight = 0;
       const postToolSteps = [];
-      for (let idx = maxBreakdownStepIdx + 1; idx < steps.length; idx++) {
+      for (let idx = maxBreakdownArrIdx + 1; idx < steps.length; idx++) {
         const st = steps[idx];
         if (!st) continue;
         const sc = st.step?.case || '';
@@ -1063,26 +1397,17 @@
           const w = Math.max(80, txt ? estimateTextTokens(txt).tokens : 40);
           postChatWeight += w;
         } else {
-          const rawOut =
-            typeof val.output === 'string'
-              ? val.output
-              : typeof val.content === 'string'
-              ? val.content
-              : typeof val.result === 'string'
-              ? val.result
-              : typeof val.summary === 'string'
-              ? val.summary
-              : '';
-          const est = rawOut ? estimateTextTokens(rawOut).tokens : 0;
+          const est = estimateToolStepTokens(val);
           const w = Math.max(400, est);
-          const sInfo = stepInfoMap.get(idx);
+          const realIdx = stepRealIndices[idx];
+          const sInfo = stepInfoMap.get(realIdx);
           const rawTool = sInfo?.toolName ? sInfo.toolName.split(':')[0].trim() : sc || 'tool';
           postToolWeight += w;
           postToolSteps.push({
-            stepIdx: idx,
+            stepIdx: realIdx,
             kind: 'GENERIC',
             toolName: sInfo?.toolName || rawTool,
-            label: sInfo?.toolName ? `#${idx} ${sInfo.toolName}` : `#${idx} ${rawTool}`,
+            label: sInfo?.toolName ? `#${realIdx} ${sInfo.toolName}` : `#${realIdx} ${rawTool}`,
             weight: w,
           });
         }
@@ -1179,6 +1504,9 @@
         hasError = true;
       }
     }
+    if (!isRunning && (t.agentStatus === 2 || t.fullyIdle === false)) {
+      isRunning = true;
+    }
 
     // Build per-turn details (turnDetails) using a single-pass hasUnconsumedTurn state machine
     const userBoundaries = [];
@@ -1186,11 +1514,18 @@
       if (isUserTurnBoundary(steps[idx])) {
         userBoundaries.push({
           idx,
+          realIdx: stepRealIndices[idx],
           prompt: extractUserPromptText(steps[idx]),
           startTimeSec: tsSec(steps[idx]?.metadata?.createdAt),
         });
       }
     }
+
+    const toRealStepIdx = (arrIdx) => {
+      if (arrIdx < 0) return arrIdx;
+      if (arrIdx < stepRealIndices.length) return stepRealIndices[arrIdx];
+      return stepOffset + arrIdx;
+    };
 
     const turnDetails = [];
     if (callList.length > 0) {
@@ -1198,11 +1533,9 @@
       const unindexedCalls = [];
       let lastMappedStep = -1;
       for (const c of callList) {
-        const validSteps = Array.isArray(c.stepIndices)
-          ? c.stepIndices.filter((n) => Number.isInteger(n) && n >= 0)
-          : [];
-        if (validSteps.length > 0) {
-          const anchor = Math.min(...validSteps);
+        const validArr = callArrIndicesMap.get(c) || [];
+        if (validArr.length > 0) {
+          const anchor = Math.min(...validArr);
           lastMappedStep = anchor;
           if (!callsByStep.has(anchor)) callsByStep.set(anchor, []);
           callsByStep.get(anchor).push(c);
@@ -1263,7 +1596,7 @@
         const bucket = {
           userStepIdx: uIdx,
           nextUserStepIdx: Infinity,
-          lastStepIdx: uIdx,
+          lastStepIdx: toRealStepIdx(uIdx),
           startTimeSec,
           nextStartTimeSec: Infinity,
           prompts: pendingPrompts.slice(),
@@ -1303,7 +1636,7 @@
               if (Array.isArray(c.stepIndices) && c.stepIndices.length > 0) {
                 activeBucket.lastStepIdx = Math.max(activeBucket.lastStepIdx, ...c.stepIndices);
               } else {
-                activeBucket.lastStepIdx = Math.max(activeBucket.lastStepIdx, idx);
+                activeBucket.lastStepIdx = Math.max(activeBucket.lastStepIdx, toRealStepIdx(idx));
               }
             }
           }
@@ -1363,7 +1696,8 @@
           const ctxDelta = ctxU - prevCtx;
           prevCtx = ctxU;
           const firstIdx = c.stepIndices?.[0] ?? -1;
-          const startTimeSec = firstIdx >= 0 ? tsSec(steps[firstIdx]?.metadata?.createdAt) : c.createdAtSec || 0;
+          const firstArrIdx = firstIdx >= 0 ? resolveArrIdx(firstIdx) : -1;
+          const startTimeSec = firstArrIdx >= 0 ? tsSec(steps[firstArrIdx]?.metadata?.createdAt) : c.createdAtSec || 0;
           turnDetails.push({
             turn: i + 1,
             userStepIdx: firstIdx,
@@ -1412,8 +1746,8 @@
           }
           turnDetails.push({
             turn: turnDetails.length + 1,
-            userStepIdx: b.userStepIdx,
-            nextUserStepIdx: b.nextUserStepIdx,
+            userStepIdx: toRealStepIdx(b.userStepIdx),
+            nextUserStepIdx: Number.isFinite(b.nextUserStepIdx) ? toRealStepIdx(b.nextUserStepIdx) : Infinity,
             lastStepIdx: b.lastStepIdx,
             startTimeSec: b.startTimeSec,
             nextStartTimeSec: b.nextStartTimeSec,
@@ -1477,13 +1811,13 @@
       subagentCount: 0,
       subagentCalls: 0,
       subagentTokens: 0,
-      calls: gmList.length,
+      calls: callList.length,
       totalCalls: callList.length,
       callList,
       lastCall,
       hasCalls: callList.length > 0,
-      steps: steps.length,
-      totalSteps: steps.length,
+      steps: totalStepsLength,
+      totalSteps: totalStepsLength,
       contextUsed,
       contextRemaining,
       maxContextTokens,
@@ -1528,7 +1862,8 @@
         customizationTokenBudget: known.customizationTokenBudget || 20000,
         rulesTokenBudget: known.rulesTokenBudget || 20000,
       },
-      hasActiveLimits: Boolean(latestCwMaxTokens > 0),
+      hasActiveLimits: Boolean(latestCwMaxTokens > 0 || latestModelInfoMaxTokens > 0),
+      hasExactContextLimits: Boolean(latestCwMaxTokens > 0),
       isRunning,
       isThinking,
       hasError,
@@ -1548,7 +1883,7 @@
       if (!raw) continue;
       const id = String(raw.id || raw.cascadeId || '');
       const analysis = raw.analysis || (raw.trajectory ? analyzeActiveConversation(raw.trajectory, { cascadeId: id }) : null);
-      const rawTrajSteps = raw.trajectory?.response?.trajectory?.steps || raw.trajectory?.trajectory?.steps || raw.trajectory?.steps || [];
+      const rawTrajSteps = unwrapTrajectoryInput(raw.trajectory)?.steps || [];
       let earliestStepSec = 0;
       for (const st of rawTrajSteps) {
         const sSec = tsSec(st?.metadata?.createdAt);
@@ -1970,6 +2305,7 @@
     homeShortDateFormat,
     homeShortDate,
     isSubagentSummary,
+    normalizeAgentStateToTrajectory,
     analyzeTrajectoryForUsage,
     homeHeatGrid,
     aggregateUsageRollup,

@@ -219,8 +219,30 @@
   // ── Antigravity React Fiber & Store Bridge ─────────────────────────────
   let cachedSvc = null;
   let cachedStore = null;
+  let cachedTrajCtx = null;
+  let trajCtxScannedAnchorCount = -1;
   let storeUnsub = null;
   let storeDebounce = null;
+  const cloudOnlyCascadeIds = new Set();
+  const watchedAgentProviders = new Map(); // cascadeId -> { provider, disposable, timer }
+
+  function sameCascadeId(a, b) {
+    const sa = String(a || '').trim();
+    const sb = String(b || '').trim();
+    if (!sa || !sb) return false;
+    if (sa === sb) return true;
+    const tailA = sa.includes('/') ? sa.split('/').pop() : sa;
+    const tailB = sb.includes('/') ? sb.split('/').pop() : sb;
+    return Boolean(tailA && tailA === tailB);
+  }
+
+  function isTrajectoriesContext(v) {
+    if (!v || typeof v !== 'object') return false;
+    return (
+      typeof v.getAgentStates === 'function' ||
+      (typeof v.peek === 'function' && typeof v.subscribe === 'function')
+    );
+  }
 
   function isAppRootStore(s) {
     if (!s || typeof s.getState !== 'function') return false;
@@ -240,17 +262,22 @@
   }
 
   function ensureHooks(allowPartial = false) {
-    if (cachedSvc && cachedStore && isAppRootStore(cachedStore)) {
-      return { svc: cachedSvc, store: cachedStore };
-    }
     const anchors = document.querySelectorAll(
       '[data-testid="conversation-view"], [data-testid="agent-input-box"], [data-testid="agent-response"], [data-testid="conversation-row-sidebar"], [data-testid="new-conversation-button"], [data-testid="home-greeting"]'
     );
+    if (
+      cachedSvc &&
+      cachedStore &&
+      isAppRootStore(cachedStore) &&
+      (cachedTrajCtx || trajCtxScannedAnchorCount === anchors.length)
+    ) {
+      return { svc: cachedSvc, store: cachedStore, trajCtx: cachedTrajCtx };
+    }
     let bestRootStore = isAppRootStore(cachedStore) ? cachedStore : null;
     let fallbackStore = cachedStore || null;
     for (const el of anchors) {
       const key = Object.keys(el).find((k) => k.startsWith('__reactFiber$'));
-      for (let f = key && el[key]; f && !(cachedSvc && bestRootStore); f = f.return) {
+      for (let f = key && el[key]; f && !(cachedSvc && bestRootStore && cachedTrajCtx); f = f.return) {
         const p = f.memoizedProps;
         if (p && p.store && typeof p.store.getState === 'function') {
           if (isAppRootStore(p.store)) bestRootStore = bestRootStore || p.store;
@@ -260,14 +287,16 @@
           const v = d.memoizedValue;
           if (!v || typeof v !== 'object') continue;
           if (!cachedSvc && typeof v.getCascadeTrajectory === 'function') cachedSvc = v;
+          if (!cachedTrajCtx && isTrajectoriesContext(v)) cachedTrajCtx = v;
           if (v.store && typeof v.store.getState === 'function') {
             if (isAppRootStore(v.store)) bestRootStore = bestRootStore || v.store;
             else if (!fallbackStore) fallbackStore = v.store;
           }
         }
       }
-      if (cachedSvc && bestRootStore) break;
+      if (cachedSvc && bestRootStore && cachedTrajCtx) break;
     }
+    trajCtxScannedAnchorCount = anchors.length;
     const chosenStore = bestRootStore || fallbackStore;
     if (chosenStore && chosenStore !== cachedStore) {
       if (storeUnsub) {
@@ -287,9 +316,278 @@
         }, 150);
       });
     }
-    if (cachedSvc && cachedStore) return { svc: cachedSvc, store: cachedStore };
-    if (allowPartial && (cachedSvc || cachedStore)) return { svc: cachedSvc, store: cachedStore };
+    if (cachedSvc && cachedStore) return { svc: cachedSvc, store: cachedStore, trajCtx: cachedTrajCtx };
+    if (allowPartial && (cachedSvc || cachedStore || cachedTrajCtx)) {
+      return { svc: cachedSvc, store: cachedStore, trajCtx: cachedTrajCtx };
+    }
     return null;
+  }
+
+  function findCascadeAgentStateProvider(cascadeId, scopeEl) {
+    const id = String(cascadeId || '').trim();
+    const peekFromTrajCtx = (ctx) => {
+      if (!ctx || !id) return null;
+      try {
+        if (typeof ctx.peek === 'function') {
+          const p = ctx.peek(id);
+          if (p && typeof p.getState === 'function') return p;
+        }
+        if (typeof ctx.getAgentStates === 'function') {
+          const states = ctx.getAgentStates();
+          if (states instanceof Map) {
+            const direct = states.get(id);
+            if (direct?.provider && typeof direct.provider.getState === 'function') return direct.provider;
+            for (const [k, entry] of states.entries()) {
+              if (sameCascadeId(k, id) && entry?.provider && typeof entry.provider.getState === 'function') {
+                return entry.provider;
+              }
+            }
+          } else if (states && typeof states === 'object') {
+            const direct = states[id];
+            if (direct?.provider && typeof direct.provider.getState === 'function') return direct.provider;
+          }
+        }
+      } catch {}
+      return null;
+    };
+
+    const fromCached = peekFromTrajCtx(cachedTrajCtx);
+    if (fromCached) return fromCached;
+
+    const probes = [];
+    if (scopeEl) probes.push(scopeEl);
+    const cv = document.querySelector('[data-testid="conversation-view"]');
+    if (cv && !probes.includes(cv)) probes.push(cv);
+    const ib = document.querySelector('[data-testid="agent-input-box"]');
+    if (ib && !probes.includes(ib)) probes.push(ib);
+
+    for (const el of probes) {
+      const key = Object.keys(el).find((k) => k.startsWith('__reactFiber$'));
+      for (let f = key && el[key], depth = 0; f && depth < 80; f = f.return, depth++) {
+        for (let d = f.dependencies && f.dependencies.firstContext; d; d = d.next) {
+          const v = d.memoizedValue;
+          if (!v || typeof v !== 'object') continue;
+          if (!cachedTrajCtx && isTrajectoriesContext(v)) {
+            cachedTrajCtx = v;
+            const hit = peekFromTrajCtx(v);
+            if (hit) return hit;
+          }
+          const prov = v.cascadeContext?.state?.agentStateProvider || v.agentStateProvider;
+          if (prov && typeof prov.getState === 'function') {
+            try {
+              const pCid = prov.getState()?.conversationId || '';
+              if (!id || !pCid || sameCascadeId(pCid, id)) return prov;
+            } catch {}
+          }
+        }
+      }
+    }
+    return null;
+  }
+
+  function unwatchAgentStateProvider(cascadeId) {
+    const rec = watchedAgentProviders.get(cascadeId);
+    if (!rec) return;
+    watchedAgentProviders.delete(cascadeId);
+    if (rec.timer) {
+      clearTimeout(rec.timer);
+      rec.timer = null;
+    }
+    try {
+      if (typeof rec.disposable === 'function') rec.disposable();
+      else if (rec.disposable && typeof rec.disposable.dispose === 'function') rec.disposable.dispose();
+    } catch {}
+  }
+
+  function unwatchAllAgentStateProviders() {
+    for (const id of Array.from(watchedAgentProviders.keys())) {
+      unwatchAgentStateProvider(id);
+    }
+  }
+
+  function watchAgentStateProvider(cascadeId, provider) {
+    if (destroyed || !cascadeId || !provider || typeof provider.onDidChange !== 'function') return;
+    const existing = watchedAgentProviders.get(cascadeId);
+    if (existing && existing.provider === provider) return;
+    if (existing) unwatchAgentStateProvider(cascadeId);
+    if (watchedAgentProviders.size >= 4) {
+      for (const oldId of watchedAgentProviders.keys()) {
+        if (oldId !== cascadeId) {
+          unwatchAgentStateProvider(oldId);
+          break;
+        }
+      }
+    }
+    const rec = { provider, disposable: null, timer: null };
+    try {
+      rec.disposable = provider.onDidChange(() => {
+        if (destroyed || rec.timer) return;
+        rec.timer = setTimeout(() => {
+          rec.timer = null;
+          if (destroyed) return;
+          const cacheEntry = activeTrajCache.get(cascadeId);
+          if (cacheEntry) cacheEntry.lastAt = 0;
+          scheduleSync();
+        }, 150);
+      });
+      watchedAgentProviders.set(cascadeId, rec);
+    } catch {}
+  }
+
+  function hasUsableAgentState(state) {
+    if (!state || typeof state !== 'object') return false;
+    const slice = state.trajectorySlice;
+    if (Array.isArray(slice?.stepsInSlice) && slice.stepsInSlice.length > 0) return true;
+    if (Array.isArray(state.steps) && state.steps.length > 0) return true;
+    if (state.contextWindowUsage && Number(state.contextWindowUsage.estimatedTokensUsed || 0) > 0) return true;
+    return false;
+  }
+
+  function isCloudOnlyTrajectoryError(err) {
+    const msg = String(err?.message || err || '');
+    return /unimplemented|cloudproxy|GetConversation/i.test(msg);
+  }
+
+  async function fetchAgentStateSnapshot(cascadeId, h, timeoutMs = 3500) {
+    if (!cascadeId || destroyed) return null;
+    let prov = null;
+    let cleanup = null;
+    try {
+      if (typeof h?.trajCtx?.subscribe === 'function') {
+        const sub = h.trajCtx.subscribe(cascadeId);
+        if (sub?.agentStateProvider && typeof sub.agentStateProvider.getState === 'function') {
+          prov = sub.agentStateProvider;
+          cleanup = () => {
+            try {
+              if (typeof sub.unsubscribe === 'function') sub.unsubscribe();
+            } catch {}
+          };
+        }
+      }
+      if (!prov && typeof h?.svc?.createAgentStateProviderForConvo === 'function') {
+        const created = h.svc.createAgentStateProviderForConvo(cascadeId);
+        if (created && typeof created.getState === 'function') {
+          prov = created;
+          cleanup = () => {
+            try {
+              if (typeof created.dispose === 'function') created.dispose();
+            } catch {}
+          };
+        }
+      }
+      if (!prov) return null;
+      const initial = prov.getState();
+      if (hasUsableAgentState(initial)) return initial;
+      if (typeof prov.onDidChange === 'function' && timeoutMs > 0) {
+        await new Promise((resolve) => {
+          let settled = false;
+          let disp = null;
+          const finish = () => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            try {
+              if (typeof disp === 'function') disp();
+              else if (disp && typeof disp.dispose === 'function') disp.dispose();
+            } catch {}
+            resolve();
+          };
+          const timer = setTimeout(finish, timeoutMs);
+          try {
+            disp = prov.onDidChange(() => {
+              try {
+                if (hasUsableAgentState(prov.getState())) finish();
+              } catch {}
+            });
+          } catch {
+            finish();
+          }
+          try {
+            if (hasUsableAgentState(prov.getState())) finish();
+          } catch {}
+        });
+      }
+      return prov.getState();
+    } catch {
+      return null;
+    } finally {
+      if (cleanup) cleanup();
+    }
+  }
+
+  function normalizeAgentStatePayload(state, cascadeId) {
+    if (!state || typeof state !== 'object') return null;
+    if (typeof usageCore?.normalizeAgentStateToTrajectory === 'function') {
+      return usageCore.normalizeAgentStateToTrajectory(state, cascadeId);
+    }
+    const slice = state.trajectorySlice || {};
+    return {
+      trajectory: {
+        cascadeId: String(cascadeId || state.conversationId || slice.conversationId || ''),
+        steps: Array.isArray(slice.stepsInSlice) ? slice.stepsInSlice : Array.isArray(state.steps) ? state.steps : [],
+        generatorMetadata: Array.isArray(slice.generatorMetadatasInSlice) ? slice.generatorMetadatasInSlice : [],
+        executorMetadatas: Array.isArray(slice.executorMetadatasInSlice)
+          ? slice.executorMetadatasInSlice
+          : state.executorMetadata
+          ? [state.executorMetadata]
+          : [],
+        contextWindowUsage: state.contextWindowUsage || null,
+        agentStatus: Number(state.status || 0),
+        fullyIdle: typeof state.fullyIdle === 'boolean' ? state.fullyIdle : undefined,
+      },
+    };
+  }
+
+  async function resolveTrajectoryPayload(cascadeId, sum, h, opts = {}) {
+    if (!cascadeId) return null;
+    const isCloud = Boolean(sum?.cloud === true || cloudOnlyCascadeIds.has(cascadeId));
+    const liveProv = findCascadeAgentStateProvider(cascadeId, opts.scopeEl);
+    const liveState = liveProv ? liveProv.getState?.() || null : null;
+    if (liveProv && (isCloud || opts.watchLive)) {
+      watchAgentStateProvider(cascadeId, liveProv);
+    }
+
+    if (isCloud) {
+      if (hasUsableAgentState(liveState)) {
+        return normalizeAgentStatePayload(liveState, cascadeId);
+      }
+      if (!liveProv || opts.allowTempStream) {
+        const snap = await fetchAgentStateSnapshot(cascadeId, h, opts.timeoutMs || 3500);
+        if (hasUsableAgentState(snap)) return normalizeAgentStatePayload(snap, cascadeId);
+        if (snap) return normalizeAgentStatePayload(snap, cascadeId);
+      }
+      return liveState ? normalizeAgentStatePayload(liveState, cascadeId) : null;
+    }
+
+    if (typeof h?.svc?.getCascadeTrajectory === 'function') {
+      try {
+        const res = await h.svc.getCascadeTrajectory({ cascadeId });
+        const traj = res?.response?.trajectory || res?.trajectory || res;
+        if (
+          res &&
+          ((Array.isArray(traj?.steps) && traj.steps.length > 0) ||
+            (Array.isArray(traj?.generatorMetadata) && traj.generatorMetadata.length > 0) ||
+            !hasUsableAgentState(liveState))
+        ) {
+          return res;
+        }
+      } catch (err) {
+        if (isCloudOnlyTrajectoryError(err)) {
+          cloudOnlyCascadeIds.add(cascadeId);
+          if (liveProv) watchAgentStateProvider(cascadeId, liveProv);
+        }
+      }
+    }
+
+    if (hasUsableAgentState(liveState)) {
+      if (liveProv) watchAgentStateProvider(cascadeId, liveProv);
+      return normalizeAgentStatePayload(liveState, cascadeId);
+    }
+    if (opts.allowTempStream !== false) {
+      const snap = await fetchAgentStateSnapshot(cascadeId, h, opts.timeoutMs || 3500);
+      if (snap) return normalizeAgentStatePayload(snap, cascadeId);
+    }
+    return liveState ? normalizeAgentStatePayload(liveState, cascadeId) : null;
   }
 
   function getDisplayName() {
@@ -299,20 +597,44 @@
     return raw.split(/\s+/)[0] || raw;
   }
 
+  function normalizeCascadeId(raw) {
+    const s = String(raw || '').trim();
+    if (!s || s === 'conversation') return '';
+    const m = s.match(/\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i);
+    return m ? m[1] : s;
+  }
+
   function resolveCascadeId(inputBox) {
     const cv = inputBox ? inputBox.closest('[data-testid="conversation-view"]') : document.querySelector('[data-testid="conversation-view"]');
     if (inputBox && !cv && inputBox.closest('.agy-home')) {
       return '';
     }
     if (cv) {
-      const attrId = cv.getAttribute('data-cascade-id');
-      if (attrId && attrId !== 'conversation') return attrId;
+      const attrId = normalizeCascadeId(cv.getAttribute('data-cascade-id'));
+      if (attrId) return attrId;
     }
     const readIdFromObj = (obj) => {
       if (!obj || typeof obj !== 'object') return '';
-      if (typeof obj.cascadeId === 'string' && obj.cascadeId && obj.cascadeId !== 'conversation') return obj.cascadeId;
-      if (typeof obj.conversationId === 'string' && obj.conversationId && obj.conversationId !== 'conversation') return obj.conversationId;
-      if (typeof obj.trajectory?.cascadeId === 'string' && obj.trajectory.cascadeId) return obj.trajectory.cascadeId;
+      if (typeof obj.cascadeId === 'string') {
+        const id = normalizeCascadeId(obj.cascadeId);
+        if (id) return id;
+      }
+      if (typeof obj.conversationId === 'string') {
+        const id = normalizeCascadeId(obj.conversationId);
+        if (id) return id;
+      }
+      if (typeof obj.trajectory?.cascadeId === 'string') {
+        const id = normalizeCascadeId(obj.trajectory.cascadeId);
+        if (id) return id;
+      }
+      const provCid =
+        obj.cascadeContext?.state?.agentStateProvider?.getState?.()?.conversationId ||
+        obj.agentStateProvider?.getState?.()?.conversationId ||
+        '';
+      if (typeof provCid === 'string') {
+        const id = normalizeCascadeId(provCid);
+        if (id) return id;
+      }
       return '';
     };
     const readCascadeFromFiber = (el, maxDepth) => {
@@ -335,13 +657,19 @@
     if (cv) {
       const resp = cv.querySelector('[data-testid="agent-response"]');
       const tf = resp && extractFiberTurnContainer(resp);
-      if (tf?.cascadeId) return tf.cascadeId;
+      const tfId = normalizeCascadeId(tf?.cascadeId);
+      if (tfId) return tfId;
     }
     if (!inputBox?.closest?.('[data-testid="subagent-tab-conversation"]')) {
       const h = ensureHooks(true);
       const convoState = h?.store?.getState?.()?.conversation?.convoState;
-      if (convoState?.type === 'active' && typeof convoState.cascadeId === 'string' && convoState.cascadeId) {
-        return convoState.cascadeId;
+      if (convoState?.type === 'active' && typeof convoState.cascadeId === 'string') {
+        const id = normalizeCascadeId(convoState.cascadeId);
+        if (id) return id;
+      }
+      if (convoState?.type === 'subagent' && typeof convoState.childConversationId === 'string') {
+        const id = normalizeCascadeId(convoState.childConversationId);
+        if (id) return id;
       }
     }
     const m = location.pathname.match(/\/c\/([0-9a-f-]{36})/i);
@@ -406,8 +734,14 @@
         typeof usageCore?.tsSec === 'function' ? usageCore.tsSec(sum.lastModifiedTime) : Number(sum.lastModifiedTime?.seconds || 0)
       );
       const cached = usageRecords.get(id);
-      if (!cached || cached.stepCount !== stepCount || cached.lastModifiedSec !== lastModSec) {
-        staleIds.push([id, sum]);
+      const cachedSumSteps = cached && cached.summaryStepCount !== undefined ? cached.summaryStepCount : cached?.stepCount;
+      const isCloudSum = Boolean(sum.cloud === true || cloudOnlyCascadeIds.has(id));
+      const sameVersion =
+        cached &&
+        cached.lastModifiedSec === lastModSec &&
+        (isCloudSum ? true : cachedSumSteps === stepCount);
+      if (!sameVersion) {
+        staleIds.push([id, sum, stepCount, lastModSec]);
       }
     }
     for (const oldId of Array.from(usageRecords.keys())) {
@@ -428,11 +762,27 @@
       for (let i = 0; i < staleIds.length && !destroyed; i += CONCURRENCY) {
         const batch = staleIds.slice(i, i + CONCURRENCY);
         await Promise.all(
-          batch.map(async ([id, sum]) => {
+          batch.map(async ([id, sum, stepCount, lastModSec]) => {
             try {
-              const res = await h.svc.getCascadeTrajectory({ cascadeId: id });
-              const rec = usageCore.analyzeTrajectoryForUsage(res, sum, id);
-              usageRecords.set(id, rec);
+              const isCloudSum = Boolean(sum.cloud === true || cloudOnlyCascadeIds.has(id));
+              const res = await resolveTrajectoryPayload(id, sum, h, {
+                allowTempStream: isCloudSum ? !sum?.annotations?.archived : false,
+                timeoutMs: 2500,
+              });
+              if (res) {
+                const rec = usageCore.analyzeTrajectoryForUsage(res, sum, id);
+                usageRecords.set(id, rec);
+              } else if (isCloudSum) {
+                usageRecords.set(id, {
+                  cascadeId: String(id),
+                  stepCount: 0,
+                  summaryStepCount: stepCount,
+                  lastModifiedSec: lastModSec,
+                  subagent: typeof usageCore?.isSubagentSummary === 'function' ? usageCore.isSubagentSummary(sum) : false,
+                  calls: 0,
+                  days: {},
+                });
+              }
             } catch {}
           })
         );
@@ -1766,17 +2116,34 @@
     };
   }
 
-  async function fetchActiveConvo(cascadeId, force = false) {
+  async function fetchActiveConvo(cascadeId, force = false, scopeEl = null) {
     if (!cascadeId) return null;
-    const h = ensureHooks();
-    if (!h) return null;
-    const st = h.store.getState();
+    const h = ensureHooks(true);
+    const liveProv = findCascadeAgentStateProvider(cascadeId, scopeEl);
+    if (!h && !liveProv) return null;
+    if (h && !h.svc && !h.trajCtx && !liveProv) return null;
+    const st = h?.store?.getState?.() || {};
     const rawPrimary = st.trajectorySummaries?.summaries || {};
     const rawFallback = st.cascadeTrajectorySummaries || {};
     const allSummaries = { ...rawFallback, ...rawPrimary };
     const sumEntry = rawPrimary[cascadeId] || rawFallback[cascadeId] || allSummaries[cascadeId];
     const sum = sumEntry?.summary || sumEntry || {};
-    const stepCount = Number(sum?.stepCount || 0);
+    const isCloud = Boolean(sum?.cloud === true || cloudOnlyCascadeIds.has(cascadeId));
+    const liveState = liveProv ? liveProv.getState?.() || null : null;
+    if (liveProv && isCloud) {
+      watchAgentStateProvider(cascadeId, liveProv);
+    }
+    const liveSlice = liveState?.trajectorySlice || null;
+    const liveSteps = Array.isArray(liveSlice?.stepsInSlice) ? liveSlice.stepsInSlice : [];
+    const liveLastStep = liveSteps.length > 0 ? liveSteps[liveSteps.length - 1] : null;
+    const liveSig = liveState
+      ? `${liveSlice?.totalStepsLength || liveSteps.length}:${liveSteps.length}:${liveState.status || 0}:${liveState.fullyIdle ? 1 : 0}:${liveLastStep?.status || 0}:${liveLastStep?.metadata?.modelUsage?.outputTokens || 0}:${liveLastStep?.step?.value?.thinking?.length || 0}:${liveLastStep?.step?.value?.response?.length || 0}:${liveState.contextWindowUsage?.estimatedTokensUsed || 0}`
+      : '';
+    const stepCount = Math.max(
+      Number(sum?.stepCount || 0),
+      Number(liveSlice?.totalStepsLength || 0),
+      liveSteps.length
+    );
     const lastMod = Math.floor(
       typeof usageCore?.tsSec === 'function' ? usageCore.tsSec(sum?.lastModifiedTime) : Number(sum?.lastModifiedTime?.seconds || 0)
     );
@@ -1786,6 +2153,8 @@
       sum?.hasActivity ||
       sum?.status === 2 ||
       sum?.hasRunningSubagents ||
+      liveState?.status === 2 ||
+      (liveState && liveState.fullyIdle === false) ||
       domRunning
     );
 
@@ -1801,6 +2170,7 @@
           parentId: meta.parentConversationId || '',
           rootId: meta.rootConversationId || '',
           summary: s.summary || '',
+          summaryObj: s,
           stepCount: Number(s.stepCount || 0),
           status: Number(s.status || 1),
           createdAt: meta.createdAt || s.createdTime,
@@ -1819,6 +2189,7 @@
         lastSubCount: -1,
         lastRunning: false,
         lastDomSig: '',
+        lastLiveSig: '',
         lastAt: 0,
         data: null,
       };
@@ -1831,7 +2202,8 @@
       entry.lastMod !== lastMod ||
       entry.lastSubCount !== childMetaList.length ||
       entry.lastRunning !== running ||
-      entry.lastDomSig !== domSig;
+      entry.lastDomSig !== domSig ||
+      entry.lastLiveSig !== liveSig;
 
     if (entry.promise) {
       if (force || changed) entry.needsRefetch = true;
@@ -1848,20 +2220,38 @@
     entry.fetching = true;
     entry.promise = (async () => {
       try {
-        const res = await h.svc.getCascadeTrajectory({ cascadeId });
+        const res = await resolveTrajectoryPayload(cascadeId, sum, h, {
+          scopeEl,
+          allowTempStream: !liveProv,
+          watchLive: isCloud,
+          timeoutMs: 3500,
+        });
+        if (!res) return entry.data;
         const knownMax = getKnownMaxContextForCard(null, entry.data);
         const analyzed = usageCore.analyzeActiveConversation(res, {
           cascadeId,
           knownLimits: knownMax > 0 ? { maxContextTokens: knownMax } : undefined,
         });
-        if (analyzed && analyzed.maxContextTokens > 0 && analyzed.hasActiveLimits && analyzed.lastModel) {
+        if (entry.data && entry.data.totalSteps > 0 && analyzed && analyzed.totalSteps === 0 && analyzed.totalCalls === 0) {
+          return entry.data;
+        }
+        if (
+          analyzed &&
+          analyzed.maxContextTokens > 0 &&
+          analyzed.hasActiveLimits &&
+          analyzed.hasExactContextLimits !== false &&
+          analyzed.lastModel
+        ) {
           const mKey = normalizeModelCtxKey(analyzed.lastModel);
           if (mKey) knownModelMaxCtx.set(mKey, analyzed.maxContextTokens);
         }
         if (analyzed && analyzed.calls > 0 && typeof usageCore.analyzeTrajectoryForUsage === 'function') {
           try {
             const rec = usageCore.analyzeTrajectoryForUsage(res, sum, cascadeId);
-            if (rec) usageRecords.set(cascadeId, rec);
+            if (rec) {
+              usageRecords.set(cascadeId, rec);
+              if (isCloud || cloudOnlyCascadeIds.has(cascadeId)) saveUsageCache();
+            }
           } catch {}
         }
 
@@ -1869,14 +2259,19 @@
           const subItems = await Promise.all(
             childMetaList.slice(0, 12).map(async (cm) => {
               const cachedSub = subagentTrajCache.get(cm.id);
-              if (cachedSub && cachedSub.stepCount === cm.stepCount && cachedSub.status === 1 && cm.status === 1) {
+              const subIsCloud = Boolean(cm.summaryObj?.cloud === true || cloudOnlyCascadeIds.has(cm.id));
+              if (!subIsCloud && cachedSub && cachedSub.stepCount === cm.stepCount && cachedSub.status === 1 && cm.status === 1) {
                 return { ...cm, analysis: cachedSub.analysis };
               }
               try {
-                const subRes = await h.svc.getCascadeTrajectory({ cascadeId: cm.id });
+                const subRes = await resolveTrajectoryPayload(cm.id, cm.summaryObj, h, {
+                  allowTempStream: true,
+                  timeoutMs: 2500,
+                });
+                if (!subRes) return cm;
                 const subAnalysis = usageCore.analyzeActiveConversation(subRes, { cascadeId: cm.id });
                 subagentTrajCache.set(cm.id, {
-                  stepCount: cm.stepCount,
+                  stepCount: Math.max(cm.stepCount, subAnalysis?.totalSteps || 0),
                   status: cm.status,
                   analysis: subAnalysis,
                 });
@@ -1895,6 +2290,7 @@
         entry.lastSubCount = childMetaList.length;
         entry.lastRunning = running;
         entry.lastDomSig = domSig;
+        entry.lastLiveSig = liveSig;
         entry.lastAt = Date.now();
       } catch {} finally {
         entry.fetching = false;
@@ -2321,7 +2717,7 @@
       const inSubagentPane = Boolean(resp.closest('[data-testid="subagent-tab-conversation"]'));
       const isMain =
         !inSubagentPane &&
-        (!fiberInfo || !fiberInfo.cascadeId || !data.cascadeId || fiberInfo.cascadeId === data.cascadeId);
+        (!fiberInfo || !fiberInfo.cascadeId || !data.cascadeId || sameCascadeId(fiberInfo.cascadeId, data.cascadeId));
       const item = {
         host,
         resp,
@@ -2533,7 +2929,9 @@
         });
         card.insertBefore(topBar, card.firstChild);
       }
-      const topKey = `${ring.pctRound}|${ring.remainingTokens}|${ring.usedTokens}|${chatMsgs}|${d.overheadTokens || 0}|${draftEst.tokens}|${d.cacheHitPct}|${topSpeed}|${lang}`;
+      const ctxRemPctRound = Math.round(ring.contextRemainingPct);
+      const ctxColor = ctxRemPctRound <= 10 ? '#dc3c3d' : ctxRemPctRound <= 30 ? '#fbb315' : '#257de0';
+      const topKey = `${ctxRemPctRound}|${ring.remainingTokens}|${totalW}|${ring.usedTokens}|${d.sysTokens || 0}|${d.toolsTokens || 0}|${chatMsgs}|${d.toolResultsTokens || 0}|${d.overheadTokens || 0}|${draftEst.tokens}|${Math.round(d.cacheHitPct || 0)}|${topSpeed}|${lang}`;
       if (topBar.getAttribute('data-ag-cs-top-key') !== topKey) {
         topBar.setAttribute('data-ag-cs-top-key', topKey);
         topBar.innerHTML = `
@@ -2546,7 +2944,7 @@
             <span style="width:${pctOf(draftEst.tokens)}%;background:#ec4899"></span>
           </div>
           <div class="ag-cs-hud-top-row">
-            <span class="ag-cs-hud-rem" style="color:${ring.color}">${escapeHtml(ui.remShort || 'Rem')} ${ring.pctRound}% (${formatCompactK(ring.remainingTokens)} / ${formatCompactK(totalW)})</span>
+            <span class="ag-cs-hud-rem" style="color:${ctxColor}">${escapeHtml(ui.remShort || 'Rem')} ${ctxRemPctRound}% (${formatCompactK(ring.remainingTokens)} / ${formatCompactK(totalW)})</span>
             <span>${escapeHtml(ui.usedWord || 'Used')} ${formatCompactK(ring.usedTokens)}${draftEst.tokens > 0 ? ` +${formatCompactK(draftEst.tokens)}` : ''}</span>
             <span>${escapeHtml(ui.cacheShort || 'Cache')} ${Math.round(d.cacheHitPct || 0)}%</span>
             ${topSpeed > 0 ? `<span>⚡ ${topSpeed} tok/s</span>` : ''}
@@ -4094,7 +4492,7 @@
       if (card === primaryCard) activeInfoForCrab = cached;
 
       if (inConvo && cascadeId) {
-        fetchActiveConvo(cascadeId).then((fresh) => {
+        fetchActiveConvo(cascadeId, false, card).then((fresh) => {
           if (!destroyed && fresh && card.isConnected) {
             updateFooterWidgets(card, footer, fresh);
             syncSurroundHud(card, footer, fresh);
@@ -4924,6 +5322,7 @@
       } catch {}
       storeUnsub = null;
     }
+    unwatchAllAgentStateProviders();
     try {
       observer.disconnect();
     } catch {}
