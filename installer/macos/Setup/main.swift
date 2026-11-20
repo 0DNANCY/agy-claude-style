@@ -30,6 +30,7 @@ final class OperationResult {
     var installDir = ""
     var antigravityApp: String?
     var antigravityVersion: String?
+    var antigravityRunningWithoutCdp = false
     var cdpPort: Int?
     var injectedPages: [String] = []
     var preservedExistingConfig = false
@@ -388,6 +389,29 @@ enum InstallerCore {
             try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: selfDest)
         }
 
+        let launcherScriptPath = (installDir as NSString).appendingPathComponent("launch-antigravity.command")
+        let targetApp = ag.appPath ?? "/Applications/Antigravity.app"
+        let launcherScript = """
+        #!/usr/bin/env bash
+        # Launch or restart Antigravity Desktop with CDP enabled for AGY Claude Style (Antigravity 2.33.0+)
+        PORT_FILE="$HOME/Library/Application Support/Antigravity/DevToolsActivePort"
+        if pgrep -x Antigravity >/dev/null 2>&1; then
+          if [ ! -f "$PORT_FILE" ] || ! curl -sf "http://127.0.0.1:$(head -n 1 "$PORT_FILE" 2>/dev/null)/json/list" >/dev/null 2>&1; then
+            echo "[*] Restarting Antigravity with CDP remote debugging enabled..."
+            pkill -TERM -x Antigravity 2>/dev/null || true
+            for _ in $(seq 1 30); do
+              pgrep -x Antigravity >/dev/null 2>&1 || break
+              sleep 0.2
+            done
+            rm -f "$PORT_FILE"
+            sleep 0.3
+          fi
+        fi
+        open -a "\(targetApp)" --args --remote-debugging-port=0
+        """
+        try? (launcherScript + "\n").write(toFile: launcherScriptPath, atomically: true, encoding: .utf8)
+        try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: launcherScriptPath)
+
         result.preservedExistingConfig = preservedConfig
         report(62, preservedConfig ? "已保留本机现有 config.json 用户配置" : "已写入内置默认配置 config.json")
 
@@ -466,9 +490,14 @@ enum InstallerCore {
         } else if cdpReachable, let port = port {
             result.headline = "已安装并启动守护！等待 Antigravity 窗口就绪"
             result.detail = "已配置登录自启并启动后台守护。检测到调试端口 \(port)，窗口就绪后将自动完成注入。"
+        } else if ag.isRunning {
+            result.antigravityRunningWithoutCdp = true
+            result.headline = "已安装并启动守护！但当前 Antigravity 未开启 CDP 端口"
+            result.detail = "Antigravity 2.33.0+ 默认关闭远程调试端口。请点击下方「以 CDP 模式重启」，或退出后使用 --remote-debugging-port=0 启动即可生效。"
+            report(95, "[!] 检测到 Antigravity 正在运行但未开启 CDP（2.33.0+ 需带参 --remote-debugging-port=0 启动）")
         } else {
             result.headline = "安装成功！后台自动修补已就绪"
-            result.detail = "当前未检测到运行中的 Antigravity Desktop；守护进程已在后台待命，打开 Antigravity Desktop 后会自动立即生效。"
+            result.detail = "守护进程已在后台待命。如使用 Antigravity 2.33.0+，请点击下方「以 CDP 模式启动」或运行配置目录内的 launch-antigravity.command。"
         }
         report(100, result.headline)
         return result
@@ -560,6 +589,7 @@ final class InstallerAppDelegate: NSObject, NSApplicationDelegate, NSWindowDeleg
 
     private var activeInstallDir: String
     private var antigravityApp: String?
+    private var needsCdpRelaunch = false
     private var busy = false
 
     init(opts: InstallerOptions) {
@@ -793,13 +823,15 @@ final class InstallerAppDelegate: NSObject, NSApplicationDelegate, NSWindowDeleg
                 DispatchQueue.main.async {
                     self.activeInstallDir = res.installDir
                     self.antigravityApp = res.antigravityApp
+                    self.needsCdpRelaunch = res.antigravityRunningWithoutCdp
                     self.statusHeadline.stringValue = res.headline
-                    self.statusHeadline.textColor = Self.srgb(21, 128, 61)
+                    self.statusHeadline.textColor = res.antigravityRunningWithoutCdp ? Self.srgb(180, 83, 9) : Self.srgb(21, 128, 61)
                     self.statusDetail.stringValue = res.detail
                     self.metaLabel.stringValue = "配置: \(res.configSummary)"
                     self.openDirBtn.isEnabled = FileManager.default.fileExists(atPath: self.activeInstallDir)
                     self.uninstallBtn.isEnabled = true
                     let showLaunch = (self.antigravityApp != nil && res.injectedPages.isEmpty)
+                    self.launchAgBtn.title = res.antigravityRunningWithoutCdp ? "以 CDP 模式重启" : "以 CDP 模式启动"
                     self.launchAgBtn.isHidden = !showLaunch
                     self.launchAgBtn.isEnabled = showLaunch
                     self.busy = false
@@ -858,10 +890,28 @@ final class InstallerAppDelegate: NSObject, NSApplicationDelegate, NSWindowDeleg
     }
 
     @objc private func handleLaunchAgClick() {
-        if let appPath = antigravityApp, FileManager.default.fileExists(atPath: appPath) {
-            let url = URL(fileURLWithPath: appPath)
-            let cfg = NSWorkspace.OpenConfiguration()
-            NSWorkspace.shared.openApplication(at: url, configuration: cfg, completionHandler: nil)
+        guard let appPath = antigravityApp, FileManager.default.fileExists(atPath: appPath) else { return }
+        if needsCdpRelaunch {
+            launchAgBtn.isEnabled = false
+            appendLog("[↻] 正在温和关闭 Antigravity 并以 --remote-debugging-port=0 重新启动...")
+            DispatchQueue.global(qos: .userInitiated).async {
+                let ok = CdpHelper.relaunchAntigravityWithCdp(appPath: appPath, port: 0)
+                DispatchQueue.main.async {
+                    if ok {
+                        self.needsCdpRelaunch = false
+                        self.statusHeadline.stringValue = "已以 CDP 模式重启 Antigravity"
+                        self.statusHeadline.textColor = Self.srgb(21, 128, 61)
+                        self.statusDetail.stringValue = "后台守护进程将在 2 秒内自动完成无损注入。"
+                        self.appendLog("[✓] 已以 --remote-debugging-port=0 重启 Antigravity")
+                    } else {
+                        self.launchAgBtn.isEnabled = true
+                        self.appendLog("[!] 未能自动关闭 Antigravity，请先按 Cmd+Q 完全退出后再次点击")
+                    }
+                }
+            }
+        } else {
+            let ok = CdpHelper.launchAntigravityWithCdp(appPath: appPath, port: 0)
+            appendLog(ok ? "[✓] 已以 --remote-debugging-port=0 启动 Antigravity" : "[!] 启动 Antigravity 失败")
         }
     }
 
@@ -906,6 +956,7 @@ func writeOperationOutFile(_ outFile: String?, res: OperationResult) {
         "installDir": .string(res.installDir),
         "antigravityApp": res.antigravityApp.map { .string($0) } ?? .null,
         "antigravityVersion": res.antigravityVersion.map { .string($0) } ?? .null,
+        "antigravityRunningWithoutCdp": .bool(res.antigravityRunningWithoutCdp),
         "cdpPort": res.cdpPort.map { .int(Int64($0)) } ?? .null,
         "injectedPages": .array(res.injectedPages.map { .string($0) }),
         "preservedExistingConfig": .bool(res.preservedExistingConfig),

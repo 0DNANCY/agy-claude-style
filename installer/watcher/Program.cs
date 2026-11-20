@@ -31,6 +31,15 @@ namespace AgyClaudeStyle.Watcher
             string customDir = null;
             int? overridePort = null;
             string outFile = null;
+            bool exitOnHostCloseFlag = false;
+            int? parentPid = null;
+
+            string envPpid = Environment.GetEnvironmentVariable("AG_PARENT_PID");
+            if (!string.IsNullOrEmpty(envPpid))
+            {
+                int parsedPpid;
+                if (int.TryParse(envPpid.Trim(), out parsedPpid) && parsedPpid > 0) parentPid = parsedPpid;
+            }
 
             for (int i = 0; i < args.Length; i++)
             {
@@ -38,6 +47,12 @@ namespace AgyClaudeStyle.Watcher
                 if (a == "--watch") mode = "watch";
                 else if (a == "--once") mode = "once";
                 else if (a == "--remove") mode = "remove";
+                else if (a == "--exit-on-host-close") exitOnHostCloseFlag = true;
+                else if (a == "--parent-pid" && i + 1 < args.Length)
+                {
+                    int pp;
+                    if (int.TryParse(args[++i], out pp) && pp > 0) parentPid = pp;
+                }
                 else if (a == "--dir" && i + 1 < args.Length) customDir = args[++i];
                 else if (a == "--cdp-port" && i + 1 < args.Length)
                 {
@@ -62,7 +77,7 @@ namespace AgyClaudeStyle.Watcher
                 {
                     return RunRemoveAsync(overridePort, outFile).GetAwaiter().GetResult();
                 }
-                return RunWatchAsync(overridePort).GetAwaiter().GetResult();
+                return RunWatchAsync(overridePort, exitOnHostCloseFlag, parentPid).GetAwaiter().GetResult();
             }
             catch (Exception ex)
             {
@@ -145,11 +160,22 @@ namespace AgyClaudeStyle.Watcher
             int? port = CdpHelper.ReadPort(overridePort);
             if (!port.HasValue)
             {
-                WriteResult(outFile, false, "未找到调试端口文件，Antigravity 可能未运行", null);
+                bool running = CdpHelper.GetAntigravityProcessIds().Count > 0;
+                WriteResult(outFile, false, CdpHelper.CdpUnavailableMessage(running, null), null);
                 return 1;
             }
 
-            List<CdpPageInfo> pages = await CdpHelper.ListPagesAsync(port.Value).ConfigureAwait(false);
+            List<CdpPageInfo> pages;
+            try
+            {
+                pages = await CdpHelper.ListPagesAsync(port.Value).ConfigureAwait(false);
+            }
+            catch
+            {
+                bool running = CdpHelper.GetAntigravityProcessIds().Count > 0;
+                WriteResult(outFile, false, CdpHelper.CdpUnavailableMessage(running, port), null);
+                return 1;
+            }
             if (pages.Count == 0)
             {
                 WriteResult(outFile, false, "未找到 Antigravity 窗口页面", null);
@@ -243,7 +269,17 @@ namespace AgyClaudeStyle.Watcher
             try { if (File.Exists(pidFile)) File.Delete(pidFile); } catch { }
         }
 
-        private static async Task<int> RunWatchAsync(int? overridePort)
+        private static bool GetConfigBool(Dictionary<string, object> cfg, string key)
+        {
+            object v;
+            if (cfg != null && cfg.TryGetValue(key, out v) && v is bool)
+            {
+                return (bool)v;
+            }
+            return false;
+        }
+
+        private static async Task<int> RunWatchAsync(int? overridePort, bool exitOnHostCloseFlag, int? parentPid)
         {
             string dirHash = GetDirHash(_baseDir);
             bool createdNew;
@@ -259,10 +295,14 @@ namespace AgyClaudeStyle.Watcher
                 try { File.WriteAllText(_logFile, "", new UTF8Encoding(false)); } catch { }
 
                 PluginManifest manifest = PluginManifest.Load(_baseDir);
+                Dictionary<string, object> initCfg = CdpHelper.ReadConfig(_baseDir, manifest);
+                bool cfgAutoRelaunch = GetConfigBool(initCfg, "autoRelaunchWithCdp");
+                bool cfgExitOnHostClose = GetConfigBool(initCfg, "exitOnHostClose");
                 Log(string.Format("[*] AGY Claude Style (agy-claude-style) 守护模式启动 (PID {0})，每 2 秒检查一次窗口", selfPid));
 
                 string currentExpr = CdpHelper.BuildInjectExpression(_baseDir, manifest);
                 object exprLock = new object();
+                bool hadAttachedWindow = false;
                 ConcurrentDictionary<string, AttachedEntry> attached = new ConcurrentDictionary<string, AttachedEntry>(StringComparer.Ordinal);
                 ManualResetEventSlim exitEvent = new ManualResetEventSlim(false);
                 EventWaitHandle stopSignal = new EventWaitHandle(false, EventResetMode.ManualReset, "Local\\AGYClaudeStyleStop_" + dirHash);
@@ -352,6 +392,7 @@ namespace AgyClaudeStyle.Watcher
                         lock (exprLock) { exprSnapshot = currentExpr; }
                         Dictionary<string, object> res = await applyAsync(entry, exprSnapshot).ConfigureAwait(false);
                         string status = (res != null && res.ContainsKey("status")) ? Convert.ToString(res["status"]) : "ok";
+                        lock (exprLock) { hadAttachedWindow = true; }
                         Log(string.Format("[✓] 已注入 agy-claude-style: {0} ({1})", entry.Title, status));
                     }
                     catch (Exception ex)
@@ -401,8 +442,14 @@ namespace AgyClaudeStyle.Watcher
                                     try
                                     {
                                         manifest = PluginManifest.Load(_baseDir);
+                                        Dictionary<string, object> nextCfg = CdpHelper.ReadConfig(_baseDir, manifest);
                                         string nextExpr = CdpHelper.BuildInjectExpression(_baseDir, manifest);
-                                        lock (exprLock) { currentExpr = nextExpr; }
+                                        lock (exprLock)
+                                        {
+                                            currentExpr = nextExpr;
+                                            cfgAutoRelaunch = GetConfigBool(nextCfg, "autoRelaunchWithCdp");
+                                            cfgExitOnHostClose = GetConfigBool(nextCfg, "exitOnHostClose");
+                                        }
 
                                         int n = 0;
                                         foreach (KeyValuePair<string, AttachedEntry> kv in attached)
@@ -437,17 +484,31 @@ namespace AgyClaudeStyle.Watcher
                 }
                 catch { }
 
+                bool isExplicitPort = overridePort.HasValue || !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("AG_CDP_PORT"));
                 int? lastPort = null;
+                int consecutivePortFailures = 0;
+                int noCdpRunningTicks = 0;
+                string warnedNoCdpSig = "";
+                string relaunchedPidSig = "";
+                DateTime lastRelaunchUtc = DateTime.MinValue;
+
                 try
                 {
                     while (!exitEvent.IsSet)
                     {
+                        if (parentPid.HasValue && !CdpHelper.IsProcessAlive(parentPid.Value))
+                        {
+                            Log("[*] 父进程 " + parentPid.Value + " 已退出，守护进程自动停止");
+                            break;
+                        }
+
+                        int sleepMs = 2000;
                         try
                         {
                             int? port = CdpHelper.ReadPort(overridePort);
+                            List<CdpPageInfo> pages = null;
                             if (port.HasValue)
                             {
-                                List<CdpPageInfo> pages = null;
                                 try
                                 {
                                     pages = await CdpHelper.ListPagesAsync(port.Value).ConfigureAwait(false);
@@ -456,41 +517,120 @@ namespace AgyClaudeStyle.Watcher
                                 {
                                     pages = null;
                                 }
-                                if (pages != null)
-                                {
-                                    if (!lastPort.HasValue || lastPort.Value != port.Value)
-                                    {
-                                        // Close stale sessions if Antigravity restarted on a new port
-                                        foreach (KeyValuePair<string, AttachedEntry> kv in attached)
-                                        {
-                                            AttachedEntry oldEntry;
-                                            if (attached.TryRemove(kv.Key, out oldEntry) && oldEntry != null && oldEntry.Session != null)
-                                            {
-                                                try { oldEntry.Session.Close(); } catch { }
-                                            }
-                                        }
-                                        Log("[+] 连接到调试端口 " + port.Value);
-                                        lastPort = port.Value;
-                                    }
+                            }
 
-                                    List<Task> tasks = new List<Task>();
-                                    for (int i = 0; i < pages.Count; i++)
+                            if (port.HasValue && pages != null)
+                            {
+                                consecutivePortFailures = 0;
+                                noCdpRunningTicks = 0;
+                                warnedNoCdpSig = "";
+
+                                if (!lastPort.HasValue || lastPort.Value != port.Value)
+                                {
+                                    // Close stale sessions if Antigravity restarted on a new port
+                                    foreach (KeyValuePair<string, AttachedEntry> kv in attached)
                                     {
-                                        if (!attached.ContainsKey(pages[i].Id))
+                                        AttachedEntry oldEntry;
+                                        if (attached.TryRemove(kv.Key, out oldEntry) && oldEntry != null && oldEntry.Session != null)
                                         {
-                                            tasks.Add(attachAsync(pages[i]));
+                                            try { oldEntry.Session.Close(); } catch { }
                                         }
                                     }
-                                    if (tasks.Count > 0)
+                                    Log("[+] 连接到调试端口 " + port.Value);
+                                    lastPort = port.Value;
+                                }
+
+                                List<Task> tasks = new List<Task>();
+                                for (int i = 0; i < pages.Count; i++)
+                                {
+                                    if (!attached.ContainsKey(pages[i].Id))
                                     {
-                                        await Task.WhenAll(tasks).ConfigureAwait(false);
+                                        tasks.Add(attachAsync(pages[i]));
+                                    }
+                                }
+                                if (tasks.Count > 0)
+                                {
+                                    await Task.WhenAll(tasks).ConfigureAwait(false);
+                                }
+                            }
+                            else
+                            {
+                                consecutivePortFailures++;
+                                if (consecutivePortFailures >= 3)
+                                {
+                                    foreach (KeyValuePair<string, AttachedEntry> kv in attached)
+                                    {
+                                        AttachedEntry oldEntry;
+                                        if (attached.TryRemove(kv.Key, out oldEntry) && oldEntry != null && oldEntry.Session != null)
+                                        {
+                                            try { oldEntry.Session.Close(); } catch { }
+                                        }
+                                    }
+                                    lastPort = null;
+                                }
+
+                                bool hadWin;
+                                bool autoRelaunch;
+                                bool exitOnClose;
+                                lock (exprLock)
+                                {
+                                    hadWin = hadAttachedWindow;
+                                    autoRelaunch = cfgAutoRelaunch;
+                                    exitOnClose = exitOnHostCloseFlag || cfgExitOnHostClose;
+                                }
+
+                                List<int> runningPids = isExplicitPort ? new List<int>() : CdpHelper.GetAntigravityProcessIds();
+                                if (exitOnClose && hadWin && attached.IsEmpty && consecutivePortFailures >= 3 && runningPids.Count == 0)
+                                {
+                                    Log("[*] Antigravity 宿主已关闭，守护进程自动退出");
+                                    break;
+                                }
+
+                                if (runningPids.Count > 0)
+                                {
+                                    noCdpRunningTicks++;
+                                    string pidSig = string.Join(",", runningPids);
+                                    if (noCdpRunningTicks >= 3 && warnedNoCdpSig != pidSig)
+                                    {
+                                        warnedNoCdpSig = pidSig;
+                                        Log("[!] " + CdpHelper.CdpUnavailableMessage(true, port));
+                                        if (!autoRelaunch)
+                                        {
+                                            Log("[*] 提示：可在 config.json 中设置 \"autoRelaunchWithCdp\": true 以启用自动温和重启接管");
+                                        }
+                                    }
+                                    if (autoRelaunch && noCdpRunningTicks >= 3 && relaunchedPidSig != pidSig &&
+                                        (DateTime.UtcNow - lastRelaunchUtc).TotalSeconds >= 60.0)
+                                    {
+                                        relaunchedPidSig = pidSig;
+                                        lastRelaunchUtc = DateTime.UtcNow;
+                                        Log("[↻] autoRelaunchWithCdp 已启用：正在温和重启 Antigravity 并附加 --remote-debugging-port=0 ...");
+                                        bool ok = CdpHelper.RelaunchAntigravityWithCdp(null, 0, 8000);
+                                        if (ok)
+                                        {
+                                            Log("[✓] 已以 CDP 模式重启 Antigravity，等待窗口就绪...");
+                                            noCdpRunningTicks = 0;
+                                        }
+                                        else
+                                        {
+                                            Log("[!] 自动重启未完成，请手动完全退出 Antigravity 后以 --remote-debugging-port=0 启动");
+                                        }
+                                    }
+                                }
+                                else
+                                {
+                                    noCdpRunningTicks = 0;
+                                    warnedNoCdpSig = "";
+                                    if (consecutivePortFailures >= 3)
+                                    {
+                                        sleepMs = 5000;
                                     }
                                 }
                             }
                         }
                         catch { }
 
-                        exitEvent.Wait(2000);
+                        exitEvent.Wait(sleepMs);
                     }
                 }
                 finally

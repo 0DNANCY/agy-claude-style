@@ -222,34 +222,69 @@
   let storeUnsub = null;
   let storeDebounce = null;
 
+  function isAppRootStore(s) {
+    if (!s || typeof s.getState !== 'function') return false;
+    try {
+      const st = s.getState();
+      return Boolean(
+        st &&
+          typeof st === 'object' &&
+          ('trajectorySummaries' in st ||
+            'cascadeTrajectorySummaries' in st ||
+            'userStatus' in st ||
+            'conversation' in st)
+      );
+    } catch {
+      return false;
+    }
+  }
+
   function ensureHooks(allowPartial = false) {
-    if (cachedSvc && cachedStore) return { svc: cachedSvc, store: cachedStore };
+    if (cachedSvc && cachedStore && isAppRootStore(cachedStore)) {
+      return { svc: cachedSvc, store: cachedStore };
+    }
     const anchors = document.querySelectorAll(
-      '[data-testid="conversation-view"], [data-testid="agent-input-box"], [data-testid="conversation-row-sidebar"], [data-testid="new-conversation-button"], [data-testid="home-greeting"]'
+      '[data-testid="conversation-view"], [data-testid="agent-input-box"], [data-testid="agent-response"], [data-testid="conversation-row-sidebar"], [data-testid="new-conversation-button"], [data-testid="home-greeting"]'
     );
+    let bestRootStore = isAppRootStore(cachedStore) ? cachedStore : null;
+    let fallbackStore = cachedStore || null;
     for (const el of anchors) {
       const key = Object.keys(el).find((k) => k.startsWith('__reactFiber$'));
-      for (let f = key && el[key]; f && !(cachedSvc && cachedStore); f = f.return) {
+      for (let f = key && el[key]; f && !(cachedSvc && bestRootStore); f = f.return) {
         const p = f.memoizedProps;
-        if (!cachedStore && p && p.store && typeof p.store.getState === 'function') {
-          cachedStore = p.store;
+        if (p && p.store && typeof p.store.getState === 'function') {
+          if (isAppRootStore(p.store)) bestRootStore = bestRootStore || p.store;
+          else if (!fallbackStore) fallbackStore = p.store;
         }
         for (let d = f.dependencies && f.dependencies.firstContext; d; d = d.next) {
           const v = d.memoizedValue;
           if (!v || typeof v !== 'object') continue;
           if (!cachedSvc && typeof v.getCascadeTrajectory === 'function') cachedSvc = v;
-          if (!cachedStore && v.store && typeof v.store.getState === 'function') cachedStore = v.store;
+          if (v.store && typeof v.store.getState === 'function') {
+            if (isAppRootStore(v.store)) bestRootStore = bestRootStore || v.store;
+            else if (!fallbackStore) fallbackStore = v.store;
+          }
         }
       }
-      if (cachedSvc && cachedStore) break;
+      if (cachedSvc && bestRootStore) break;
     }
-    if (cachedStore && !storeUnsub) {
+    const chosenStore = bestRootStore || fallbackStore;
+    if (chosenStore && chosenStore !== cachedStore) {
+      if (storeUnsub) {
+        try {
+          storeUnsub();
+        } catch {}
+        storeUnsub = null;
+      }
+      cachedStore = chosenStore;
+    }
+    if (cachedStore && !storeUnsub && typeof cachedStore.subscribe === 'function') {
       storeUnsub = cachedStore.subscribe(() => {
         if (destroyed || storeDebounce) return;
         storeDebounce = setTimeout(() => {
           storeDebounce = null;
           if (!destroyed) onStoreChanged();
-        }, 400);
+        }, 150);
       });
     }
     if (cachedSvc && cachedStore) return { svc: cachedSvc, store: cachedStore };
@@ -273,28 +308,44 @@
       const attrId = cv.getAttribute('data-cascade-id');
       if (attrId && attrId !== 'conversation') return attrId;
     }
-    const m = location.pathname.match(/\/c\/([0-9a-f-]{36})/i);
-    if (m) return m[1];
+    const readIdFromObj = (obj) => {
+      if (!obj || typeof obj !== 'object') return '';
+      if (typeof obj.cascadeId === 'string' && obj.cascadeId && obj.cascadeId !== 'conversation') return obj.cascadeId;
+      if (typeof obj.conversationId === 'string' && obj.conversationId && obj.conversationId !== 'conversation') return obj.conversationId;
+      if (typeof obj.trajectory?.cascadeId === 'string' && obj.trajectory.cascadeId) return obj.trajectory.cascadeId;
+      return '';
+    };
     const readCascadeFromFiber = (el, maxDepth) => {
       if (!el) return '';
       const key = Object.keys(el).find((k) => k.startsWith('__reactFiber$'));
       for (let f = key && el[key], d = 0; f && d < maxDepth; f = f.return, d++) {
-        const p = f.memoizedProps || f.pendingProps;
-        if (p && typeof p.cascadeId === 'string' && p.cascadeId) return p.cascadeId;
+        const fromProps = readIdFromObj(f.memoizedProps) || readIdFromObj(f.pendingProps);
+        if (fromProps) return fromProps;
+        for (let ctx = f.dependencies && f.dependencies.firstContext; ctx; ctx = ctx.next) {
+          const fromCtx = readIdFromObj(ctx.memoizedValue);
+          if (fromCtx) return fromCtx;
+        }
       }
       return '';
     };
     const fromInputFiber = readCascadeFromFiber(inputBox, 60);
     if (fromInputFiber) return fromInputFiber;
-    const fromCvFiber = readCascadeFromFiber(cv, 35);
+    const fromCvFiber = readCascadeFromFiber(cv, 40);
     if (fromCvFiber) return fromCvFiber;
-    if (cv && !inputBox?.closest?.('[data-testid="subagent-tab-conversation"]')) {
+    if (cv) {
+      const resp = cv.querySelector('[data-testid="agent-response"]');
+      const tf = resp && extractFiberTurnContainer(resp);
+      if (tf?.cascadeId) return tf.cascadeId;
+    }
+    if (!inputBox?.closest?.('[data-testid="subagent-tab-conversation"]')) {
       const h = ensureHooks(true);
       const convoState = h?.store?.getState?.()?.conversation?.convoState;
       if (convoState?.type === 'active' && typeof convoState.cascadeId === 'string' && convoState.cascadeId) {
         return convoState.cascadeId;
       }
     }
+    const m = location.pathname.match(/\/c\/([0-9a-f-]{36})/i);
+    if (m) return m[1];
     return '';
   }
 
@@ -337,7 +388,8 @@
     if (!h) return;
     const now = Date.now();
     if (!force && usageHasData && now - lastUsageFetchAt < 15000) return;
-    const sums = h.store.getState().trajectorySummaries?.summaries || {};
+    const stRollup = h.store.getState();
+    const sums = { ...(stRollup.cascadeTrajectorySummaries || {}), ...(stRollup.trajectorySummaries?.summaries || {}) };
     const entries = Object.entries(sums).filter(([, s]) => !!s);
     if (entries.length === 0) {
       usageHasData = true;
@@ -350,7 +402,9 @@
     for (const [id, sum] of entries) {
       presentIds.add(id);
       const stepCount = Number(sum.stepCount || 0);
-      const lastModSec = Number(sum.lastModifiedTime?.seconds || 0);
+      const lastModSec = Math.floor(
+        typeof usageCore?.tsSec === 'function' ? usageCore.tsSec(sum.lastModifiedTime) : Number(sum.lastModifiedTime?.seconds || 0)
+      );
       const cached = usageRecords.get(id);
       if (!cached || cached.stepCount !== stepCount || cached.lastModifiedSec !== lastModSec) {
         staleIds.push([id, sum]);
@@ -1134,7 +1188,7 @@
     const activeQuota = getActiveQuotaForInfo(data, card);
     const knownMax = getKnownMaxContextForCard(card, data);
     const effectiveInfo =
-      data && (data.calls > 0 || data.hasActiveLimits || !knownMax)
+      data && (data.hasActiveLimits || !knownMax)
         ? data
         : { ...(data || {}), maxContextTokens: knownMax || Number(data?.maxContextTokens || 256000) };
     if (typeof usageCore.computeRingTelemetry === 'function') {
@@ -1482,6 +1536,7 @@
 
     const tabTurnsLabel = typeof ui.tabTurnsN === 'function' ? ui.tabTurnsN(turnCount) : `Turns (${turnCount})`;
     const tabToolsLabel = typeof ui.tabToolsN === 'function' ? ui.tabToolsN(toolCount) : `Tools (${toolCount})`;
+    const prevBodyScrollTop = pop.querySelector('.ag-cs-ctx-body')?.scrollTop || 0;
 
     pop.innerHTML = `
       <div class="ag-cs-ctx-top-bar">
@@ -1508,6 +1563,7 @@
           <span class="ag-cs-ctx-seg-tools" style="width:${pctOf(tools)}%" title="${escapeHtml(ui.toolsShort || 'Tools')}: ${formatCompactK(tools)}"></span>
           <span class="ag-cs-ctx-seg-msgs" style="width:${pctOf(msgs)}%" title="${escapeHtml(ui.segChatMessages || 'Messages')}: ${formatCompactK(msgs)}"></span>
           <span class="ag-cs-ctx-seg-toolres" style="width:${pctOf(toolRes)}%" title="${escapeHtml(ui.segToolResults || 'Tool Results')}: ${formatCompactK(toolRes)}"></span>
+          ${overhead > 0 ? `<span class="ag-cs-ctx-seg-overhead" style="width:${pctOf(overhead)}%;background:#64748b" title="${escapeHtml(ui.segOverhead || 'Context Overhead')}: ${formatCompactK(overhead)}"></span>` : ''}
           <span class="ag-cs-ctx-seg-draft" style="width:${pctOf(draft)}%" title="${escapeHtml(ui.draftWord || 'Draft')}: ${formatCompactK(draft)}"></span>
         </div>
       </div>
@@ -1521,6 +1577,9 @@
         ${tabBodyHtml}
       </div>
     `;
+    pop._agCsRenderedData = data;
+    const newBodyEl = pop.querySelector('.ag-cs-ctx-body');
+    if (newBodyEl && prevBodyScrollTop > 0) newBodyEl.scrollTop = prevBodyScrollTop;
 
     pop.querySelectorAll('button[data-ctx-tab]').forEach((btn) => {
       btn.addEventListener('click', (ev) => {
@@ -1628,13 +1687,83 @@
     document.body.appendChild(pop);
     positionPopoverAboveAnchor(pop, anchor);
 
-    fetchQuotaData(false).then(() => {
+    Promise.all([
+      cascadeId ? fetchActiveConvo(cascadeId, true) : Promise.resolve(null),
+      fetchQuotaData(false),
+    ]).then(([fresh]) => {
       if (openPopover === pop && pop.isConnected) {
-        const latest = activeTrajCache.get(cascadeId)?.data || data;
+        const latest = fresh || activeTrajCache.get(cascadeId)?.data || data;
         renderContextPopoverContent(pop, latest, cascadeId);
         positionPopoverAboveAnchor(pop, anchor);
       }
     });
+  }
+
+  let lastUserSubmitAt = 0;
+
+  function getDomConvoSignal(cascadeId) {
+    let cv = null;
+    if (cascadeId) {
+      const views = document.querySelectorAll('[data-testid="conversation-view"]');
+      for (const v of views) {
+        if (v.getAttribute('data-cascade-id') === cascadeId) {
+          cv = v;
+          break;
+        }
+      }
+      if (!cv && views.length > 0) cv = views[0];
+    } else {
+      cv = document.querySelector('[data-testid="conversation-view"]');
+    }
+    const resps = cv ? cv.querySelectorAll('[data-testid="agent-response"]') : [];
+    let fiberStepsLen = 0;
+    let fiberRunning = false;
+    if (resps.length > 0) {
+      const lastResp = resps[resps.length - 1];
+      const tf = extractFiberTurnContainer(lastResp);
+      const steps = tf?.container?.steps;
+      if (Array.isArray(steps)) {
+        fiberStepsLen = steps.length;
+        for (let i = Math.max(0, steps.length - 6); i < steps.length; i++) {
+          if (steps[i]?.status === 1 || steps[i]?.status === 2) {
+            fiberRunning = true;
+            break;
+          }
+        }
+      }
+    }
+    let domRunning = fiberRunning;
+    if (!domRunning) {
+      const panels = document.querySelectorAll('[data-testid="running-items-panel"]');
+      for (const p of panels) {
+        if (String(p.className || '').includes('grid-rows-[1fr]')) {
+          domRunning = true;
+          break;
+        }
+      }
+    }
+    if (!domRunning) {
+      const inputBoxes = document.querySelectorAll('[data-testid="agent-input-box"]');
+      for (const ib of inputBoxes) {
+        if (ib.querySelector('[data-testid="stop-button"], [data-testid="cancel-button"]')) {
+          domRunning = true;
+          break;
+        }
+        for (const btn of ib.querySelectorAll('button')) {
+          const aria = String(btn.getAttribute('aria-label') || '');
+          const tid = String(btn.getAttribute('data-testid') || '');
+          if (/stop|cancel|停止|取消/i.test(aria) || /stop|cancel/i.test(tid)) {
+            domRunning = true;
+            break;
+          }
+        }
+        if (domRunning) break;
+      }
+    }
+    return {
+      domSig: `${resps.length}:${fiberStepsLen}:${domRunning ? 1 : 0}`,
+      domRunning,
+    };
   }
 
   async function fetchActiveConvo(cascadeId, force = false) {
@@ -1642,12 +1771,23 @@
     const h = ensureHooks();
     if (!h) return null;
     const st = h.store.getState();
-    const allSummaries = st.trajectorySummaries?.summaries || st.cascadeTrajectorySummaries || {};
-    const sumEntry = allSummaries[cascadeId];
+    const rawPrimary = st.trajectorySummaries?.summaries || {};
+    const rawFallback = st.cascadeTrajectorySummaries || {};
+    const allSummaries = { ...rawFallback, ...rawPrimary };
+    const sumEntry = rawPrimary[cascadeId] || rawFallback[cascadeId] || allSummaries[cascadeId];
     const sum = sumEntry?.summary || sumEntry || {};
     const stepCount = Number(sum?.stepCount || 0);
-    const lastMod = Number(sum?.lastModifiedTime?.seconds || 0);
-    const running = !!(sum?.notFullyIdle || sum?.hasActivity || sum?.status === 2 || sum?.hasRunningSubagents);
+    const lastMod = Math.floor(
+      typeof usageCore?.tsSec === 'function' ? usageCore.tsSec(sum?.lastModifiedTime) : Number(sum?.lastModifiedTime?.seconds || 0)
+    );
+    const { domSig, domRunning } = getDomConvoSignal(cascadeId);
+    const running = !!(
+      sum?.notFullyIdle ||
+      sum?.hasActivity ||
+      sum?.status === 2 ||
+      sum?.hasRunningSubagents ||
+      domRunning
+    );
 
     // Discover child subagents belonging to this conversation
     const childMetaList = [];
@@ -1670,72 +1810,104 @@
 
     let entry = activeTrajCache.get(cascadeId);
     if (!entry) {
-      entry = { fetching: false, lastStep: -1, lastMod: -1, lastSubCount: -1, lastRunning: false, lastAt: 0, data: null };
+      entry = {
+        fetching: false,
+        promise: null,
+        needsRefetch: false,
+        lastStep: -1,
+        lastMod: -1,
+        lastSubCount: -1,
+        lastRunning: false,
+        lastDomSig: '',
+        lastAt: 0,
+        data: null,
+      };
       activeTrajCache.set(cascadeId, entry);
     }
-    if (entry.fetching) return entry.data;
     const now = Date.now();
-    const minMs = running ? 1000 : !entry.data || entry.data.calls === 0 ? 1500 : 3500;
-    const summaryChanged =
+    const changed =
       !entry.data ||
       entry.lastStep !== stepCount ||
       entry.lastMod !== lastMod ||
       entry.lastSubCount !== childMetaList.length ||
-      entry.lastRunning !== running;
-    if (!force) {
-      if (
-        !summaryChanged &&
-        entry.data.calls > 0 &&
-        !running &&
-        !entry.data.isRunning
-      ) {
-        return entry.data;
-      }
-      if (!summaryChanged && now - entry.lastAt < minMs) return entry.data;
+      entry.lastRunning !== running ||
+      entry.lastDomSig !== domSig;
+
+    if (entry.promise) {
+      if (force || changed) entry.needsRefetch = true;
+      return entry.promise;
     }
+
+    const recentlySubmitted = now - lastUserSubmitAt < 12000;
+    const isHot = running || Boolean(entry.data?.isRunning) || recentlySubmitted;
+    const ttlMs = isHot ? 1000 : document.hidden ? 15000 : 3500;
+    if (!force && !changed && entry.data && now - entry.lastAt < ttlMs) {
+      return entry.data;
+    }
+
     entry.fetching = true;
-    try {
-      const res = await h.svc.getCascadeTrajectory({ cascadeId });
-      const analyzed = usageCore.analyzeActiveConversation(res, { cascadeId });
-      if (analyzed && analyzed.maxContextTokens > 0 && analyzed.hasActiveLimits && analyzed.lastModel) {
-        const mKey = normalizeModelCtxKey(analyzed.lastModel);
-        if (mKey) knownModelMaxCtx.set(mKey, analyzed.maxContextTokens);
-      }
+    entry.promise = (async () => {
+      try {
+        const res = await h.svc.getCascadeTrajectory({ cascadeId });
+        const knownMax = getKnownMaxContextForCard(null, entry.data);
+        const analyzed = usageCore.analyzeActiveConversation(res, {
+          cascadeId,
+          knownLimits: knownMax > 0 ? { maxContextTokens: knownMax } : undefined,
+        });
+        if (analyzed && analyzed.maxContextTokens > 0 && analyzed.hasActiveLimits && analyzed.lastModel) {
+          const mKey = normalizeModelCtxKey(analyzed.lastModel);
+          if (mKey) knownModelMaxCtx.set(mKey, analyzed.maxContextTokens);
+        }
+        if (analyzed && analyzed.calls > 0 && typeof usageCore.analyzeTrajectoryForUsage === 'function') {
+          try {
+            const rec = usageCore.analyzeTrajectoryForUsage(res, sum, cascadeId);
+            if (rec) usageRecords.set(cascadeId, rec);
+          } catch {}
+        }
 
-      if (childMetaList.length > 0 && typeof usageCore.attachSubagentSummaries === 'function') {
-        const subItems = await Promise.all(
-          childMetaList.slice(0, 12).map(async (cm) => {
-            const cachedSub = subagentTrajCache.get(cm.id);
-            if (cachedSub && cachedSub.stepCount === cm.stepCount && cachedSub.status === 1 && cm.status === 1) {
-              return { ...cm, analysis: cachedSub.analysis };
-            }
-            try {
-              const subRes = await h.svc.getCascadeTrajectory({ cascadeId: cm.id });
-              const subAnalysis = usageCore.analyzeActiveConversation(subRes, { cascadeId: cm.id });
-              subagentTrajCache.set(cm.id, {
-                stepCount: cm.stepCount,
-                status: cm.status,
-                analysis: subAnalysis,
-              });
-              return { ...cm, analysis: subAnalysis };
-            } catch {
-              return cm;
-            }
-          })
-        );
-        usageCore.attachSubagentSummaries(analyzed, subItems);
-      }
+        if (childMetaList.length > 0 && typeof usageCore.attachSubagentSummaries === 'function') {
+          const subItems = await Promise.all(
+            childMetaList.slice(0, 12).map(async (cm) => {
+              const cachedSub = subagentTrajCache.get(cm.id);
+              if (cachedSub && cachedSub.stepCount === cm.stepCount && cachedSub.status === 1 && cm.status === 1) {
+                return { ...cm, analysis: cachedSub.analysis };
+              }
+              try {
+                const subRes = await h.svc.getCascadeTrajectory({ cascadeId: cm.id });
+                const subAnalysis = usageCore.analyzeActiveConversation(subRes, { cascadeId: cm.id });
+                subagentTrajCache.set(cm.id, {
+                  stepCount: cm.stepCount,
+                  status: cm.status,
+                  analysis: subAnalysis,
+                });
+                return { ...cm, analysis: subAnalysis };
+              } catch {
+                return cm;
+              }
+            })
+          );
+          usageCore.attachSubagentSummaries(analyzed, subItems);
+        }
 
-      entry.data = analyzed;
-      entry.lastStep = stepCount;
-      entry.lastMod = lastMod;
-      entry.lastSubCount = childMetaList.length;
-      entry.lastRunning = running;
-      entry.lastAt = Date.now();
-    } catch {} finally {
-      entry.fetching = false;
-    }
-    return entry.data;
+        entry.data = analyzed;
+        entry.lastStep = stepCount;
+        entry.lastMod = lastMod;
+        entry.lastSubCount = childMetaList.length;
+        entry.lastRunning = running;
+        entry.lastDomSig = domSig;
+        entry.lastAt = Date.now();
+      } catch {} finally {
+        entry.fetching = false;
+        entry.promise = null;
+        if (entry.needsRefetch && !destroyed) {
+          entry.needsRefetch = false;
+          entry.lastAt = 0;
+          scheduleSync();
+        }
+      }
+      return entry.data;
+    })();
+    return entry.promise;
   }
 
   // ── Pixel Crab Mascot Player ───────────────────────────────────────────
@@ -1976,17 +2148,76 @@
 
   function extractFiberTurnContainer(el) {
     let fEl = el;
-    for (let d = 0; d < 5 && fEl; d++) {
+    let foundContainer = null;
+    let foundCascadeId = '';
+    let foundStepIdx = -1;
+    let foundStepTimeSec = 0;
+
+    const readStepIndexFromObj = (obj) => {
+      if (!obj || typeof obj !== 'object') return -1;
+      for (const k of ['stepIndex', 'startStepIndex', 'firstStepIndex', 'index']) {
+        const v = obj[k];
+        if (typeof v === 'number' && Number.isInteger(v) && v >= 0) return v;
+      }
+      if (Array.isArray(obj.stepIndices) && obj.stepIndices.length > 0) {
+        const valid = obj.stepIndices.filter((n) => Number.isInteger(n) && n >= 0);
+        if (valid.length > 0) return Math.min(...valid);
+      }
+      return -1;
+    };
+
+    for (let d = 0; d < 6 && fEl; d++) {
       const fk = Object.keys(fEl).find((k) => k.startsWith('__reactFiber$'));
       let f = fk ? fEl[fk] : null;
-      for (let fd = 0; fd < 15 && f; fd++) {
+      for (let fd = 0; fd < 16 && f; fd++) {
         const p = f.memoizedProps || f.pendingProps;
-        if (p && p.container && Array.isArray(p.container.steps)) {
-          return { container: p.container, cascadeId: p.cascadeId || '' };
+        if (p && typeof p === 'object') {
+          if (!foundCascadeId && typeof p.cascadeId === 'string' && p.cascadeId) {
+            foundCascadeId = p.cascadeId;
+          }
+          if (foundStepIdx < 0) {
+            const directIdx = readStepIndexFromObj(p);
+            if (directIdx >= 0) foundStepIdx = directIdx;
+          }
+          if (!foundContainer && p.container && Array.isArray(p.container.steps)) {
+            foundContainer = p.container;
+            if (!foundCascadeId && typeof p.container.cascadeId === 'string') {
+              foundCascadeId = p.container.cascadeId;
+            }
+            if (foundStepIdx < 0) {
+              const cIdx = readStepIndexFromObj(p.container);
+              if (cIdx >= 0) foundStepIdx = cIdx;
+            }
+            for (const s of p.container.steps) {
+              if (foundStepIdx < 0) {
+                const sIdx = readStepIndexFromObj(s);
+                if (sIdx >= 0) foundStepIdx = sIdx;
+              }
+              if (foundStepTimeSec === 0 && s?.metadata?.createdAt && typeof usageCore.tsSec === 'function') {
+                const sec = usageCore.tsSec(s.metadata.createdAt);
+                if (sec > 0) foundStepTimeSec = sec;
+              }
+              if (foundStepIdx >= 0 && foundStepTimeSec > 0) break;
+            }
+            return {
+              container: foundContainer,
+              cascadeId: foundCascadeId,
+              stepIndex: foundStepIdx,
+              stepTimeSec: foundStepTimeSec,
+            };
+          }
         }
         f = f.return;
       }
       fEl = fEl.parentElement;
+    }
+    if (foundCascadeId || foundStepIdx >= 0 || foundStepTimeSec > 0) {
+      return {
+        container: null,
+        cascadeId: foundCascadeId,
+        stepIndex: foundStepIdx,
+        stepTimeSec: foundStepTimeSec,
+      };
     }
     return null;
   }
@@ -2060,22 +2291,91 @@
       return;
     }
 
-    // Group responses by their cascadeId (main conversation vs subagent preview pane)
-    const mainTargets = [];
-    const otherTargets = [];
-    const seenHosts = new Set();
-    for (const resp of allResps) {
-      const host = resp.closest('[data-turn-content]') || resp.parentElement || resp;
-      if (seenHosts.has(host)) continue;
-      seenHosts.add(host);
-      const fiberInfo = extractFiberTurnContainer(resp);
-      const item = { host, resp, fiberInfo };
-      if (!fiberInfo || !fiberInfo.cascadeId || !data.cascadeId || fiberInfo.cascadeId === data.cascadeId) {
-        mainTargets.push(item);
-      } else {
-        otherTargets.push(item);
+    // Build DOM turn-group map from [data-testid="user-input-step"] boundaries in main conversation
+    const mainFlowNodes = Array.from(
+      cv.querySelectorAll('[data-testid="user-input-step"], [data-testid="agent-response"]')
+    ).filter((el) => !el.closest('[data-testid="subagent-tab-conversation"]'));
+    const hasDomUserSteps = mainFlowNodes.some((el) => el.matches('[data-testid="user-input-step"]'));
+    const domTurnGroupByResp = new Map();
+    if (hasDomUserSteps) {
+      let currentGroup = 0;
+      for (const node of mainFlowNodes) {
+        if (node.matches('[data-testid="user-input-step"]')) {
+          currentGroup++;
+        } else {
+          domTurnGroupByResp.set(node, currentGroup);
+        }
       }
     }
+
+    // Group responses by cascadeId and deduplicate multi-response turns (keeping the last response host per turn)
+    const rawMainTargets = [];
+    const mainByContainer = new Map();
+    const mainByDomGroup = new Map();
+    const otherTargets = [];
+    const otherByContainer = new Map();
+
+    for (const resp of allResps) {
+      const host = resp.closest('[data-turn-content]') || resp.parentElement || resp;
+      const fiberInfo = extractFiberTurnContainer(resp);
+      const inSubagentPane = Boolean(resp.closest('[data-testid="subagent-tab-conversation"]'));
+      const isMain =
+        !inSubagentPane &&
+        (!fiberInfo || !fiberInfo.cascadeId || !data.cascadeId || fiberInfo.cascadeId === data.cascadeId);
+      const item = {
+        host,
+        resp,
+        fiberInfo,
+        domTurnGroup: hasDomUserSteps && domTurnGroupByResp.has(resp) ? domTurnGroupByResp.get(resp) : -1,
+      };
+
+      if (isMain) {
+        const containerRef = fiberInfo && fiberInfo.container ? fiberInfo.container : null;
+        if (containerRef && mainByContainer.has(containerRef)) {
+          const existing = mainByContainer.get(containerRef);
+          existing.host = host;
+          existing.resp = resp;
+          if (fiberInfo && fiberInfo.stepIndex >= 0 && existing.fiberInfo.stepIndex < 0) {
+            existing.fiberInfo = fiberInfo;
+          }
+          continue;
+        }
+        if (item.domTurnGroup >= 0 && mainByDomGroup.has(item.domTurnGroup)) {
+          const existing = mainByDomGroup.get(item.domTurnGroup);
+          existing.host = host;
+          existing.resp = resp;
+          if (containerRef && !existing.fiberInfo?.container) {
+            existing.fiberInfo = fiberInfo;
+          }
+          if (containerRef) mainByContainer.set(containerRef, existing);
+          continue;
+        }
+        rawMainTargets.push(item);
+        if (containerRef) mainByContainer.set(containerRef, item);
+        if (item.domTurnGroup >= 0) mainByDomGroup.set(item.domTurnGroup, item);
+      } else {
+        const containerRef = fiberInfo && fiberInfo.container ? fiberInfo.container : null;
+        if (containerRef && otherByContainer.has(containerRef)) {
+          const existing = otherByContainer.get(containerRef);
+          existing.host = host;
+          existing.resp = resp;
+          continue;
+        }
+        otherTargets.push(item);
+        if (containerRef) otherByContainer.set(containerRef, item);
+      }
+    }
+
+    // Deduplicate any adjacent targets that share the exact same host element
+    const mainTargets = [];
+    const seenMainHosts = new Set();
+    for (let i = rawMainTargets.length - 1; i >= 0; i--) {
+      const item = rawMainTargets[i];
+      if (seenMainHosts.has(item.host)) continue;
+      seenMainHosts.add(item.host);
+      mainTargets.push(item);
+    }
+    mainTargets.reverse();
 
     const turns = data.turnDetails;
     const activeSet = new Set();
@@ -2119,12 +2419,65 @@
       }
     };
 
-    const count = Math.min(mainTargets.length, turns.length);
-    for (let i = 0; i < count; i++) {
-      const target = mainTargets[mainTargets.length - count + i];
-      const t = turns[turns.length - count + i];
-      if (!target || !t) continue;
-      renderBadgeOnHost(target.host, t);
+    const matchTurnByFiber = (fiberInfo) => {
+      if (!fiberInfo) return null;
+      if (typeof fiberInfo.stepIndex === 'number' && fiberInfo.stepIndex >= 0) {
+        for (let i = 0; i < turns.length; i++) {
+          const td = turns[i];
+          if (td.userStepIdx >= 0 && fiberInfo.stepIndex >= td.userStepIdx && fiberInfo.stepIndex < td.nextUserStepIdx) {
+            return td;
+          }
+        }
+      }
+      if (typeof fiberInfo.stepTimeSec === 'number' && fiberInfo.stepTimeSec > 0) {
+        let best = null;
+        for (let i = 0; i < turns.length; i++) {
+          const td = turns[i];
+          if (td.startTimeSec > 0 && fiberInfo.stepTimeSec >= td.startTimeSec - 2) {
+            best = td;
+          }
+        }
+        if (best) return best;
+      }
+      return null;
+    };
+
+    // Prefer exact Fiber step/timestamp binding; keep only the final host per turn
+    const turnToHost = new Map();
+    const matchedTargets = mainTargets.map((target) => ({ target, turn: matchTurnByFiber(target.fiberInfo) }));
+    const anyFiberMatched = matchedTargets.some((m) => m.turn !== null);
+
+    if (anyFiberMatched && matchedTargets.every((m) => m.turn !== null)) {
+      for (const m of matchedTargets) {
+        turnToHost.set(m.turn.turn, { host: m.target.host, turn: m.turn });
+      }
+    } else if (anyFiberMatched) {
+      const usedTurnIds = new Set();
+      for (const m of matchedTargets) {
+        if (m.turn) {
+          turnToHost.set(m.turn.turn, { host: m.target.host, turn: m.turn });
+          usedTurnIds.add(m.turn.turn);
+        }
+      }
+      const remainingTargets = matchedTargets.filter((m) => !m.turn).map((m) => m.target);
+      const remainingTurns = turns.filter((t) => !usedTurnIds.has(t.turn));
+      const count = Math.min(remainingTargets.length, remainingTurns.length);
+      for (let i = 0; i < count; i++) {
+        const target = remainingTargets[remainingTargets.length - count + i];
+        const t = remainingTurns[remainingTurns.length - count + i];
+        if (target && t) turnToHost.set(t.turn, { host: target.host, turn: t });
+      }
+    } else {
+      const count = Math.min(mainTargets.length, turns.length);
+      for (let i = 0; i < count; i++) {
+        const target = mainTargets[mainTargets.length - count + i];
+        const t = turns[turns.length - count + i];
+        if (target && t) turnToHost.set(t.turn, { host: target.host, turn: t });
+      }
+    }
+
+    for (const entry of turnToHost.values()) {
+      renderBadgeOnHost(entry.host, entry.turn);
     }
 
     // Also render badges for any subagent conversation turns visible in DOM
@@ -2174,7 +2527,7 @@
         });
         card.insertBefore(topBar, card.firstChild);
       }
-      const topKey = `${ring.pctRound}|${ring.remainingTokens}|${ring.usedTokens}|${chatMsgs}|${draftEst.tokens}|${d.cacheHitPct}|${topSpeed}|${lang}`;
+      const topKey = `${ring.pctRound}|${ring.remainingTokens}|${ring.usedTokens}|${chatMsgs}|${d.overheadTokens || 0}|${draftEst.tokens}|${d.cacheHitPct}|${topSpeed}|${lang}`;
       if (topBar.getAttribute('data-ag-cs-top-key') !== topKey) {
         topBar.setAttribute('data-ag-cs-top-key', topKey);
         topBar.innerHTML = `
@@ -2183,6 +2536,7 @@
             <span style="width:${pctOf(d.toolsTokens)}%;background:#a855f7"></span>
             <span style="width:${pctOf(chatMsgs)}%;background:#10b981"></span>
             <span style="width:${pctOf(d.toolResultsTokens)}%;background:#f59e0b"></span>
+            ${Number(d.overheadTokens || 0) > 0 ? `<span style="width:${pctOf(d.overheadTokens)}%;background:#64748b"></span>` : ''}
             <span style="width:${pctOf(draftEst.tokens)}%;background:#ec4899"></span>
           </div>
           <div class="ag-cs-hud-top-row">
@@ -3718,8 +4072,9 @@
 
       // 3. Inline stats, remaining-usage ring, turn badges & surround HUD (both new conversations & active chats)
       const footer = card.querySelector('.agy-composer-footer');
-      const inConvo = Boolean(card.closest('[data-testid="conversation-view"]'));
-      const cascadeId = inConvo ? resolveCascadeId(inputBox) : '';
+      const isHomeCard = Boolean(card.closest('.agy-home') && !card.closest('[data-testid="conversation-view"]'));
+      const cascadeId = isHomeCard ? '' : resolveCascadeId(inputBox);
+      const inConvo = Boolean(cascadeId || card.closest('[data-testid="conversation-view"]'));
 
       if (!footer || cfg.inlineStats === false || cfg.composerRestyle === false) {
         card
@@ -3741,7 +4096,12 @@
               syncCrab(primaryCard, fresh);
               syncTurnBadges(fresh);
             }
-            if (fresh !== cached && openPopover && openPopover.isConnected && openPopoverCascadeId === cascadeId) {
+            if (
+              openPopover &&
+              openPopover.isConnected &&
+              openPopoverCascadeId === cascadeId &&
+              openPopover._agCsRenderedData !== fresh
+            ) {
               renderContextPopoverContent(openPopover, fresh, cascadeId);
               if (openPopoverAnchor && openPopoverAnchor.isConnected) {
                 positionPopoverAboveAnchor(openPopover, openPopoverAnchor);
@@ -4389,6 +4749,20 @@
     }
   }
 
+  const submitSyncTimers = new Set();
+
+  function markUserSubmitted() {
+    lastUserSubmitAt = Date.now();
+    scheduleSync();
+    for (const delay of [350, 1100]) {
+      const id = setTimeout(() => {
+        submitSyncTimers.delete(id);
+        if (!destroyed) scheduleSync();
+      }, delay);
+      submitSyncTimers.add(id);
+    }
+  }
+
   function onDocClick(ev) {
     const effortBadge = findClickedEffortBadge(ev);
     if (effortBadge) {
@@ -4403,12 +4777,31 @@
     if (modelBtn && openEffortPop) {
       closeEffortPopover();
     }
+    const submitBtn = ev?.target?.closest ? ev.target.closest('button') : null;
+    if (submitBtn && submitBtn.closest && submitBtn.closest('[data-testid="agent-input-box"]')) {
+      const tid = String(submitBtn.getAttribute('data-testid') || '');
+      const bType = String(submitBtn.getAttribute('type') || '');
+      const aria = String(submitBtn.getAttribute('aria-label') || '');
+      if (bType === 'submit' || /send|submit/i.test(tid) || /send|submit|发送|傳送|送信/i.test(aria)) {
+        markUserSubmitted();
+      }
+    }
   }
 
   function onDocKeyDown(ev) {
     if (ev.key === 'Escape') {
       if (openPopover) closeContextPopover();
       if (openEffortPop) closeEffortPopover();
+      return;
+    }
+    if (
+      ev.key === 'Enter' &&
+      !ev.shiftKey &&
+      !ev.isComposing &&
+      ev.target?.closest &&
+      ev.target.closest('[data-testid="agent-input-box"]')
+    ) {
+      markUserSubmitted();
     }
   }
 
@@ -4491,6 +4884,8 @@
       clearTimeout(storeDebounce);
       storeDebounce = null;
     }
+    for (const id of submitSyncTimers) clearTimeout(id);
+    submitSyncTimers.clear();
     if (caretRaf) {
       if (typeof cancelAnimationFrame === 'function') cancelAnimationFrame(caretRaf);
       caretRaf = 0;
@@ -4527,7 +4922,13 @@
   function startLifecycle() {
     if (destroyed || lifecycleStarted || !document.documentElement) return;
     lifecycleStarted = true;
-    observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ['class'] });
+    observer.observe(document.documentElement, {
+      childList: true,
+      characterData: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['class'],
+    });
     for (const [evName, handler] of DOC_LISTENERS) {
       document.addEventListener(evName, handler, true);
     }
@@ -4544,7 +4945,7 @@
       if (document.querySelector('[data-testid="conversation-view"], [data-testid="agent-input-box"]')) {
         scheduleSync();
       }
-    }, Math.max(1500, Number(cfg.pollIntervalMs) || 2500));
+    }, Math.max(1000, Math.min(1500, Number(cfg.pollIntervalMs) || 1500)));
 
     ensureHooks(true);
     applyRootAttrs();

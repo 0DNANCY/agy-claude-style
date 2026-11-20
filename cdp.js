@@ -3,9 +3,10 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { execFileSync, spawn } = require('child_process');
 
 const STYLE_ID = 'ag-claude-style-css';
-const PLUGIN_VERSION = '1.0.0';
+const PLUGIN_VERSION = '1.1.0';
 const SETTING_BINDING = '__agClaudeStyleSetting';
 const IS_MAC = process.platform === 'darwin';
 const IS_WIN = process.platform === 'win32';
@@ -43,6 +44,8 @@ const DEFAULT_CONFIG = {
   sidebarRestyle: true,
   sidebarCompact: false,
   placeholderStyle: 'studio',
+  autoRelaunchWithCdp: true,
+  exitOnHostClose: false,
   pollIntervalMs: 2500,
 };
 
@@ -105,7 +108,8 @@ class CdpSession {
       if (msg.error) p.reject(new Error(msg.error.message || JSON.stringify(msg.error)));
       else p.resolve(msg.result);
     });
-    ws.addEventListener('close', () => {
+    const handleClosed = () => {
+      if (this.closed) return;
       this.closed = true;
       for (const p of this.pending.values()) {
         clearTimeout(p.timer);
@@ -113,7 +117,9 @@ class CdpSession {
       }
       this.pending.clear();
       if (this.onClose) this.onClose();
-    });
+    };
+    ws.addEventListener('close', handleClosed);
+    ws.addEventListener('error', handleClosed);
   }
 
   static connect(wsUrl, timeoutMs = 3000) {
@@ -304,6 +310,189 @@ const REMOVE_EXPRESSION = `(() => {
   return { removed: nodes.length };
 })()`;
 
+function detectAntigravityProcess() {
+  try {
+    if (IS_MAC) {
+      const out = execFileSync('/bin/ps', ['-ax', '-o', 'pid=,comm='], {
+        encoding: 'utf8',
+        timeout: 2000,
+        stdio: ['ignore', 'pipe', 'ignore'],
+      });
+      const pids = [];
+      for (const rawLine of out.split(/\r?\n/)) {
+        const line = rawLine.trim();
+        if (!line) continue;
+        const m = line.match(/^(\d+)\s+(.+)$/);
+        if (!m) continue;
+        const pid = parseInt(m[1], 10);
+        const comm = m[2].trim();
+        const lower = comm.toLowerCase();
+        if (
+          lower.endsWith('/antigravity.app/contents/macos/antigravity') ||
+          lower === 'antigravity'
+        ) {
+          pids.push(pid);
+        }
+      }
+      return { running: pids.length > 0, pids };
+    }
+    if (IS_WIN) {
+      const out = execFileSync(
+        'tasklist',
+        ['/FI', 'IMAGENAME eq Antigravity.exe', '/FO', 'CSV', '/NH'],
+        {
+          encoding: 'utf8',
+          timeout: 3000,
+          windowsHide: true,
+          stdio: ['ignore', 'pipe', 'ignore'],
+        }
+      );
+      const pids = [];
+      for (const rawLine of out.split(/\r?\n/)) {
+        const line = rawLine.trim();
+        if (!line || !line.startsWith('"')) continue;
+        const cols = line.split('","').map((c) => c.replace(/^"|"$/g, ''));
+        if (cols.length >= 2 && cols[0].toLowerCase() === 'antigravity.exe') {
+          const pid = parseInt(cols[1], 10);
+          if (Number.isInteger(pid) && pid > 0) pids.push(pid);
+        }
+      }
+      return { running: pids.length > 0, pids };
+    }
+    const out = execFileSync('ps', ['-eo', 'pid=,comm='], {
+      encoding: 'utf8',
+      timeout: 2000,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    const pids = [];
+    for (const rawLine of out.split(/\r?\n/)) {
+      const line = rawLine.trim();
+      const m = line.match(/^(\d+)\s+(.+)$/);
+      if (!m) continue;
+      if (path.basename(m[2].trim()).toLowerCase() === 'antigravity') {
+        pids.push(parseInt(m[1], 10));
+      }
+    }
+    return { running: pids.length > 0, pids };
+  } catch {
+    return { running: false, pids: [] };
+  }
+}
+
+function findAntigravityExecutable() {
+  if (IS_MAC) {
+    const candidates = [
+      '/Applications/Antigravity.app',
+      path.join(os.homedir(), 'Applications', 'Antigravity.app'),
+    ];
+    for (const c of candidates) {
+      if (fs.existsSync(c)) return c;
+    }
+    return null;
+  }
+  if (IS_WIN) {
+    const localAppData = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local');
+    const progFiles = process.env.ProgramFiles || 'C:\\Program Files';
+    const progFilesX86 = process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)';
+    const candidates = [
+      path.join(localAppData, 'Programs', 'antigravity', 'Antigravity.exe'),
+      path.join(progFiles, 'Antigravity', 'Antigravity.exe'),
+      path.join(progFilesX86, 'Antigravity', 'Antigravity.exe'),
+    ];
+    for (const c of candidates) {
+      if (fs.existsSync(c)) return c;
+    }
+    return null;
+  }
+  for (const c of ['/usr/bin/antigravity', '/usr/local/bin/antigravity', '/opt/Antigravity/antigravity']) {
+    if (fs.existsSync(c)) return c;
+  }
+  return null;
+}
+
+function removeStalePortFile() {
+  try {
+    if (fs.existsSync(PORT_FILE)) fs.unlinkSync(PORT_FILE);
+  } catch {}
+}
+
+function launchAntigravityWithCdp(opts = {}) {
+  const cdpPort = Number.isInteger(opts.port) && opts.port >= 0 ? opts.port : 0;
+  const flag = `--remote-debugging-port=${cdpPort}`;
+  if (IS_MAC) {
+    const appTarget = opts.appPath || findAntigravityExecutable() || 'Antigravity';
+    const child = spawn('/usr/bin/open', ['-a', appTarget, '--args', flag], {
+      detached: true,
+      stdio: 'ignore',
+    });
+    child.unref();
+    return true;
+  }
+  const exePath = opts.appPath || findAntigravityExecutable();
+  if (!exePath) return false;
+  const child = spawn(exePath, [flag], {
+    detached: true,
+    stdio: 'ignore',
+    windowsHide: false,
+  });
+  child.unref();
+  return true;
+}
+
+async function relaunchAntigravityWithCdp(opts = {}) {
+  const waitMs = Number.isInteger(opts.waitMs) && opts.waitMs > 0 ? opts.waitMs : 8000;
+  try {
+    if (IS_WIN) {
+      execFileSync('taskkill', ['/IM', 'Antigravity.exe'], {
+        timeout: 4000,
+        windowsHide: true,
+        stdio: 'ignore',
+      });
+    } else {
+      const { pids } = detectAntigravityProcess();
+      for (const pid of pids) {
+        if (pid > 0 && pid !== process.pid) {
+          try {
+            process.kill(pid, 'SIGTERM');
+          } catch {}
+        }
+      }
+    }
+  } catch {}
+
+  const deadline = Date.now() + waitMs;
+  while (Date.now() < deadline) {
+    if (!detectAntigravityProcess().running) break;
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  if (detectAntigravityProcess().running) {
+    return { relaunched: false, reason: 'still-running' };
+  }
+  removeStalePortFile();
+  await new Promise((r) => setTimeout(r, 350));
+  const launched = launchAntigravityWithCdp(opts);
+  return { relaunched: launched, reason: launched ? 'ok' : 'executable-not-found' };
+}
+
+function formatCdpUnavailableMessage({ running, port }) {
+  const launchHint = IS_MAC
+    ? 'open -a Antigravity --args --remote-debugging-port=0（或运行 ./launch.sh）'
+    : IS_WIN
+    ? 'Antigravity.exe --remote-debugging-port=0（或双击 launch.bat）'
+    : 'antigravity --remote-debugging-port=0（或运行 ./launch.sh）';
+  if (running) {
+    return (
+      `检测到 Antigravity 正在运行，但未开启远程调试端口（Antigravity 2.33.0+ 默认关闭 CDP` +
+      `${port ? `，端口 ${port} 无响应` : `，未生成 ${PORT_FILE}`}）。` +
+      `请完全退出 Antigravity 后带参启动：${launchHint}`
+    );
+  }
+  if (port) {
+    return `端口 ${port} 无响应：Antigravity 可能未运行。请通过带参方式启动：${launchHint}`;
+  }
+  return `未找到调试端口文件，Antigravity 未运行: ${PORT_FILE}。如使用 Antigravity 2.33.0+，请使用 ${launchHint}`;
+}
+
 module.exports = {
   STYLE_ID,
   PLUGIN_VERSION,
@@ -316,6 +505,12 @@ module.exports = {
   readConfig,
   readPort,
   listPages,
+  detectAntigravityProcess,
+  findAntigravityExecutable,
+  removeStalePortFile,
+  launchAntigravityWithCdp,
+  relaunchAntigravityWithCdp,
+  formatCdpUnavailableMessage,
   CdpSession,
   readCss,
   readRuntimeBundle,

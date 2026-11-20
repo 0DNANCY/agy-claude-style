@@ -35,6 +35,8 @@ const VALIDATORS = {
   sidebarRestyle: 'boolean',
   sidebarCompact: 'boolean',
   placeholderStyle: ['studio', 'host'],
+  autoRelaunchWithCdp: 'boolean',
+  exitOnHostClose: 'boolean',
 };
 
 function createManifest() {

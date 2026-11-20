@@ -86,10 +86,18 @@ final class WatcherApp {
         do {
             let manifest = try PluginManifest.load(baseDir: baseDir)
             guard let port = CdpHelper.readPort(overridePort: overridePort) else {
-                Self.writeResult(outFile: outFile, ok: false, message: "未找到调试端口文件，Antigravity 可能未运行", pages: nil)
+                let running = !CdpHelper.detectAntigravityProcessPids().isEmpty
+                Self.writeResult(outFile: outFile, ok: false, message: CdpHelper.cdpUnavailableMessage(running: running, port: nil), pages: nil)
                 return 1
             }
-            let pages = try CdpHelper.listPages(port: port)
+            let pages: [CdpPageInfo]
+            do {
+                pages = try CdpHelper.listPages(port: port)
+            } catch {
+                let running = !CdpHelper.detectAntigravityProcessPids().isEmpty
+                Self.writeResult(outFile: outFile, ok: false, message: CdpHelper.cdpUnavailableMessage(running: running, port: port), pages: nil)
+                return 1
+            }
             if pages.isEmpty {
                 Self.writeResult(outFile: outFile, ok: false, message: "未找到 Antigravity 窗口页面", pages: nil)
                 return 1
@@ -180,7 +188,7 @@ final class WatcherApp {
         return nil
     }
 
-    func runWatch(overridePort: Int?) -> Int32 {
+    func runWatch(overridePort: Int?, exitOnHostCloseFlag: Bool = false, parentPid: Int32? = nil) -> Int32 {
         try? FileManager.default.createDirectory(atPath: baseDir, withIntermediateDirectories: true, attributes: nil)
         let lockFd = open(lockFile, O_CREAT | O_RDWR, 0o644)
         if lockFd < 0 {
@@ -197,8 +205,13 @@ final class WatcherApp {
 
         var manifest: PluginManifest
         var currentExpr: String
+        var cfgAutoRelaunch = false
+        var cfgExitOnHostClose = false
         do {
             manifest = try PluginManifest.load(baseDir: baseDir)
+            let initCfg = CdpHelper.readConfig(baseDir: baseDir, manifest: manifest)
+            cfgAutoRelaunch = initCfg["autoRelaunchWithCdp"]?.boolValue ?? false
+            cfgExitOnHostClose = initCfg["exitOnHostClose"]?.boolValue ?? false
             currentExpr = try CdpHelper.buildInjectExpression(baseDir: baseDir, manifest: manifest)
         } catch {
             log("[!] 初始化加载失败: \(error.localizedDescription)")
@@ -213,6 +226,7 @@ final class WatcherApp {
         let stateLock = NSLock()
         var attached: [String: AttachedEntry] = [:]
         var attaching: Set<String> = []
+        var hadAttachedWindow = false
         var lastDirStamp = computeDirStamp()
 
         let exitSem = DispatchSemaphore(value: 0)
@@ -320,6 +334,9 @@ final class WatcherApp {
 
                 let evalVal = try applyToEntry(entry, exprSnap)
                 let status = evalVal.objectValue?["status"]?.stringValue ?? "ok"
+                stateLock.lock()
+                hadAttachedWindow = true
+                stateLock.unlock()
                 self.log("[✓] 已注入 agy-claude-style: \(title) (\(status))")
             } catch {
                 stateLock.lock()
@@ -354,10 +371,13 @@ final class WatcherApp {
             let changedName = detectedChange ?? hintName ?? "config.json"
             do {
                 let nextManifest = try PluginManifest.load(baseDir: self.baseDir)
+                let nextCfg = CdpHelper.readConfig(baseDir: self.baseDir, manifest: nextManifest)
                 let nextExpr = try CdpHelper.buildInjectExpression(baseDir: self.baseDir, manifest: nextManifest)
                 stateLock.lock()
                 manifest = nextManifest
                 currentExpr = nextExpr
+                cfgAutoRelaunch = nextCfg["autoRelaunchWithCdp"]?.boolValue ?? false
+                cfgExitOnHostClose = nextCfg["exitOnHostClose"]?.boolValue ?? false
                 let entries = Array(attached.values)
                 stateLock.unlock()
 
@@ -407,15 +427,38 @@ final class WatcherApp {
             dirSource = src
         }
 
+        let envCdpOverride = !(ProcessInfo.processInfo.environment["AG_CDP_PORT"]?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+        let isExplicitPort = (overridePort != nil || envCdpOverride)
         var lastPort: Int?
+        var consecutivePortFailures = 0
+        var noCdpRunningTicks = 0
+        var warnedNoCdpSig = ""
+        var relaunchedPidSig = ""
+        var lastRelaunchAt = Date.distantPast
+
         while !isExiting() {
+            if let ppid = parentPid, !CdpHelper.isProcessAlive(ppid) {
+                log("[*] 父进程 \(ppid) 已退出，守护进程自动停止")
+                break
+            }
+
             // Poll fallback for in-place edits that don't fire directory vnode write events
             reloadQueue.sync {
                 performReload(nil)
             }
 
-            if let port = CdpHelper.readPort(overridePort: overridePort),
-               let pages = try? CdpHelper.listPages(port: port) {
+            var sleepSeconds = 2
+            let port = CdpHelper.readPort(overridePort: overridePort)
+            var pages: [CdpPageInfo]? = nil
+            if let port = port {
+                pages = try? CdpHelper.listPages(port: port)
+            }
+
+            if let port = port, let pages = pages {
+                consecutivePortFailures = 0
+                noCdpRunningTicks = 0
+                warnedNoCdpSig = ""
+
                 if lastPort != port {
                     stateLock.lock()
                     let oldEntries = Array(attached.values)
@@ -442,9 +485,63 @@ final class WatcherApp {
                     }
                 }
                 _ = group.wait(timeout: .now() + .seconds(10))
+            } else {
+                consecutivePortFailures += 1
+                if consecutivePortFailures >= 3 {
+                    stateLock.lock()
+                    let staleEntries = Array(attached.values)
+                    attached.removeAll()
+                    stateLock.unlock()
+                    for oldEntry in staleEntries {
+                        oldEntry.session.close()
+                    }
+                    lastPort = nil
+                }
+
+                stateLock.lock()
+                let hadWin = hadAttachedWindow
+                let attachedEmpty = attached.isEmpty
+                let autoRelaunch = cfgAutoRelaunch
+                let exitOnClose = exitOnHostCloseFlag || cfgExitOnHostClose
+                stateLock.unlock()
+
+                let runningPids = isExplicitPort ? [] : CdpHelper.detectAntigravityProcessPids()
+                if exitOnClose && hadWin && attachedEmpty && consecutivePortFailures >= 3 && runningPids.isEmpty {
+                    log("[*] Antigravity 宿主已关闭，守护进程自动退出")
+                    break
+                }
+
+                if !runningPids.isEmpty {
+                    noCdpRunningTicks += 1
+                    let pidSig = runningPids.map { String($0) }.joined(separator: ",")
+                    if noCdpRunningTicks >= 3 && warnedNoCdpSig != pidSig {
+                        warnedNoCdpSig = pidSig
+                        log("[!] \(CdpHelper.cdpUnavailableMessage(running: true, port: port))")
+                        if !autoRelaunch {
+                            log("[*] 提示：可在 config.json 中设置 \"autoRelaunchWithCdp\": true 以启用自动温和重启接管")
+                        }
+                    }
+                    if autoRelaunch && noCdpRunningTicks >= 3 && relaunchedPidSig != pidSig && Date().timeIntervalSince(lastRelaunchAt) >= 60.0 {
+                        relaunchedPidSig = pidSig
+                        lastRelaunchAt = Date()
+                        log("[↻] autoRelaunchWithCdp 已启用：正在温和重启 Antigravity 并附加 --remote-debugging-port=0 ...")
+                        if CdpHelper.relaunchAntigravityWithCdp(port: 0) {
+                            log("[✓] 已以 CDP 模式重启 Antigravity，等待窗口就绪...")
+                            noCdpRunningTicks = 0
+                        } else {
+                            log("[!] 自动重启未完成，请手动完全退出 Antigravity 后以 --remote-debugging-port=0 启动")
+                        }
+                    }
+                } else {
+                    noCdpRunningTicks = 0
+                    warnedNoCdpSig = ""
+                    if consecutivePortFailures >= 3 {
+                        sleepSeconds = 5
+                    }
+                }
             }
 
-            _ = exitSem.wait(timeout: .now() + .seconds(2))
+            _ = exitSem.wait(timeout: .now() + .seconds(sleepSeconds))
         }
 
         dirSource?.cancel()
@@ -471,6 +568,13 @@ func runWatcherMain() -> Int32 {
     var customDir: String?
     var overridePort: Int?
     var outFile: String?
+    var exitOnHostCloseFlag = false
+    var parentPid: Int32?
+
+    if let envPpid = ProcessInfo.processInfo.environment["AG_PARENT_PID"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+       let p = Int32(envPpid), p > 0 {
+        parentPid = p
+    }
 
     let args = CommandLine.arguments
     var i = 1
@@ -479,6 +583,11 @@ func runWatcherMain() -> Int32 {
         if a == "--watch" { mode = "watch" }
         else if a == "--once" { mode = "once" }
         else if a == "--remove" { mode = "remove" }
+        else if a == "--exit-on-host-close" { exitOnHostCloseFlag = true }
+        else if a == "--parent-pid" && i + 1 < args.count {
+            i += 1
+            if let p = Int32(args[i]), p > 0 { parentPid = p }
+        }
         else if a == "--dir" && i + 1 < args.count { i += 1; customDir = args[i] }
         else if a == "--cdp-port" && i + 1 < args.count {
             i += 1
@@ -500,7 +609,7 @@ func runWatcherMain() -> Int32 {
     if mode == "remove" {
         return app.runRemove(overridePort: overridePort, outFile: outFile)
     }
-    return app.runWatch(overridePort: overridePort)
+    return app.runWatch(overridePort: overridePort, exitOnHostCloseFlag: exitOnHostCloseFlag, parentPid: parentPid)
 }
 
 exit(runWatcherMain())

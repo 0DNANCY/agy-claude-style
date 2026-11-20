@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Net.Http;
 using System.Net.WebSockets;
@@ -33,7 +34,7 @@ namespace AgyClaudeStyle
             string manifestPath = Path.Combine(baseDir, "manifest.json");
             Dictionary<string, object> raw = MiniJson.ParseObject(File.ReadAllText(manifestPath, Encoding.UTF8));
             PluginManifest m = new PluginManifest();
-            m.Version = GetString(raw, "version", "1.0.0");
+            m.Version = GetString(raw, "version", "1.1.0");
             m.StyleId = GetString(raw, "styleId", "ag-claude-style-css");
             m.SettingBinding = GetString(raw, "settingBinding", "__agClaudeStyleSetting");
             m.RemoveExpression = GetString(raw, "removeExpression", "");
@@ -245,6 +246,10 @@ namespace AgyClaudeStyle
                             if (result.Count > 0)
                             {
                                 ms.Write(buffer, 0, result.Count);
+                            }
+                            else if (result.EndOfMessage && _ws.State != WebSocketState.Open)
+                            {
+                                return;
                             }
                         } while (!result.EndOfMessage);
 
@@ -636,6 +641,170 @@ namespace AgyClaudeStyle
         {
             string t = !string.IsNullOrEmpty(page.Title) ? page.Title : (page.Url ?? "");
             return t.Length > 60 ? t.Substring(0, 57) + "..." : t;
+        }
+
+        public static bool IsProcessAlive(int pid)
+        {
+            if (pid <= 0) return false;
+            try
+            {
+                using (Process p = Process.GetProcessById(pid))
+                {
+                    return !p.HasExited;
+                }
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        public static List<int> GetAntigravityProcessIds()
+        {
+            List<int> pids = new List<int>();
+            try
+            {
+                Process[] procs = Process.GetProcessesByName("Antigravity");
+                for (int i = 0; i < procs.Length; i++)
+                {
+                    try
+                    {
+                        pids.Add(procs[i].Id);
+                    }
+                    catch { }
+                    finally
+                    {
+                        try { procs[i].Dispose(); } catch { }
+                    }
+                }
+            }
+            catch { }
+            pids.Sort();
+            return pids;
+        }
+
+        public static string FindAntigravityExePath()
+        {
+            try
+            {
+                Process[] procs = Process.GetProcessesByName("Antigravity");
+                for (int i = 0; i < procs.Length; i++)
+                {
+                    try
+                    {
+                        string p = procs[i].MainModule.FileName;
+                        if (!string.IsNullOrEmpty(p) && File.Exists(p)) return p;
+                    }
+                    catch { }
+                    finally
+                    {
+                        try { procs[i].Dispose(); } catch { }
+                    }
+                }
+            }
+            catch { }
+
+            string localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            string progFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
+            string progFilesX86 = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86);
+            string[] candidates = new string[]
+            {
+                string.IsNullOrEmpty(localAppData) ? null : Path.Combine(localAppData, "Programs", "antigravity", "Antigravity.exe"),
+                string.IsNullOrEmpty(progFiles) ? null : Path.Combine(progFiles, "Antigravity", "Antigravity.exe"),
+                string.IsNullOrEmpty(progFilesX86) ? null : Path.Combine(progFilesX86, "Antigravity", "Antigravity.exe")
+            };
+            for (int i = 0; i < candidates.Length; i++)
+            {
+                if (!string.IsNullOrEmpty(candidates[i]) && File.Exists(candidates[i]))
+                {
+                    return candidates[i];
+                }
+            }
+            return null;
+        }
+
+        public static void RemoveStalePortFile()
+        {
+            try
+            {
+                string portFile = GetPortFilePath();
+                if (File.Exists(portFile)) File.Delete(portFile);
+            }
+            catch { }
+        }
+
+        public static bool LaunchAntigravityWithCdp(string exePath, int port)
+        {
+            string target = !string.IsNullOrEmpty(exePath) ? exePath : FindAntigravityExePath();
+            if (string.IsNullOrEmpty(target) || !File.Exists(target)) return false;
+            try
+            {
+                ProcessStartInfo psi = new ProcessStartInfo();
+                psi.FileName = target;
+                psi.Arguments = "--remote-debugging-port=" + Math.Max(0, port);
+                psi.WorkingDirectory = Path.GetDirectoryName(target);
+                psi.UseShellExecute = true;
+                Process.Start(psi);
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        public static bool RelaunchAntigravityWithCdp(string exePath, int port, int waitMs)
+        {
+            string target = !string.IsNullOrEmpty(exePath) ? exePath : FindAntigravityExePath();
+            if (string.IsNullOrEmpty(target) || !File.Exists(target)) return false;
+
+            try
+            {
+                Process[] procs = Process.GetProcessesByName("Antigravity");
+                for (int i = 0; i < procs.Length; i++)
+                {
+                    try
+                    {
+                        if (procs[i].MainWindowHandle != IntPtr.Zero)
+                        {
+                            procs[i].CloseMainWindow();
+                        }
+                    }
+                    catch { }
+                    finally
+                    {
+                        try { procs[i].Dispose(); } catch { }
+                    }
+                }
+            }
+            catch { }
+
+            DateTime deadline = DateTime.UtcNow.AddMilliseconds(waitMs > 0 ? waitMs : 8000);
+            while (DateTime.UtcNow < deadline)
+            {
+                if (GetAntigravityProcessIds().Count == 0) break;
+                Thread.Sleep(250);
+            }
+            if (GetAntigravityProcessIds().Count > 0)
+            {
+                return false;
+            }
+            RemoveStalePortFile();
+            return LaunchAntigravityWithCdp(target, port);
+        }
+
+        public static string CdpUnavailableMessage(bool running, int? port)
+        {
+            if (running)
+            {
+                string portDesc = port.HasValue ? ("端口 " + port.Value + " 无响应") : "未生成 DevToolsActivePort";
+                return "检测到 Antigravity 正在运行，但未开启远程调试端口（Antigravity 2.33.0+ 默认关闭 CDP，" + portDesc + "）。请完全退出后以 Antigravity.exe --remote-debugging-port=0 启动";
+            }
+            if (port.HasValue)
+            {
+                return "端口 " + port.Value + " 无响应：Antigravity 可能未运行。2.33.0+ 请以 --remote-debugging-port=0 启动";
+            }
+            return "未找到调试端口文件，Antigravity 未运行（2.33.0+ 请以 --remote-debugging-port=0 启动）";
         }
 
         private static string GetStr(Dictionary<string, object> d, string k)
