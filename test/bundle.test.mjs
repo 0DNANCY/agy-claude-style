@@ -2206,8 +2206,9 @@ test('ring and popover stay live despite static trajectorySummaries and non-root
 
 test('syncTurnBadges mounts exactly one #T badge on the final agent-response of multi-response tool turns without misalignment, and style.css fixes sidebar badges/actions', async () => {
   const css = cdp.readCss();
-  assert.ok(
-    css.includes('[data-testid="conversation-row-sidebar"] {\n  min-height: 28px !important;\n  height: auto !important;'),
+  assert.match(
+    css,
+    /\[data-testid="conversation-row-sidebar"\]\s*\{\s*min-height:\s*28px\s*!important;\s*height:\s*auto\s*!important;/,
     'style.css unlocks conversation row height to auto for two-line project badges'
   );
   assert.ok(
