@@ -9,6 +9,8 @@ import { fileURLToPath } from 'node:url';
 import {
   ROOT_DIR,
   cdp,
+  normalizeVersion,
+  getArtifactNames,
   createManifest,
   resolveActiveConfigFile,
   renderCrabIconPng,
@@ -178,12 +180,16 @@ function dirSizeBytes(dirPath) {
 }
 
 function buildMacosApp({
-  appOut = path.join(ROOT_DIR, 'AGY Claude Style.app'),
-  dmgOut = path.join(ROOT_DIR, 'AGY-Claude-Style-macOS-universal.dmg'),
+  appOut,
+  dmgOut,
   createDmg = true,
   configPath,
   version = cdp.PLUGIN_VERSION,
 } = {}) {
+  const cleanVersion = normalizeVersion(version);
+  const artifactNames = getArtifactNames(cleanVersion);
+  const resolvedAppOut = appOut || path.join(ROOT_DIR, artifactNames.macosApp);
+  const resolvedDmgOut = dmgOut || path.join(ROOT_DIR, artifactNames.macosDmg);
   const { sdkPath, swiftc, lipo } = ensureMacosTools();
   const stageDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-cs-macos-build-'));
 
@@ -225,7 +231,7 @@ function buildMacosApp({
     fs.mkdirSync(macosDir, { recursive: true });
     fs.mkdirSync(payloadDir, { recursive: true });
 
-    fs.writeFileSync(path.join(contentsDir, 'Info.plist'), generateInfoPlist(version), 'utf8');
+    fs.writeFileSync(path.join(contentsDir, 'Info.plist'), generateInfoPlist(cleanVersion), 'utf8');
     fs.writeFileSync(path.join(contentsDir, 'PkgInfo'), 'APPL????', 'ascii');
 
     fs.copyFileSync(setupOut, path.join(macosDir, 'AGY Claude Style'));
@@ -235,7 +241,7 @@ function buildMacosApp({
 
     generateIcnsFile(path.join(resourcesDir, 'AppIcon.icns'), stageDir);
 
-    const manifest = createManifest();
+    const manifest = createManifest(cleanVersion);
     const manifestJson = JSON.stringify(manifest, null, 2) + '\n';
     const activeConfigFile = resolveActiveConfigFile(configPath);
 
@@ -256,11 +262,11 @@ function buildMacosApp({
 
     execFileSync('codesign', ['--force', '--deep', '--sign', '-', stagedApp], { stdio: 'inherit' });
 
-    if (fs.existsSync(appOut)) {
-      fs.rmSync(appOut, { recursive: true, force: true });
+    if (fs.existsSync(resolvedAppOut)) {
+      fs.rmSync(resolvedAppOut, { recursive: true, force: true });
     }
-    fs.mkdirSync(path.dirname(appOut), { recursive: true });
-    execFileSync('ditto', [stagedApp, appOut], { stdio: 'inherit' });
+    fs.mkdirSync(path.dirname(resolvedAppOut), { recursive: true });
+    execFileSync('ditto', [stagedApp, resolvedAppOut], { stdio: 'inherit' });
 
     let dmgSizeBytes = 0;
     if (createDmg) {
@@ -271,15 +277,15 @@ function buildMacosApp({
 
       const tempDmg = path.join(stageDir, 'out.dmg');
       createDmgWithRetry(dmgStage, tempDmg);
-      fs.mkdirSync(path.dirname(dmgOut), { recursive: true });
-      fs.copyFileSync(tempDmg, dmgOut);
-      dmgSizeBytes = fs.statSync(dmgOut).size;
+      fs.mkdirSync(path.dirname(resolvedDmgOut), { recursive: true });
+      fs.copyFileSync(tempDmg, resolvedDmgOut);
+      dmgSizeBytes = fs.statSync(resolvedDmgOut).size;
     }
 
     return {
-      appOut,
-      dmgOut: createDmg ? dmgOut : null,
-      appSizeBytes: dirSizeBytes(appOut),
+      appOut: resolvedAppOut,
+      dmgOut: createDmg ? resolvedDmgOut : null,
+      appSizeBytes: dirSizeBytes(resolvedAppOut),
       dmgSizeBytes,
       watcherSizeBytes: fs.statSync(watcherOut).size,
       fileCount: payloadEntries.length,
@@ -291,8 +297,8 @@ function buildMacosApp({
 
 if (process.argv[1] && path.resolve(process.argv[1]) === __filename) {
   const args = process.argv.slice(2);
-  let dmgOut = path.join(ROOT_DIR, 'AGY-Claude-Style-macOS-universal.dmg');
-  let appOut = path.join(ROOT_DIR, 'AGY Claude Style.app');
+  let dmgOut;
+  let appOut;
   let createDmg = true;
   let version = cdp.PLUGIN_VERSION;
   for (let i = 0; i < args.length; i++) {

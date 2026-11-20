@@ -1,0 +1,171 @@
+name: Build & Test (Reusable)
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: 'Optional version override (defaults to package.json version)'
+        required: false
+        type: string
+        default: ''
+      artifact_retention_days:
+        description: 'Retention days for uploaded build artifacts'
+        required: false
+        type: number
+        default: 7
+    outputs:
+      version:
+        description: 'Resolved build version (without leading v)'
+        value: ${{ jobs.test-linux.outputs.version }}
+      windows_file:
+        description: 'Unified Windows x64 installer filename'
+        value: ${{ jobs.test-linux.outputs.windows_file }}
+      macos_file:
+        description: 'Unified macOS Universal DMG filename'
+        value: ${{ jobs.test-linux.outputs.macos_file }}
+
+permissions:
+  contents: read
+
+jobs:
+  test-linux:
+    name: Test & Resolve Metadata (Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      windows_file: ${{ steps.meta.outputs.windows_file }}
+      macos_file: ${{ steps.meta.outputs.macos_file }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Resolve version and unified artifact filenames
+        id: meta
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          eval "$(node --input-type=module -e "
+            import { createRequire } from 'node:module';
+            import { normalizeVersion, getArtifactNames } from './scripts/build-common.mjs';
+            const require = createRequire(import.meta.url);
+            const pkg = require('./package.json');
+            const ver = normalizeVersion(process.env.INPUT_VERSION || pkg.version);
+            const names = getArtifactNames(ver);
+            console.log('VERSION=' + JSON.stringify(names.version));
+            console.log('WIN_FILE=' + JSON.stringify(names.windowsInstaller));
+            console.log('MAC_FILE=' + JSON.stringify(names.macosDmg));
+          ")"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "windows_file=$WIN_FILE" >> "$GITHUB_OUTPUT"
+          echo "macos_file=$MAC_FILE" >> "$GITHUB_OUTPUT"
+          echo "Resolved build version=$VERSION windows_file=$WIN_FILE macos_file=$MAC_FILE"
+
+      - name: Run test suite
+        run: npm test
+
+  build-windows:
+    name: Test & Build Windows x64 Installer
+    needs: test-linux
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Run test suite (including Windows installer E2E)
+        run: npm test
+
+      - name: Build Windows x64 installer
+        shell: pwsh
+        env:
+          BUILD_VERSION: ${{ needs.test-linux.outputs.version }}
+          ARTIFACT_FILE: ${{ needs.test-linux.outputs.windows_file }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          $outPath = "dist/$env:ARTIFACT_FILE"
+          node scripts/build-installer.mjs --version "$env:BUILD_VERSION" --out "$outPath"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (-not (Test-Path $outPath)) {
+            throw "$outPath was not generated"
+          }
+          $item = Get-Item $outPath
+          $hash = (Get-FileHash $outPath -Algorithm SHA256).Hash.ToLowerInvariant()
+          Write-Output "Built $($item.Name) ($($item.Length) bytes, sha256=$hash)"
+          @(
+            "### Windows x64 Artifact",
+            "- File: $($item.Name)",
+            "- Size: $([math]::Round($item.Length / 1KB, 1)) KB",
+            "- SHA256: $hash"
+          ) | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-x64
+          path: dist/${{ needs.test-linux.outputs.windows_file }}
+          retention-days: ${{ inputs.artifact_retention_days }}
+          if-no-files-found: error
+
+  build-macos:
+    name: Test & Build macOS Universal App/DMG
+    needs: test-linux
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Run test suite (including macOS .app E2E)
+        run: npm test
+
+      - name: Build Universal macOS App and DMG
+        shell: bash
+        env:
+          BUILD_VERSION: ${{ needs.test-linux.outputs.version }}
+          ARTIFACT_FILE: ${{ needs.test-linux.outputs.macos_file }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          OUT_DMG="dist/${ARTIFACT_FILE}"
+          node scripts/build-macos.mjs \
+            --version "$BUILD_VERSION" \
+            --out "$OUT_DMG" \
+            --app-out "dist/AGY Claude Style.app"
+          lipo -archs "dist/AGY Claude Style.app/Contents/MacOS/AGY Claude Style"
+          lipo -archs "dist/AGY Claude Style.app/Contents/MacOS/agy-claude-style-watcher"
+          codesign --verify --deep --strict "dist/AGY Claude Style.app"
+          hdiutil verify "$OUT_DMG"
+          SHA=$(shasum -a 256 "$OUT_DMG" | awk '{print $1}')
+          SIZE=$(ls -lh "$OUT_DMG" | awk '{print $5}')
+          {
+            echo "### macOS Universal Artifact"
+            echo "- File: \`${ARTIFACT_FILE}\`"
+            echo "- Size: ${SIZE}"
+            echo "- SHA256: \`${SHA}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload macOS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-universal
+          path: dist/${{ needs.test-linux.outputs.macos_file }}
+          retention-days: ${{ inputs.artifact_retention_days }}
+          if-no-files-found: error

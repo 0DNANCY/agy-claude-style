@@ -10,6 +10,8 @@ import {
   ROOT_DIR,
   cdp,
   VALIDATORS,
+  normalizeVersion,
+  getArtifactNames,
   createManifest,
   resolveActiveConfigFile,
   buildMultiResIco,
@@ -30,7 +32,9 @@ function findCsc() {
   throw new Error('csc.exe (.NET Framework 4.x) not found');
 }
 
-function buildInstaller({ outputPath = path.join(ROOT_DIR, 'installer.exe'), configPath } = {}) {
+function buildInstaller({ outputPath, configPath, version = cdp.PLUGIN_VERSION } = {}) {
+  const cleanVersion = normalizeVersion(version);
+  const resolvedOut = outputPath || path.join(ROOT_DIR, getArtifactNames(cleanVersion).windowsInstaller);
   const csc = findCsc();
   const stageDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-cs-build-'));
 
@@ -38,7 +42,7 @@ function buildInstaller({ outputPath = path.join(ROOT_DIR, 'installer.exe'), con
     const icoPath = path.join(stageDir, 'app.ico');
     fs.writeFileSync(icoPath, buildMultiResIco());
 
-    const manifest = createManifest();
+    const manifest = createManifest(cleanVersion);
     const manifestJson = JSON.stringify(manifest, null, 2) + '\n';
     fs.writeFileSync(path.join(stageDir, 'manifest.json'), manifestJson, 'utf8');
 
@@ -108,10 +112,11 @@ function buildInstaller({ outputPath = path.join(ROOT_DIR, 'installer.exe'), con
       setupMain,
     ], { stdio: 'inherit' });
 
-    fs.copyFileSync(tempOut, outputPath);
-    const stat = fs.statSync(outputPath);
+    fs.mkdirSync(path.dirname(resolvedOut), { recursive: true });
+    fs.copyFileSync(tempOut, resolvedOut);
+    const stat = fs.statSync(resolvedOut);
     return {
-      outputPath,
+      outputPath: resolvedOut,
       sizeBytes: stat.size,
       watcherSizeBytes: fs.statSync(watcherOut).size,
       payloadZipBytes: fs.statSync(payloadZip).size,
@@ -124,13 +129,16 @@ function buildInstaller({ outputPath = path.join(ROOT_DIR, 'installer.exe'), con
 
 if (process.argv[1] && path.resolve(process.argv[1]) === __filename) {
   const args = process.argv.slice(2);
-  let outputPath = path.join(ROOT_DIR, 'installer.exe');
+  let outputPath;
+  let version = cdp.PLUGIN_VERSION;
   for (let i = 0; i < args.length; i++) {
     if ((args[i] === '--out' || args[i] === '-o') && i + 1 < args.length) {
       outputPath = path.resolve(args[++i]);
+    } else if (args[i] === '--version' && i + 1 < args.length) {
+      version = args[++i];
     }
   }
-  const res = buildInstaller({ outputPath });
+  const res = buildInstaller({ outputPath, version });
   console.log(
     `[✓] Built ${res.outputPath} (${(res.sizeBytes / 1024).toFixed(1)} KB; ` +
     `payload ${(res.payloadZipBytes / 1024).toFixed(1)} KB, ${res.fileCount} files)`
@@ -139,6 +147,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === __filename) {
 
 export {
   VALIDATORS,
+  getArtifactNames,
   buildInstaller,
   buildZip,
   buildMultiResIco,
