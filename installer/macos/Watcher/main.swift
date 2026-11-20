@@ -435,6 +435,8 @@ final class WatcherApp {
         var warnedNoCdpSig = ""
         var relaunchedPidSig = ""
         var lastRelaunchAt = Date.distantPast
+        var cdpFlagCheckedSig = ""
+        var cdpFlagCheckedVal = false
 
         while !isExiting() {
             if let ppid = parentPid, !CdpHelper.isProcessAlive(ppid) {
@@ -458,6 +460,8 @@ final class WatcherApp {
                 consecutivePortFailures = 0
                 noCdpRunningTicks = 0
                 warnedNoCdpSig = ""
+                cdpFlagCheckedSig = ""
+                cdpFlagCheckedVal = false
 
                 if lastPort != port {
                     stateLock.lock()
@@ -514,27 +518,44 @@ final class WatcherApp {
                 if !runningPids.isEmpty {
                     noCdpRunningTicks += 1
                     let pidSig = runningPids.map { String($0) }.joined(separator: ",")
-                    if noCdpRunningTicks >= 3 && warnedNoCdpSig != pidSig {
-                        warnedNoCdpSig = pidSig
-                        log("[!] \(CdpHelper.cdpUnavailableMessage(running: true, port: port))")
-                        if !autoRelaunch {
-                            log("[*] 提示：可在 config.json 中设置 \"autoRelaunchWithCdp\": true 以启用自动温和重启接管")
+                    if noCdpRunningTicks >= 3 {
+                        if cdpFlagCheckedSig != pidSig {
+                            cdpFlagCheckedSig = pidSig
+                            cdpFlagCheckedVal = CdpHelper.hasAntigravityCdpFlag(pids: runningPids)
                         }
-                    }
-                    if autoRelaunch && noCdpRunningTicks >= 3 && relaunchedPidSig != pidSig && Date().timeIntervalSince(lastRelaunchAt) >= 60.0 {
-                        relaunchedPidSig = pidSig
-                        lastRelaunchAt = Date()
-                        log("[↻] autoRelaunchWithCdp 已启用：正在温和重启 Antigravity 并附加 --remote-debugging-port=0 ...")
-                        if CdpHelper.relaunchAntigravityWithCdp(port: 0) {
-                            log("[✓] 已以 CDP 模式重启 Antigravity，等待窗口就绪...")
-                            noCdpRunningTicks = 0
+                        if cdpFlagCheckedVal {
+                            if warnedNoCdpSig != "cdp:\(pidSig)" {
+                                warnedNoCdpSig = "cdp:\(pidSig)"
+                                log("[*] 检测到 Antigravity 已携带 --remote-debugging-port 参数，继续等待调试端口响应...")
+                            }
                         } else {
-                            log("[!] 自动重启未完成，请手动完全退出 Antigravity 后以 --remote-debugging-port=0 启动")
+                            if warnedNoCdpSig != pidSig {
+                                warnedNoCdpSig = pidSig
+                                log("[!] \(CdpHelper.cdpUnavailableMessage(running: true, port: port))")
+                                if !autoRelaunch {
+                                    log("[*] 提示：可在 config.json 中设置 \"autoRelaunchWithCdp\": true 以启用自动温和重启接管")
+                                }
+                            }
+                            if autoRelaunch && relaunchedPidSig != pidSig && Date().timeIntervalSince(lastRelaunchAt) >= 60.0 {
+                                relaunchedPidSig = pidSig
+                                lastRelaunchAt = Date()
+                                log("[↻] autoRelaunchWithCdp 已启用：正在温和重启 Antigravity 并附加 --remote-debugging-port=0 ...")
+                                if CdpHelper.relaunchAntigravityWithCdp(port: 0) {
+                                    log("[✓] 已以 CDP 模式重启 Antigravity，等待窗口就绪...")
+                                    noCdpRunningTicks = 0
+                                    cdpFlagCheckedSig = ""
+                                    cdpFlagCheckedVal = false
+                                } else {
+                                    log("[!] 自动重启未完成，请手动完全退出 Antigravity 后以 --remote-debugging-port=0 启动")
+                                }
+                            }
                         }
                     }
                 } else {
                     noCdpRunningTicks = 0
                     warnedNoCdpSig = ""
+                    cdpFlagCheckedSig = ""
+                    cdpFlagCheckedVal = false
                     if consecutivePortFailures >= 3 {
                         sleepSeconds = 5
                     }

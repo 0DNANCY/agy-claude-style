@@ -2504,3 +2504,283 @@ test('syncTurnBadges mounts exactly one #T badge on the final agent-response of 
     for (const id of timers) clearTimeout(id);
   }
 });
+
+test('streaming Turn 2 response does not hijack #T1 badge, observer ignores external characterData, and pollIntervalMs is respected', async () => {
+  const timers = new Set();
+  const makeNode = (tag, opts = {}) => {
+    const attrs = new Map(Object.entries(opts.attrs || {}));
+    const classes = new Set((opts.className || '').split(/\s+/).filter(Boolean));
+    const children = [];
+    const matchesSimple = (n, sel) => {
+      if (!n || n.nodeType !== 1) return false;
+      let rest = sel.trim();
+      const tm = /^[a-zA-Z0-9_-]+/.exec(rest);
+      if (tm) {
+        if (n.tagName !== tm[0].toUpperCase()) return false;
+        rest = rest.slice(tm[0].length);
+      }
+      while (rest) {
+        if (rest[0] === '#') {
+          const m = /^#([a-zA-Z0-9_-]+)/.exec(rest);
+          if (!m || n.id !== m[1]) return false;
+          rest = rest.slice(m[0].length);
+        } else if (rest[0] === '.') {
+          const m = /^\.([a-zA-Z0-9_-]+)/.exec(rest);
+          if (!m || !n.classList.contains(m[1])) return false;
+          rest = rest.slice(m[0].length);
+        } else if (rest[0] === '[') {
+          const m = /^\[([^\]=]+)(?:="([^"]*)")?\]/.exec(rest);
+          if (!m) return false;
+          const ok = m[2] === undefined ? n.hasAttribute(m[1]) : n.getAttribute(m[1]) === m[2];
+          if (!ok) return false;
+          rest = rest.slice(m[0].length);
+        } else {
+          return false;
+        }
+      }
+      return true;
+    };
+    const matchesSel = (n, sel) =>
+      sel.split(',').some((part) => {
+        const cleaned = part.trim().replace(/^:scope\s*>\s*/, '');
+        const tokens = cleaned.split(/\s+/).filter(Boolean);
+        if (tokens.length === 0 || !matchesSimple(n, tokens[tokens.length - 1])) return false;
+        let cur = n.parentElement;
+        let idx = tokens.length - 2;
+        while (cur && idx >= 0) {
+          if (matchesSimple(cur, tokens[idx])) idx -= 1;
+          cur = cur.parentElement;
+        }
+        return idx < 0;
+      });
+    const node = {
+      nodeType: 1,
+      tagName: tag.toUpperCase(),
+      id: opts.id || attrs.get('id') || '',
+      children,
+      parentElement: null,
+      parentNode: null,
+      isConnected: true,
+      clientWidth: 400,
+      offsetWidth: 400,
+      clientHeight: 30,
+      offsetHeight: 30,
+      _text: opts.text || '',
+      _html: '',
+      style: { setProperty() {}, getPropertyValue() { return ''; }, removeProperty() {} },
+      classList: { contains: (c) => classes.has(c), add: (c) => classes.add(c), remove: (c) => classes.delete(c) },
+      get className() { return Array.from(classes).join(' '); },
+      set className(v) { classes.clear(); String(v).split(/\s+/).filter(Boolean).forEach((c) => classes.add(c)); },
+      get textContent() { return children.length ? children.map((c) => c.textContent).join('') : this._text; },
+      set textContent(v) { children.length = 0; this._text = String(v); },
+      set innerHTML(v) { this._html = String(v); },
+      get innerHTML() { return this._html; },
+      get lastElementChild() { return children[children.length - 1] || null; },
+      appendChild(c) { c.parentElement = this; c.parentNode = this; children.push(c); return c; },
+      removeChild(c) { const i = children.indexOf(c); if (i >= 0) children.splice(i, 1); c.parentElement = null; c.parentNode = null; return c; },
+      remove() { if (this.parentElement) this.parentElement.removeChild(this); },
+      setAttribute(k, v) { attrs.set(k, String(v)); if (k === 'id') node.id = String(v); if (k === 'class') node.className = String(v); },
+      getAttribute(k) { return attrs.has(k) ? attrs.get(k) : null; },
+      hasAttribute(k) { return attrs.has(k); },
+      removeAttribute(k) { attrs.delete(k); },
+      toggleAttribute(k, f) { const on = f === undefined ? !attrs.has(k) : Boolean(f); if (on) attrs.set(k, ''); else attrs.delete(k); return on; },
+      addEventListener() {},
+      removeEventListener() {},
+      matches(sel) { return matchesSel(this, sel); },
+      closest(sel) { let c = this; while (c) { if (matchesSel(c, sel)) return c; c = c.parentElement; } return null; },
+      getBoundingClientRect: () => ({ left: 10, top: 100, right: 310, bottom: 130, width: 300, height: 30 }),
+      animate: () => ({ cancel() {}, finished: Promise.resolve() }),
+      querySelector(sel) { return this.querySelectorAll(sel)[0] || null; },
+      querySelectorAll(sel) {
+        const parts = sel.split(',').map((s) => s.trim()).filter(Boolean);
+        const out = [];
+        const walk = (n, depth) => {
+          for (const ch of n.children) {
+            const matched = parts.some((p) => {
+              if (p.startsWith(':scope >')) return depth === 0 && matchesSel(ch, p);
+              return matchesSel(ch, p);
+            });
+            if (matched) out.push(ch);
+            walk(ch, depth + 1);
+          }
+        };
+        walk(this, 0);
+        return out;
+      },
+    };
+    return node;
+  };
+
+  const html = makeNode('html');
+  const head = makeNode('head');
+  const body = makeNode('body', { className: 'theme-dark' });
+  html.appendChild(head);
+  html.appendChild(body);
+
+  const cascadeId = '55555555-5555-4555-8555-555555555555';
+  const convView = makeNode('div', { attrs: { 'data-testid': 'conversation-view', 'data-cascade-id': cascadeId } });
+  const u1 = makeNode('div', { attrs: { 'data-testid': 'user-input-step' }, text: 'Turn 1 prompt' });
+  const r1Wrap = makeNode('div', { id: 'turn1-wrap' });
+  const r1 = makeNode('div', { attrs: { 'data-testid': 'agent-response' }, text: 'Turn 1 done' });
+  r1.__reactFiber$test = {
+    memoizedProps: {
+      cascadeId,
+      stepIndex: 1,
+      container: {
+        cascadeId,
+        steps: [{ stepIndex: 1, metadata: { createdAt: { seconds: '1700001005' } } }],
+      },
+    },
+    return: null,
+  };
+  r1Wrap.appendChild(r1);
+
+  const u2 = makeNode('div', { attrs: { 'data-testid': 'user-input-step' }, text: 'Turn 2 prompt' });
+  const r2Wrap = makeNode('div', { id: 'turn2-streaming-wrap' });
+  const r2 = makeNode('div', { attrs: { 'data-testid': 'agent-response' }, text: 'Streaming...' });
+  r2.__reactFiber$test = {
+    memoizedProps: {
+      cascadeId,
+      stepIndex: 3,
+      container: {
+        cascadeId,
+        steps: [{ stepIndex: 3, metadata: { createdAt: { seconds: '1700002005' } } }],
+      },
+    },
+    return: null,
+  };
+  r2Wrap.appendChild(r2);
+
+  for (const el of [u1, r1Wrap, u2, r2Wrap]) convView.appendChild(el);
+
+  const inputBox = makeNode('div', { id: 'antigravity.agentSidePanelInputBox', attrs: { 'data-testid': 'agent-input-box' } });
+  const card = makeNode('div', { className: 'surface-composer-card' });
+  const editorEl = makeNode('div', { attrs: { contenteditable: 'true', 'data-lexical-editor': 'true' } });
+  const footer = makeNode('div', { className: 'agy-composer-footer' });
+  footer.appendChild(makeNode('button', { attrs: { 'data-testid': 'model-selector-trigger' }, text: 'Gemini 4 Neon' }));
+  card.appendChild(editorEl);
+  card.appendChild(footer);
+  inputBox.appendChild(card);
+  convView.appendChild(inputBox);
+  body.appendChild(convView);
+
+  // External code editor outside conversation-view
+  const codeEditor = makeNode('div', { className: 'monaco-editor' });
+  body.appendChild(codeEditor);
+
+  // Trajectory: Turn 1 completed with generatorMetadata; Turn 2 is streaming with no generatorMetadata yet
+  const traj = {
+    trajectory: {
+      steps: [
+        { status: 3, metadata: { createdAt: { seconds: '1700001000' } }, step: { case: 'userInput', value: { query: 'Turn 1 prompt' } } },
+        { status: 3, metadata: { createdAt: { seconds: '1700001005' } }, step: { case: 'plannerResponse', value: { response: 'Turn 1 done' } } },
+        { status: 3, metadata: { createdAt: { seconds: '1700002000' } }, step: { case: 'userInput', value: { query: 'Turn 2 prompt' } } },
+        { status: 2, metadata: { createdAt: { seconds: '1700002005' } }, step: { case: 'plannerResponse', value: { response: 'Streaming...' } } },
+      ],
+      generatorMetadata: [
+        { stepIndices: [0, 1], metadata: { value: { modelDisplayName: 'Gemini 4 Neon', usage: { inputTokens: '5000', cacheReadTokens: '10000', outputTokens: '300' } } } },
+      ],
+    },
+  };
+
+  const rootStore = {
+    getState: () => ({
+      trajectorySummaries: {
+        summaries: { [cascadeId]: { stepCount: 4, status: 2, lastModifiedTime: { seconds: '1700002005' } } },
+      },
+    }),
+    subscribe: () => () => {},
+  };
+  const rootFiber = {
+    memoizedProps: { store: rootStore },
+    dependencies: {
+      firstContext: {
+        memoizedValue: {
+          async getCascadeTrajectory() { return traj; },
+          async retrieveUserQuotaSummary() { return { groups: [] }; },
+        },
+      },
+    },
+    return: null,
+  };
+  inputBox.__reactFiber$test = { memoizedProps: { cascadeId }, return: rootFiber };
+
+  const intervalDelays = [];
+  let observerCb = null;
+  let rafCalls = 0;
+
+  const doc = {
+    documentElement: html,
+    head,
+    body,
+    hidden: false,
+    readyState: 'complete',
+    createElement: (t) => makeNode(t),
+    getElementById: (id) => {
+      const find = (n) => (n.id === id ? n : n.children.map(find).find(Boolean) || null);
+      return find(html);
+    },
+    querySelector: (s) => html.querySelector(s),
+    querySelectorAll: (s) => html.querySelectorAll(s),
+    addEventListener() {},
+    removeEventListener() {},
+  };
+
+  const sandbox = {
+    window: null,
+    globalThis: null,
+    document: doc,
+    navigator: { language: 'zh-CN' },
+    location: { pathname: `/c/${cascadeId}` },
+    localStorage: { _m: {}, getItem(k) { return this._m[k] || null; }, setItem(k, v) { this._m[k] = String(v); } },
+    getComputedStyle: () => ({ getPropertyValue: () => '' }),
+    matchMedia: () => ({ matches: false }),
+    MutationObserver: class {
+      constructor(cb) { observerCb = cb; }
+      observe() {}
+      disconnect() {}
+    },
+    ResizeObserver: class { observe() {} disconnect() {} },
+    requestAnimationFrame: () => { rafCalls++; return rafCalls; },
+    cancelAnimationFrame: () => {},
+    setTimeout: (fn, ms) => { const id = setTimeout(fn, ms); timers.add(id); return id; },
+    clearTimeout: (id) => { timers.delete(id); clearTimeout(id); },
+    setInterval: (_fn, ms) => { intervalDelays.push(ms); return intervalDelays.length; },
+    clearInterval: () => {},
+    performance: { now: () => Date.now() },
+    electronApi: {
+      async getCascadeTrajectory() { return traj; },
+      async getAllCascadeTrajectories() { return {}; },
+    },
+    Math, Date, JSON, Map, Set, Array, Object, String, Number, Boolean, Promise, Uint8Array, Float32Array, Intl,
+  };
+  sandbox.window = sandbox;
+  sandbox.globalThis = sandbox;
+
+  try {
+    const res = vm.runInNewContext(
+      cdp.buildInjectExpression({ ...cdp.DEFAULT_CONFIG, turnBadges: true, pollIntervalMs: 3200 }),
+      sandbox
+    );
+    assert.equal(res.status, 'ok');
+    await new Promise((r) => setTimeout(r, 80));
+
+    // Turn 1 badge MUST stay on Turn 1 and NOT jump onto streaming Turn 2 response
+    const bar1 = r1Wrap.querySelector('.ag-cs-turn-bar');
+    assert.ok(bar1, 'Expected #T1 badge to remain mounted on Turn 1');
+    assert.ok(bar1.innerHTML.includes('#T1'));
+    assert.equal(r2Wrap.querySelector('.ag-cs-turn-bar'), null, 'Streaming Turn 2 must not hijack #T1 badge');
+
+    // Configured pollIntervalMs (3200ms) must NOT be clamped down to 1500ms
+    assert.ok(intervalDelays.includes(3200), `Expected pollIntervalMs 3200 to be honored, got ${JSON.stringify(intervalDelays)}`);
+
+    // characterData mutations outside conversation-view / agent-input-box must be ignored
+    const rafBefore = rafCalls;
+    observerCb([{ type: 'characterData', target: { nodeType: 3, parentElement: codeEditor } }]);
+    assert.equal(rafCalls, rafBefore, 'External editor characterData must not trigger scheduleSync');
+
+    vm.runInNewContext(cdp.REMOVE_EXPRESSION, sandbox);
+  } finally {
+    for (const id of timers) clearTimeout(id);
+  }
+});

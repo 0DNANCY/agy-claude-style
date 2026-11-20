@@ -2419,21 +2419,27 @@
       }
     };
 
+    const hasIndexedTurns = turns.some((td) => td.userStepIdx >= 0);
     const matchTurnByFiber = (fiberInfo) => {
       if (!fiberInfo) return null;
-      if (typeof fiberInfo.stepIndex === 'number' && fiberInfo.stepIndex >= 0) {
+      if (typeof fiberInfo.stepIndex === 'number' && fiberInfo.stepIndex >= 0 && hasIndexedTurns) {
         for (let i = 0; i < turns.length; i++) {
           const td = turns[i];
           if (td.userStepIdx >= 0 && fiberInfo.stepIndex >= td.userStepIdx && fiberInfo.stepIndex < td.nextUserStepIdx) {
             return td;
           }
         }
+        return null;
       }
       if (typeof fiberInfo.stepTimeSec === 'number' && fiberInfo.stepTimeSec > 0) {
         let best = null;
         for (let i = 0; i < turns.length; i++) {
           const td = turns[i];
-          if (td.startTimeSec > 0 && fiberInfo.stepTimeSec >= td.startTimeSec - 2) {
+          if (
+            td.startTimeSec > 0 &&
+            fiberInfo.stepTimeSec >= td.startTimeSec - 2 &&
+            (!Number.isFinite(td.nextStartTimeSec) || fiberInfo.stepTimeSec < td.nextStartTimeSec - 1)
+          ) {
             best = td;
           }
         }
@@ -4841,12 +4847,30 @@
     }
   }
 
+  function isIgnorableMutation(m) {
+    if (isOwnPluginNode(m.target)) return true;
+    if (m.type === 'attributes' && m.target !== document.body && m.target !== document.documentElement) {
+      return true;
+    }
+    if (m.type === 'characterData') {
+      const el = m.target && m.target.closest ? m.target : m.target?.parentElement;
+      if (!el || !el.closest) return true;
+      return !el.closest('[data-testid="conversation-view"], [data-testid="agent-input-box"]');
+    }
+    return false;
+  }
+
+  let charDataThrottleTimer = null;
   const observer = new MutationObserver((mutations) => {
-    if (mutations.length > 0 && mutations.every((m) => isOwnPluginNode(m.target))) return;
-    if (
-      mutations.length > 0 &&
-      mutations.every((m) => m.type === 'attributes' && m.target !== document.body && m.target !== document.documentElement)
-    ) {
+    if (mutations.length === 0 || mutations.every(isIgnorableMutation)) return;
+    const onlyCharData = mutations.every((m) => isIgnorableMutation(m) || m.type === 'characterData');
+    if (onlyCharData) {
+      if (!charDataThrottleTimer) {
+        charDataThrottleTimer = setTimeout(() => {
+          charDataThrottleTimer = null;
+          if (!destroyed) scheduleSync();
+        }, 250);
+      }
       return;
     }
     scheduleSync();
@@ -4879,6 +4903,10 @@
     if (pollTimer !== null) {
       clearInterval(pollTimer);
       pollTimer = null;
+    }
+    if (charDataThrottleTimer) {
+      clearTimeout(charDataThrottleTimer);
+      charDataThrottleTimer = null;
     }
     if (storeDebounce) {
       clearTimeout(storeDebounce);
@@ -4945,7 +4973,7 @@
       if (document.querySelector('[data-testid="conversation-view"], [data-testid="agent-input-box"]')) {
         scheduleSync();
       }
-    }, Math.max(1000, Math.min(1500, Number(cfg.pollIntervalMs) || 1500)));
+    }, Math.max(1000, Number(cfg.pollIntervalMs) || 2500));
 
     ensureHooks(true);
     applyRootAttrs();

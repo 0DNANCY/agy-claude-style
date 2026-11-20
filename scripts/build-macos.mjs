@@ -102,16 +102,16 @@ function compileUniversalSwift({ swiftc, lipo, sdkPath, sources, frameworks = []
       args.push(...sources, '-o', sliceOut);
       return args;
     };
-    try {
-      execFileSync(swiftc, buildArgs('11.0'), { stdio: 'pipe' });
-    } catch (err) {
-      if (arch === 'x86_64') {
+    if (arch === 'x86_64') {
+      try {
+        execFileSync(swiftc, buildArgs('11.0'), { stdio: 'pipe' });
+      } catch {
         // Newer Xcode/CLT toolchains drop x86_64 from static libswiftCompatibility56.a;
         // targeting macOS 13.0+ uses the OS dylib Swift concurrency runtime and links cleanly.
         execFileSync(swiftc, buildArgs('13.0'), { stdio: 'inherit' });
-      } else {
-        throw err;
       }
+    } else {
+      execFileSync(swiftc, buildArgs('11.0'), { stdio: 'inherit' });
     }
     slices.push(sliceOut);
   }
