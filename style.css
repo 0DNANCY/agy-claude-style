@@ -1861,6 +1861,11 @@ html[data-ag-cs-style] #ag-cs-settings-sec [role="group"] button[data-pressed] {
   font-size: 14px;
   padding: 0 6px;
 }
+.ag-cs-ctx-act-btn[data-action-state="error"] {
+  border-color: rgba(220, 60, 61, 0.65);
+  background: rgba(220, 60, 61, 0.14);
+  color: #f87171;
+}
 
 .ag-cs-ctx-hero {
   display: flex;
@@ -1895,11 +1900,6 @@ html[data-ag-cs-style] #ag-cs-settings-sec [role="group"] button[data-pressed] {
 }
 .ag-cs-ctx-quota-pill {
   font-weight: 600;
-}
-.ag-cs-ctx-cost {
-  font-size: 11px;
-  font-weight: 500;
-  color: var(--muted-foreground);
 }
 .ag-cs-ctx-warn-banner {
   display: flex;

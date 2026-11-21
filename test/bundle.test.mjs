@@ -3438,7 +3438,7 @@ test('fallback to createAgentStateProviderForConvo when getCascadeTrajectory thr
   }
 });
 
-test('hudBottomBar triggers quota fetch in context mode, low-context triggers /compact warning on target composer, export copies Markdown, and 3-way loadSettings preserves local edits', async () => {
+test('hudBottomBar triggers quota fetch in context mode, low-context triggers /compact warning on target composer, copy reports telemetry, and 3-way loadSettings preserves local edits', async () => {
   const timers = new Set();
   const makeEl = (tag, opts = {}) => {
     const attrs = new Map(Object.entries(opts.attrs || {}));
@@ -3710,20 +3710,20 @@ test('hudBottomBar triggers quota fetch in context mode, low-context triggers /c
     assert.equal(ringBtn?.getAttribute('data-ctx-low'), 'warn');
     assert.equal(topBar?.getAttribute('data-ctx-low'), 'warn');
 
-    // 3. Popover shows cost estimate badge, low-ctx banner & working Export button
+    // 3. Popover shows low-ctx banner & working Copy button
     ringBtn.dispatch('click');
     await new Promise((r) => setTimeout(r, 40));
     const pop = body.querySelector('.ag-cs-ctx-popover');
     assert.ok(pop);
     assert.ok(pop.innerHTML.includes('ag-cs-ctx-warn-banner'));
-    assert.ok(pop.innerHTML.includes('ag-cs-ctx-cost'));
+    assert.ok(!pop.innerHTML.includes('ag-cs-ctx-cost'));
 
-    const exportBtn = pop.querySelector('button[data-ctx-act="export"]');
-    assert.ok(exportBtn);
-    exportBtn.dispatch('click');
+    assert.equal(pop.querySelector('button[data-ctx-act="export"]'), null);
+    const copyBtn = pop.querySelector('button[data-ctx-act="copy"]');
+    copyBtn.dispatch('click');
     await new Promise((r) => setTimeout(r, 30));
-    assert.match(copiedText, /## 分轮次消耗明细/);
-    assert.match(copiedText, /Trim context window/);
+    assert.match(copiedText, /会话累计/);
+    assert.doesNotMatch(copiedText, /参考 API|费用/);
 
     // 4. Scoped /compact fills activeEd ONLY and leaves otherEd untouched
     const compactBtn = topBar.querySelector('[data-hud-compact-btn="1"]');
@@ -3748,6 +3748,250 @@ test('hudBottomBar triggers quota fetch in context mode, low-context triggers /c
     assert.equal(stAfter.cfg.hudCompact, true);
 
     vm.runInNewContext(cdp.REMOVE_EXPRESSION, sandbox);
+  } finally {
+    for (const id of timers) clearTimeout(id);
+  }
+});
+
+test('unmountRipple tolerates zero-size .agy-home (field=null) and copy honestly reflects failure and success', async () => {
+  const timers = new Set();
+  const matchesSel = (node, sel) => {
+    if (!node || !sel) return false;
+    return sel.split(',').some((p) => {
+      const s = p.trim();
+      if (!s) return false;
+      const parts = s.split(/\s+/);
+      const tail = parts[parts.length - 1];
+      const matchOne = (el, tok) => {
+        if (!el) return false;
+        const br = /\[([^\]=]+)(?:="([^"]*)")?\]/.exec(tok);
+        const tagPart = tok.split('.')[0].split('[')[0];
+        if (tagPart && el.tagName !== tagPart.toUpperCase()) return false;
+        const partsDot = tok.split('.');
+        for (let i = 1; i < partsDot.length; i++) {
+          const cls = partsDot[i].replace(/\[.*$/, '');
+          if (cls && !el.classList.contains(cls)) return false;
+        }
+        if (br) {
+          const ok = br[2] === undefined ? el.hasAttribute(br[1]) : el.getAttribute(br[1]) === br[2];
+          if (!ok) return false;
+        }
+        return true;
+      };
+      if (!matchOne(node, tail)) return false;
+      let cur = node.parentElement;
+      for (let i = parts.length - 2; i >= 0; i--) {
+        while (cur && !matchOne(cur, parts[i])) cur = cur.parentElement;
+        if (!cur) return false;
+        cur = cur.parentElement;
+      }
+      return true;
+    });
+  };
+
+  const makeEl = (tag, opts = {}) => {
+    const children = [];
+    const attrs = new Map();
+    const listeners = new Map();
+    const classes = new Set((opts.className || '').split(/\s+/).filter(Boolean));
+    const el = {
+      tagName: String(tag || 'div').toUpperCase(),
+      id: opts.id || '',
+      style: { setProperty() {}, removeProperty() {} },
+      dataset: {},
+      textContent: opts.text || '',
+      _html: '',
+      _href: '',
+      clientWidth: opts.clientWidth ?? 0,
+      clientHeight: opts.clientHeight ?? 0,
+      parentElement: null,
+      parentNode: null,
+      children,
+      get className() { return Array.from(classes).join(' '); },
+      set className(v) { classes.clear(); for (const x of String(v || '').split(/\s+/).filter(Boolean)) classes.add(x); },
+      classList: {
+        add: (...c) => c.forEach((x) => classes.add(x)),
+        remove: (...c) => c.forEach((x) => classes.delete(x)),
+        contains: (x) => classes.has(x),
+      },
+      get isConnected() {
+        let cur = el;
+        while (cur.parentElement) cur = cur.parentElement;
+        return cur.tagName === 'HTML';
+      },
+      set innerHTML(v) {
+        this._html = String(v);
+        children.length = 0;
+        for (const m of this._html.matchAll(/data-ctx-act="([^"]+)"/g)) {
+          this.appendChild(makeEl('button', { attrs: { 'data-ctx-act': m[1] } }));
+        }
+      },
+      get innerHTML() { return this._html; },
+      get href() { return this._href; },
+      set href(v) { this._href = String(v); },
+      appendChild(ch) { ch.parentElement = ch.parentNode = el; children.push(ch); return ch; },
+      insertBefore(ch, ref) { ch.parentElement = ch.parentNode = el; const i = ref ? children.indexOf(ref) : -1; if (i >= 0) children.splice(i, 0, ch); else children.push(ch); return ch; },
+      removeChild(ch) { const i = children.indexOf(ch); if (i >= 0) children.splice(i, 1); ch.parentElement = ch.parentNode = null; return ch; },
+      remove() { if (el.parentElement) el.parentElement.removeChild(el); },
+      setAttribute(k, v) { attrs.set(k, String(v)); if (k === 'id') el.id = String(v); },
+      getAttribute(k) { return attrs.has(k) ? attrs.get(k) : null; },
+      hasAttribute(k) { return attrs.has(k); },
+      removeAttribute(k) { attrs.delete(k); },
+      addEventListener(ev, cb) { if (!listeners.has(ev)) listeners.set(ev, []); listeners.get(ev).push(cb); },
+      removeEventListener(ev, cb) { const a = listeners.get(ev); if (a) { const i = a.indexOf(cb); if (i >= 0) a.splice(i, 1); } },
+      dispatch(ev, p = {}) { for (const fn of [...(listeners.get(ev) || [])]) fn({ type: ev, stopPropagation() {}, preventDefault() {}, ...p }); },
+      getBoundingClientRect: () => ({ left: 10, top: 320, right: 430, bottom: 352, width: 420, height: 32 }),
+      closest(sel) { let c = el; while (c) { if (matchesSel(c, sel)) return c; c = c.parentElement; } return null; },
+      querySelector(sel) { return el.querySelectorAll(sel)[0] || null; },
+      querySelectorAll(sel) {
+        const res = [];
+        const walk = (n) => {
+          for (const ch of n.children || []) {
+            if (matchesSel(ch, sel)) res.push(ch);
+            walk(ch);
+          }
+        };
+        walk(el);
+        return res;
+      },
+    };
+    if (opts.attrs) for (const [k, v] of Object.entries(opts.attrs)) el.setAttribute(k, v);
+    return el;
+  };
+
+  const html = makeEl('html');
+  const head = makeEl('head');
+  const body = makeEl('body', { className: 'theme-dark' });
+  html.appendChild(head);
+  html.appendChild(body);
+
+  // Hidden/collapsed zero-size home (.agy-home clientWidth=0, clientHeight=0) -> field remains null
+  const home = makeEl('div', { className: 'agy-home', clientWidth: 0, clientHeight: 0 });
+  body.appendChild(home);
+
+  const cascadeId = 'mixed-cost-convo-1';
+  const convView = makeEl('div', { attrs: { 'data-testid': 'conversation-view', 'data-cascade-id': cascadeId } });
+  const box = makeEl('div', { attrs: { 'data-testid': 'agent-input-box' } });
+  const card = makeEl('div', { className: 'surface-composer-card' });
+  const footer = makeEl('div', { className: 'agy-composer-footer' });
+  card.appendChild(footer);
+  box.appendChild(card);
+  convView.appendChild(box);
+  body.appendChild(convView);
+
+  let clipMode = 'reject';
+  const mixedTraj = {
+    trajectory: {
+      steps: [
+        { status: 3, metadata: { createdAt: '2026-11-17T12:00:00Z' }, step: { case: 'userInput', value: { query: 'Test mixed pricing' } } },
+        { status: 3, metadata: { createdAt: '2026-11-17T12:00:05Z' }, step: { case: 'plannerResponse', value: { response: 'One' } } },
+        { status: 3, metadata: { createdAt: '2026-11-17T12:00:10Z' }, step: { case: 'plannerResponse', value: { response: 'Two' } } },
+      ],
+      generatorMetadata: [
+        {
+          stepIndices: [1],
+          metadata: { value: { modelDisplayName: 'Claude Sonnet 4.5', usage: { inputTokens: '10000', outputTokens: '2000', model: 1001 } } },
+        },
+        {
+          stepIndices: [2],
+          metadata: { value: { modelDisplayName: 'claude-opus-99.9', usage: { inputTokens: '20000', outputTokens: '3000', model: 1999 } } },
+        },
+      ],
+    },
+  };
+  const fakeSvc = { async getCascadeTrajectory() { return mixedTraj; } };
+  box.__reactFiber$test = {
+    memoizedProps: { cascadeId, getCascadeTrajectory: fakeSvc.getCascadeTrajectory },
+    dependencies: { firstContext: { memoizedValue: fakeSvc, next: null } },
+    return: null,
+  };
+
+  const storage = { _m: {}, getItem(k) { return this._m[k] || null; }, setItem(k, v) { this._m[k] = String(v); } };
+  const doc = {
+    documentElement: html,
+    head,
+    body,
+    hidden: false,
+    readyState: 'complete',
+    createElement: (t) => makeEl(t),
+    getElementById: () => null,
+    querySelector: (s) => html.querySelector(s),
+    querySelectorAll: (s) => html.querySelectorAll(s),
+    addEventListener() {},
+    removeEventListener() {},
+  };
+  const sandbox = {
+    window: null,
+    globalThis: null,
+    document: doc,
+    navigator: {
+      language: 'zh-CN',
+      clipboard: {
+        writeText: () => (clipMode === 'reject' ? Promise.reject(new Error('Clipboard denied')) : Promise.resolve()),
+      },
+    },
+    location: { pathname: `/c/${cascadeId}` },
+    localStorage: storage,
+    getComputedStyle: () => ({ getPropertyValue: () => '' }),
+    matchMedia: () => ({ matches: false }),
+    MutationObserver: class { observe() {} disconnect() {} },
+    ResizeObserver: class { observe() {} disconnect() {} },
+    requestAnimationFrame: (fn) => { const id = setTimeout(() => fn(Date.now()), 5); timers.add(id); return id; },
+    cancelAnimationFrame: (id) => { timers.delete(id); clearTimeout(id); },
+    setTimeout: (fn, ms) => { const id = setTimeout(fn, ms); timers.add(id); return id; },
+    clearTimeout: (id) => { timers.delete(id); clearTimeout(id); },
+    setInterval: () => 1,
+    clearInterval: () => {},
+    performance: { now: () => Date.now() },
+    Math, Date, JSON, Map, Set, Array, Object, String, Number, Boolean, Promise, Uint8Array, Float32Array, Intl,
+  };
+  sandbox.window = sandbox;
+  sandbox.globalThis = sandbox;
+
+  try {
+    vm.runInNewContext(
+      cdp.buildInjectExpression({ ...cdp.DEFAULT_CONFIG, homeLayout: 'studio', homeRipple: true, ringMode: 'context' }),
+      sandbox
+    );
+    await new Promise((r) => setTimeout(r, 80));
+
+    // 1. Zero-size ripple mounted with field=null -> turning off homeRipple MUST NOT throw TypeError in unmountRipple()
+    assert.ok(home.querySelector('.ag-cs-ripple-host'), 'Expected zero-size ripple host attached');
+    assert.doesNotThrow(() => {
+      sandbox.window.__agClaudeStyle.refreshConfig({ ...cdp.DEFAULT_CONFIG, homeLayout: 'studio', homeRipple: false, ringMode: 'context' });
+    });
+    assert.equal(home.querySelector('.ag-cs-ripple-host'), null);
+
+    // Re-enable zero-size ripple, then REMOVE_EXPRESSION (destroy -> unmountRipple) must also not throw
+    sandbox.window.__agClaudeStyle.refreshConfig({ ...cdp.DEFAULT_CONFIG, homeLayout: 'studio', homeRipple: true, ringMode: 'context' });
+    assert.ok(home.querySelector('.ag-cs-ripple-host'));
+
+    // 2. Statistics remain available without pricing UI.
+    const ringBtn = footer.querySelector('.ag-cs-context-ring');
+    ringBtn.dispatch('click');
+    await new Promise((r) => setTimeout(r, 40));
+    const pop = body.querySelector('.ag-cs-ctx-popover');
+    assert.ok(pop);
+    assert.doesNotMatch(pop.innerHTML, /部分参考|Ref\. API|ag-cs-ctx-cost/);
+    assert.doesNotMatch(pop.innerHTML, /~\$/);
+
+    // Copy failure/success feedback remains, while the export action is absent.
+    assert.equal(pop.querySelector('button[data-ctx-act="export"]'), null);
+    const copyBtn = pop.querySelector('button[data-ctx-act="copy"]');
+    assert.ok(copyBtn);
+    copyBtn.dispatch('click');
+    await new Promise((r) => setTimeout(r, 30));
+    assert.equal(copyBtn.textContent, '✕ 失败');
+    assert.equal(copyBtn.getAttribute('data-action-state'), 'error');
+    clipMode = 'resolve';
+    copyBtn.dispatch('click');
+    await new Promise((r) => setTimeout(r, 30));
+    assert.equal(copyBtn.textContent, '✓ 已复制');
+    assert.equal(copyBtn.getAttribute('data-action-state'), 'ok');
+
+    assert.doesNotThrow(() => {
+      vm.runInNewContext(cdp.REMOVE_EXPRESSION, sandbox);
+    });
   } finally {
     for (const id of timers) clearTimeout(id);
   }

@@ -463,11 +463,12 @@ enum CdpHelper {
         do {
             try content.write(toFile: tmpPath, atomically: false, encoding: .utf8)
             if rename(tmpPath, cfgPath) != 0 {
-                try content.write(toFile: cfgPath, atomically: true, encoding: .utf8)
                 try? FileManager.default.removeItem(atPath: tmpPath)
+                return false
             }
             return true
         } catch {
+            try? FileManager.default.removeItem(atPath: tmpPath)
             return false
         }
     }
@@ -480,6 +481,41 @@ enum CdpHelper {
             partsContent.append(try String(contentsOfFile: p, encoding: .utf8))
         }
         return partsContent.joined(separator: "\n")
+    }
+
+    static func readBundleAndCssHashes(baseDir: String, manifest: PluginManifest) throws -> (codeHash: String, cssHash: String) {
+        let cssPath = (baseDir as NSString).appendingPathComponent("style.css")
+        let css = try String(contentsOfFile: cssPath, encoding: .utf8)
+        let bundle = try readRuntimeBundle(baseDir: baseDir, manifest: manifest)
+        return (computeHash(bundle), computeHash(css))
+    }
+
+    static func buildConfigScriptExpression(baseDir: String, manifest: PluginManifest, expectedCodeHash: String) -> String {
+        var payload = readConfig(baseDir: baseDir, manifest: manifest)
+        payload["binding"] = .string(manifest.settingBinding)
+        payload["codeHash"] = .string(expectedCodeHash)
+        let payloadJson = MiniJson.stringify(.object(payload), pretty: false)
+        let hashJson = MiniJson.stringifyString(expectedCodeHash)
+        let verJson = MiniJson.stringifyString(manifest.version)
+        return """
+        (() => {
+          const nextCfg = \(payloadJson);
+          globalThis.__agCsOverrideConfig = nextCfg;
+          if (
+            window.__agClaudeStyle &&
+            typeof window.__agClaudeStyle.refreshConfig === 'function' &&
+            (!\(hashJson) || window.__agClaudeStyle.codeHash === \(hashJson))
+          ) {
+            window.__agClaudeStyle.refreshConfig(nextCfg);
+            return {
+              version: \(verJson),
+              status: 'refreshed',
+              state: window.__agClaudeStyle.getState ? window.__agClaudeStyle.getState() : null,
+            };
+          }
+          return null;
+        })()
+        """
     }
 
     static func buildInjectExpression(baseDir: String, manifest: PluginManifest) throws -> String {
@@ -529,9 +565,12 @@ enum CdpHelper {
         sb.append(bundle)
         sb.append("\n")
         sb.append("        if (typeof globalThis.__agCsUiMain === 'function') {\n")
-        sb.append("          globalThis.__agCsUiMain(")
+        sb.append("          const baseCfg = ")
         sb.append(MiniJson.stringify(.object(initCfg), pretty: false))
-        sb.append(");\n")
+        sb.append(";\n")
+        sb.append("          const ov = globalThis.__agCsOverrideConfig;\n")
+        sb.append("          const nextCfg = (ov && typeof ov === 'object' && ov.codeHash === baseCfg.codeHash) ? Object.assign({}, baseCfg, ov, { binding: baseCfg.binding, codeHash: baseCfg.codeHash }) : baseCfg;\n")
+        sb.append("          globalThis.__agCsUiMain(nextCfg);\n")
         sb.append("        }\n")
         sb.append("      } catch (e) {\n")
         sb.append("        status = 'error: ' + (e && e.message ? e.message : String(e));\n")
@@ -572,6 +611,209 @@ enum CdpHelper {
             return String(t.prefix(57)) + "..."
         }
         return t
+    }
+
+    enum WatcherPidStatus {
+        case dead
+        case owned
+        case foreign
+        case unknown
+    }
+
+    struct WatcherPidClassification {
+        let status: WatcherPidStatus
+        let pid: Int32
+        let command: String?
+    }
+
+    static func normalizePath(_ p: String) -> String {
+        let resolved = URL(fileURLWithPath: p).standardizedFileURL.path
+        if resolved.count > 1 && resolved.hasSuffix("/") {
+            return String(resolved.dropLast())
+        }
+        return resolved
+    }
+
+    private static func runPsQuery(pid: Int32, field: String) -> String? {
+        guard pid > 0 else { return nil }
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/bin/ps")
+        proc.arguments = ["-p", String(pid), "-o", field]
+        let outPipe = Pipe()
+        proc.standardOutput = outPipe
+        proc.standardError = FileHandle.nullDevice
+        proc.standardInput = FileHandle.nullDevice
+        do {
+            try proc.run()
+            let data = outPipe.fileHandleForReading.readDataToEndOfFile()
+            proc.waitUntilExit()
+            guard proc.terminationStatus == 0,
+                  let text = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !text.isEmpty else {
+                return nil
+            }
+            return text
+        } catch {
+            return nil
+        }
+    }
+
+    static func inspectProcessCommand(pid: Int32) -> String? {
+        return runPsQuery(pid: pid, field: "command=")
+    }
+
+    static func inspectProcessInfo(pid: Int32) -> (cmd: String, exePath: String?)? {
+        guard let cmd = runPsQuery(pid: pid, field: "command=") else { return nil }
+        let exePath = runPsQuery(pid: pid, field: "comm=")
+        return (cmd, exePath)
+    }
+
+    private static func hasStandaloneFlag(_ cmd: String, _ flag: String) -> Bool {
+        let escaped = NSRegularExpression.escapedPattern(for: flag)
+        let pattern = "(?:^|\\s)" + escaped + "(?=\\s|$)"
+        return cmd.range(of: pattern, options: .regularExpression) != nil
+    }
+
+    private static func hasPathBoundaryToken(_ haystack: String, _ targetPath: String) -> Bool {
+        guard !haystack.isEmpty && !targetPath.isEmpty else { return false }
+        let scalars: Set<Character> = [" ", "\t", "\n", "\r", "\"", "'"]
+        var searchStart = haystack.startIndex
+        while let range = haystack.range(of: targetPath, range: searchStart..<haystack.endIndex) {
+            let beforeOk = range.lowerBound == haystack.startIndex || scalars.contains(haystack[haystack.index(before: range.lowerBound)])
+            let afterOk = range.upperBound == haystack.endIndex || scalars.contains(haystack[range.upperBound])
+            if beforeOk && afterOk {
+                return true
+            }
+            searchStart = range.upperBound
+        }
+        return false
+    }
+
+    private static func extractDirFlagPath(_ cmd: String) -> (present: Bool, raw: String?, path: String?) {
+        guard hasStandaloneFlag(cmd, "--dir") || cmd.range(of: "(?:^|\\s)--dir=", options: .regularExpression) != nil else {
+            return (false, nil, nil)
+        }
+        let pattern = "(?:^|\\s)--dir(?:=|\\s+)(?:\"([^\"]+)\"|'([^']+)'|(.+?))(?=\\s+--[a-zA-Z0-9-]+(?:=|\\s|$)|$)"
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: []) else { return (true, nil, nil) }
+        let nsRange = NSRange(cmd.startIndex..<cmd.endIndex, in: cmd)
+        guard let match = regex.firstMatch(in: cmd, options: [], range: nsRange) else { return (true, nil, nil) }
+        for idx in 1...3 {
+            let r = match.range(at: idx)
+            if r.location != NSNotFound, let swiftRange = Range(r, in: cmd) {
+                let raw = String(cmd[swiftRange]).trimmingCharacters(in: .whitespacesAndNewlines)
+                if !raw.isEmpty {
+                    let norm = raw.hasPrefix("/") ? normalizePath(raw) : nil
+                    return (true, raw, norm)
+                }
+            }
+        }
+        return (true, nil, nil)
+    }
+
+    private static func isNodeBinaryName(_ tokenOrPath: String) -> Bool {
+        let base = (tokenOrPath as NSString).lastPathComponent.lowercased()
+        return base == "node" || base == "nodejs" || base.hasPrefix("electron") || base.hasPrefix("antigravity")
+    }
+
+    static func evaluateWatcherOwnership(command rawCmd: String, exePath: String? = nil, baseDir: String) -> WatcherPidStatus {
+        let cmd = rawCmd.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cmd.isEmpty, !baseDir.isEmpty else { return .unknown }
+        if hasStandaloneFlag(cmd, "--once") || hasStandaloneFlag(cmd, "--remove") {
+            return .foreign
+        }
+        let normDir = normalizePath(baseDir)
+        let nativeExeName = "agy-claude-style-watcher"
+        let expectedNativeExe = normalizePath((normDir as NSString).appendingPathComponent(nativeExeName))
+
+        let exePrefix = (cmd.components(separatedBy: " --").first ?? cmd)
+            .trimmingCharacters(in: CharacterSet.whitespacesAndNewlines.union(CharacterSet(charactersIn: "\"'")))
+        let leadingToken = exePrefix.split(separator: " ").first.map(String.init) ?? ""
+
+        let exeMatchesNative: Bool
+        if let ep = exePath, !ep.isEmpty {
+            exeMatchesNative = (ep as NSString).lastPathComponent.lowercased() == nativeExeName
+        } else {
+            let normPrefix = exePrefix.hasPrefix("/") ? normalizePath(exePrefix) : exePrefix
+            exeMatchesNative =
+                (normPrefix == expectedNativeExe) ||
+                (!exePrefix.contains(" ") && (exePrefix as NSString).lastPathComponent.lowercased() == nativeExeName)
+        }
+
+        if exeMatchesNative {
+            let dirFlag = extractDirFlagPath(cmd)
+            if dirFlag.present {
+                if let resolved = dirFlag.path {
+                    return resolved == normDir ? .owned : .foreign
+                }
+                return (dirFlag.raw != nil) ? .unknown : .foreign
+            }
+            if let ep = exePath, !ep.isEmpty, ep.hasPrefix("/") {
+                let epDir = normalizePath((ep as NSString).deletingLastPathComponent)
+                return epDir == normDir ? .owned : .foreign
+            }
+            if exePrefix.hasPrefix("/") {
+                return normalizePath(exePrefix) == expectedNativeExe ? .owned : .foreign
+            }
+            return .unknown
+        }
+
+        guard hasStandaloneFlag(cmd, "--watch") else { return .foreign }
+
+        var launcherTok = exePath ?? ""
+        var rest = ""
+        if let ep = exePath, !ep.isEmpty {
+            if cmd.hasPrefix(ep) {
+                rest = String(cmd.dropFirst(ep.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+            } else {
+                let baseEp = (ep as NSString).lastPathComponent
+                if cmd.hasPrefix(baseEp) {
+                    rest = String(cmd.dropFirst(baseEp.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+                } else {
+                    rest = String(cmd.dropFirst(leadingToken.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+                }
+            }
+        } else {
+            launcherTok = leadingToken
+            rest = String(cmd.dropFirst(leadingToken.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        guard isNodeBinaryName(launcherTok), !rest.isEmpty else { return .foreign }
+        if rest.hasPrefix("-") {
+            let firstFlag = (rest.split(separator: " ").first.map(String.init) ?? "").lowercased()
+            if ["-e", "--eval", "-p", "--print", "-i", "--interactive", "-c", "--check", "-h", "--help", "-v", "--version"].contains(firstFlag) {
+                return .foreign
+            }
+            return .unknown
+        }
+
+        let expectedScript = normalizePath((normDir as NSString).appendingPathComponent("inject.js"))
+        let unquotedRest = rest.hasPrefix("\"") || rest.hasPrefix("'") ? String(rest.dropFirst()) : rest
+        if unquotedRest.hasPrefix(expectedScript) {
+            let after = unquotedRest.dropFirst(expectedScript.count)
+            if after.isEmpty || after.first == " " || after.first == "\t" || after.first == "\"" || after.first == "'" {
+                return .owned
+            }
+        }
+        let firstArg = unquotedRest.split(whereSeparator: { $0.isWhitespace || $0 == "\"" || $0 == "'" }).first.map(String.init) ?? ""
+        if firstArg.hasPrefix("/") { return .foreign }
+        return (firstArg as NSString).lastPathComponent.lowercased() == "inject.js" ? .unknown : .foreign
+    }
+
+    static func matchesWatcherForDir(command rawCmd: String, exePath: String? = nil, baseDir: String) -> Bool {
+        return evaluateWatcherOwnership(command: rawCmd, exePath: exePath, baseDir: baseDir) == .owned
+    }
+
+    static func classifyWatcherPid(_ pid: Int32, baseDir: String) -> WatcherPidClassification {
+        guard pid > 0 else { return WatcherPidClassification(status: .dead, pid: pid, command: nil) }
+        guard isProcessAlive(pid) else { return WatcherPidClassification(status: .dead, pid: pid, command: nil) }
+        guard let info = inspectProcessInfo(pid: pid) else {
+            if !isProcessAlive(pid) {
+                return WatcherPidClassification(status: .dead, pid: pid, command: nil)
+            }
+            return WatcherPidClassification(status: .unknown, pid: pid, command: nil)
+        }
+        let status = evaluateWatcherOwnership(command: info.cmd, exePath: info.exePath, baseDir: baseDir)
+        return WatcherPidClassification(status: status, pid: pid, command: info.cmd)
     }
 
     static func isProcessAlive(_ pid: Int32) -> Bool {

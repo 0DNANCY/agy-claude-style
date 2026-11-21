@@ -89,10 +89,11 @@ function createMockCdpServer() {
       } else {
         lastInjectedExpr = expr;
         claudeStyleMounted = true;
+        const evalStatus = expr.includes("status: 'refreshed'") ? 'refreshed' : 'ok';
         result = {
           result: {
             type: 'object',
-            value: { version: cdp.PLUGIN_VERSION, status: 'ok', state: { mounted: true } },
+            value: { version: cdp.PLUGIN_VERSION, status: evalStatus, state: { mounted: true } },
           },
         };
       }
@@ -398,11 +399,16 @@ test(
     });
     assert.equal(updatedCfg.palette, 'obsidian');
 
-    // Confirm hot-reload fired on watcher
+    // Confirm hot-reload fired on watcher without re-sending ~1.4MB payload
     await waitFor(() => {
       const newer = mockCdp.getCalls().slice(beforeCallCount);
       return newer.some((c) => c.method === 'Page.removeScriptToEvaluateOnNewDocument') ? true : null;
     });
+    const reloadCalls = mockCdp.getCalls().slice(beforeCallCount);
+    const reloadAddCalls = reloadCalls.filter((c) => c.method === 'Page.addScriptToEvaluateOnNewDocument');
+    assert.ok(reloadAddCalls.length >= 1);
+    const maxReloadLen = Math.max(...reloadAddCalls.map((c) => (c.params?.source || '').length));
+    assert.ok(maxReloadLen < 2048, `Expected short config script (<2KB) on C# hot-reload, got ${maxReloadLen}`);
 
     // 4. Test re-install / upgrade preserves existing user config.json
     await runExe(

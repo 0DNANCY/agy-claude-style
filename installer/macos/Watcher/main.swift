@@ -5,12 +5,14 @@ import Darwin
 
 final class AttachedEntry {
     let session: CdpSession
-    var scriptId: String?
+    var bootstrapScriptId: String?
+    var configScriptId: String?
     let title: String
 
-    init(session: CdpSession, scriptId: String? = nil, title: String) {
+    init(session: CdpSession, bootstrapScriptId: String? = nil, configScriptId: String? = nil, title: String) {
         self.session = session
-        self.scriptId = scriptId
+        self.bootstrapScriptId = bootstrapScriptId
+        self.configScriptId = configScriptId
         self.title = title
     }
 }
@@ -141,7 +143,19 @@ final class WatcherApp {
 
     private func stopRunningWatcherInDir() {
         let selfPid = getpid()
-        if let pid = readPidFile(), pid != selfPid {
+        guard let pid = readPidFile(), pid != selfPid else {
+            try? FileManager.default.removeItem(atPath: pidFile)
+            return
+        }
+        let cls = CdpHelper.classifyWatcherPid(pid, baseDir: baseDir)
+        switch cls.status {
+        case .unknown:
+            // Fail closed: never kill or delete .watch.pid when ownership cannot be verified.
+            return
+        case .dead, .foreign:
+            try? FileManager.default.removeItem(atPath: pidFile)
+            return
+        case .owned:
             if kill(pid, 0) == 0 {
                 _ = kill(pid, SIGTERM)
                 let deadline = Date().addingTimeInterval(2.0)
@@ -154,8 +168,8 @@ final class WatcherApp {
                     Thread.sleep(forTimeInterval: 0.1)
                 }
             }
+            try? FileManager.default.removeItem(atPath: pidFile)
         }
-        try? FileManager.default.removeItem(atPath: pidFile)
     }
 
     private func computeDirStamp() -> [String: String] {
@@ -200,11 +214,29 @@ final class WatcherApp {
         }
 
         let selfPid = getpid()
+        if let existingPid = readPidFile(), existingPid != selfPid {
+            let cls = CdpHelper.classifyWatcherPid(existingPid, baseDir: baseDir)
+            if cls.status == .unknown {
+                log("[!] 无法验证 .watch.pid 进程归属 (PID \(existingPid))，出于安全策略拒绝覆盖锁文件")
+                flock(lockFd, LOCK_UN)
+                close(lockFd)
+                return 1
+            }
+            if cls.status == .owned {
+                log("[*] 检测到同目录守护进程已在运行 (PID \(existingPid))，退出重复实例")
+                flock(lockFd, LOCK_UN)
+                close(lockFd)
+                return 0
+            }
+        }
         try? String(selfPid).write(toFile: pidFile, atomically: true, encoding: .utf8)
         try? "".write(toFile: logFile, atomically: false, encoding: .utf8)
 
         var manifest: PluginManifest
         var currentExpr: String
+        var currentConfigExpr: String
+        var currentCodeHash: String
+        var currentCssHash: String
         var cfgAutoRelaunch = false
         var cfgExitOnHostClose = false
         do {
@@ -212,7 +244,11 @@ final class WatcherApp {
             let initCfg = CdpHelper.readConfig(baseDir: baseDir, manifest: manifest)
             cfgAutoRelaunch = initCfg["autoRelaunchWithCdp"]?.boolValue ?? false
             cfgExitOnHostClose = initCfg["exitOnHostClose"]?.boolValue ?? false
+            let hashes = try CdpHelper.readBundleAndCssHashes(baseDir: baseDir, manifest: manifest)
+            currentCodeHash = hashes.codeHash
+            currentCssHash = hashes.cssHash
             currentExpr = try CdpHelper.buildInjectExpression(baseDir: baseDir, manifest: manifest)
+            currentConfigExpr = CdpHelper.buildConfigScriptExpression(baseDir: baseDir, manifest: manifest, expectedCodeHash: currentCodeHash)
         } catch {
             log("[!] 初始化加载失败: \(error.localizedDescription)")
             releasePidFile(selfPid: selfPid)
@@ -258,23 +294,66 @@ final class WatcherApp {
         intSource.setEventHandler(handler: requestExit)
         intSource.resume()
 
-        let applyToEntry: (AttachedEntry, String) throws -> JsonValue = { entry, exprToUse in
-            if let oldId = entry.scriptId, !oldId.isEmpty {
+        let applyToEntry: (AttachedEntry, String, String, Bool) throws -> JsonValue = { entry, fullExprToUse, configExprToUse, refreshOnly in
+            if refreshOnly, let _ = entry.bootstrapScriptId, !configExprToUse.isEmpty {
+                if let oldCfgId = entry.configScriptId, !oldCfgId.isEmpty {
+                    _ = try? entry.session.send(
+                        "Page.removeScriptToEvaluateOnNewDocument",
+                        params: ["identifier": .string(oldCfgId)],
+                        timeoutMs: 5000
+                    )
+                    entry.configScriptId = nil
+                }
+                let addCfgRes = try entry.session.send(
+                    "Page.addScriptToEvaluateOnNewDocument",
+                    params: ["source": .string(configExprToUse)],
+                    timeoutMs: 15000
+                )
+                if let newCfgId = addCfgRes["identifier"]?.stringValue {
+                    entry.configScriptId = newCfgId
+                }
+                if let fastVal = try? entry.session.evaluate(configExprToUse, awaitPromise: false),
+                   fastVal.objectValue?["status"]?.stringValue == "refreshed" {
+                    return fastVal
+                }
+            }
+
+            if let oldCfgId = entry.configScriptId, !oldCfgId.isEmpty {
                 _ = try? entry.session.send(
                     "Page.removeScriptToEvaluateOnNewDocument",
-                    params: ["identifier": .string(oldId)],
+                    params: ["identifier": .string(oldCfgId)],
                     timeoutMs: 5000
                 )
+                entry.configScriptId = nil
             }
-            let addRes = try entry.session.send(
+            if let oldBootId = entry.bootstrapScriptId, !oldBootId.isEmpty {
+                _ = try? entry.session.send(
+                    "Page.removeScriptToEvaluateOnNewDocument",
+                    params: ["identifier": .string(oldBootId)],
+                    timeoutMs: 5000
+                )
+                entry.bootstrapScriptId = nil
+            }
+            let addBootRes = try entry.session.send(
                 "Page.addScriptToEvaluateOnNewDocument",
-                params: ["source": .string(exprToUse)],
+                params: ["source": .string(fullExprToUse)],
                 timeoutMs: 15000
             )
-            if let newId = addRes["identifier"]?.stringValue {
-                entry.scriptId = newId
+            if let newBootId = addBootRes["identifier"]?.stringValue {
+                entry.bootstrapScriptId = newBootId
             }
-            return try entry.session.evaluate(exprToUse, awaitPromise: false)
+            if !configExprToUse.isEmpty {
+                let addCfgRes = try entry.session.send(
+                    "Page.addScriptToEvaluateOnNewDocument",
+                    params: ["source": .string(configExprToUse)],
+                    timeoutMs: 15000
+                )
+                if let newCfgId = addCfgRes["identifier"]?.stringValue {
+                    entry.configScriptId = newCfgId
+                }
+                _ = try? entry.session.evaluate(configExprToUse, awaitPromise: false)
+            }
+            return try entry.session.evaluate(fullExprToUse, awaitPromise: false)
         }
 
         let attachPage: (CdpPageInfo) -> Void = { page in
@@ -291,7 +370,7 @@ final class WatcherApp {
                 let s = try CdpSession.connect(wsUrl: page.webSocketDebuggerUrl, timeoutMs: 4000)
                 session = s
                 let title = CdpHelper.shortTitle(page)
-                let entry = AttachedEntry(session: s, scriptId: nil, title: title)
+                let entry = AttachedEntry(session: s, title: title)
 
                 s.onClose = {
                     stateLock.lock()
@@ -323,6 +402,7 @@ final class WatcherApp {
                 stateLock.lock()
                 let bindingName = manifest.settingBinding
                 let exprSnap = currentExpr
+                let cfgExprSnap = currentConfigExpr
                 stateLock.unlock()
 
                 _ = try s.send("Runtime.addBinding", params: ["name": .string(bindingName)], timeoutMs: 5000)
@@ -332,7 +412,7 @@ final class WatcherApp {
                 attaching.remove(page.id)
                 stateLock.unlock()
 
-                let evalVal = try applyToEntry(entry, exprSnap)
+                let evalVal = try applyToEntry(entry, exprSnap, cfgExprSnap, false)
                 let status = evalVal.objectValue?["status"]?.stringValue ?? "ok"
                 stateLock.lock()
                 hadAttachedWindow = true
@@ -372,10 +452,31 @@ final class WatcherApp {
             do {
                 let nextManifest = try PluginManifest.load(baseDir: self.baseDir)
                 let nextCfg = CdpHelper.readConfig(baseDir: self.baseDir, manifest: nextManifest)
-                let nextExpr = try CdpHelper.buildInjectExpression(baseDir: self.baseDir, manifest: nextManifest)
+                let nextHashes = try CdpHelper.readBundleAndCssHashes(baseDir: self.baseDir, manifest: nextManifest)
+                stateLock.lock()
+                let refreshOnly = !currentCodeHash.isEmpty && nextHashes.codeHash == currentCodeHash && nextHashes.cssHash == currentCssHash
+                stateLock.unlock()
+
+                let nextExpr: String
+                if refreshOnly {
+                    stateLock.lock()
+                    nextExpr = currentExpr
+                    stateLock.unlock()
+                } else {
+                    nextExpr = try CdpHelper.buildInjectExpression(baseDir: self.baseDir, manifest: nextManifest)
+                }
+                let nextConfigExpr = CdpHelper.buildConfigScriptExpression(
+                    baseDir: self.baseDir,
+                    manifest: nextManifest,
+                    expectedCodeHash: nextHashes.codeHash
+                )
+
                 stateLock.lock()
                 manifest = nextManifest
+                currentCodeHash = nextHashes.codeHash
+                currentCssHash = nextHashes.cssHash
                 currentExpr = nextExpr
+                currentConfigExpr = nextConfigExpr
                 cfgAutoRelaunch = nextCfg["autoRelaunchWithCdp"]?.boolValue ?? false
                 cfgExitOnHostClose = nextCfg["exitOnHostClose"]?.boolValue ?? false
                 let entries = Array(attached.values)
@@ -383,11 +484,11 @@ final class WatcherApp {
 
                 var n = 0
                 for entry in entries {
-                    if (try? applyToEntry(entry, nextExpr)) != nil {
+                    if (try? applyToEntry(entry, nextExpr, nextConfigExpr, refreshOnly)) != nil {
                         n += 1
                     }
                 }
-                self.log("[↻] \(changedName) 已变更，已热更新 \(n) 个窗口")
+                self.log("[↻] \(changedName) 已变更，已热更新 \(n) 个窗口\(refreshOnly ? "（轻量配置同步）" : "")")
             } catch {
                 self.log("[!] 读取文件失败: \(error.localizedDescription)")
             }

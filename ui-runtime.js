@@ -102,7 +102,8 @@
     }
   }
 
-  let cfg = loadSettings(initialConfig);
+  let runtimeInitConfig = { ...initialConfig };
+  let cfg = loadSettings(runtimeInitConfig);
   let destroyed = false;
 
   function saveSetting(key, value) {
@@ -1218,11 +1219,17 @@
     if (!rippleMount) return;
     clearTimeout(rippleMount.timer);
     if (rippleMount.rafId) cancelAnimationFrame(rippleMount.rafId);
-    if (rippleMount.ro) rippleMount.ro.disconnect();
-    rippleMount.root.removeEventListener('pointerdown', rippleMount.onPress);
+    if (rippleMount.ro && typeof rippleMount.ro.disconnect === 'function') rippleMount.ro.disconnect();
+    if (rippleMount.root && typeof rippleMount.root.removeEventListener === 'function') {
+      rippleMount.root.removeEventListener('pointerdown', rippleMount.onPress);
+    }
     document.removeEventListener('visibilitychange', rippleMount.onVis);
-    rippleMount.field.dispose();
-    rippleMount.host.remove();
+    if (rippleMount.field && typeof rippleMount.field.dispose === 'function') {
+      rippleMount.field.dispose();
+    }
+    if (rippleMount.host && typeof rippleMount.host.remove === 'function') {
+      rippleMount.host.remove();
+    }
     rippleMount = null;
   }
 
@@ -1662,15 +1669,6 @@
     const modelName = data?.lastModel || getCurrentModelLabel(card) || ui.activeModelFallback || 'Active Model';
     const remStr = `${formatCompactK(ring.remainingTokens)} / ${formatCompactK(totalW)} (${ring.contextRemainingPct.toFixed(1)}%)`;
     const usedStr = `${formatCompactK(ring.usedTokens)} (${ring.contextUsedPct.toFixed(1)}%)`;
-    const estCost = data?.estimatedCost || (typeof usageCore?.computeConversationCost === 'function' ? usageCore.computeConversationCost(data) : null);
-    const estCostBadge =
-      estCost && estCost.hasCost && typeof usageCore?.formatUsd === 'function'
-        ? ` <small class="ag-cs-ctx-cost">· ~${escapeHtml(usageCore.formatUsd(estCost.totalUsd))}</small>`
-        : '';
-    const estSavedSub =
-      estCost && estCost.hasCost && estCost.cacheSavedUsd >= 0.005 && typeof usageCore?.formatUsd === 'function'
-        ? ` · ${escapeHtml(ui.cacheSavedShort || 'Saved')} ~${escapeHtml(usageCore.formatUsd(estCost.cacheSavedUsd))}`
-        : '';
     const isLowCtx = Boolean((data?.calls > 0 || ring.usedTokens > 0) && ring.contextRemainingPct <= 20);
     const lowCtxLevel = ring.contextRemainingPct <= 10 ? 'danger' : 'warn';
     const lowCtxBannerHtml = isLowCtx
@@ -1769,8 +1767,8 @@
           </div>
           <div class="ag-cs-ctx-kpi">
             <span class="ag-cs-ctx-k">${escapeHtml(ui.kpiSessionTotal || 'Session Total')}</span>
-            <span class="ag-cs-ctx-v">${formatCompactK(data?.totalTokens || 0)}${estCostBadge}</span>
-            <span class="ag-cs-ctx-sub">${data?.turns || 0} ${escapeHtml(ui.turnsUnit || 'turns')} · ${data?.calls || 0} ${escapeHtml(ui.callsUnit || 'calls')} · ${escapeHtml(ui.outShort || 'Out')} ${formatCompactK(data?.totalOutput || 0)}${estSavedSub}</span>
+            <span class="ag-cs-ctx-v">${formatCompactK(data?.totalTokens || 0)}</span>
+            <span class="ag-cs-ctx-sub">${data?.turns || 0} ${escapeHtml(ui.turnsUnit || 'turns')} · ${data?.calls || 0} ${escapeHtml(ui.callsUnit || 'calls')} · ${escapeHtml(ui.outShort || 'Out')} ${formatCompactK(data?.totalOutput || 0)}</span>
           </div>
         </div>
         <div class="ag-cs-ctx-sec-title">${escapeHtml(ui.ctxBreakdownTitle || 'Context Window Breakdown')}</div>
@@ -1962,7 +1960,6 @@
         <div class="ag-cs-ctx-actions">
           <button type="button" class="ag-cs-ctx-act-btn" data-ctx-act="compact" title="${escapeHtml(ui.compactBtnTitle || 'Fill /compact into composer')}">/compact</button>
           <button type="button" class="ag-cs-ctx-act-btn" data-ctx-act="copy" title="${escapeHtml(ui.copyBtnTitle || 'Copy telemetry report')}">${escapeHtml(ui.copyBtnLabel || 'Copy')}</button>
-          <button type="button" class="ag-cs-ctx-act-btn" data-ctx-act="export" title="${escapeHtml(ui.exportBtnTitle || 'Export session Markdown')}">${escapeHtml(ui.exportBtnLabel || 'Export')}</button>
           <button type="button" class="ag-cs-ctx-act-btn" data-ctx-act="refresh" title="${escapeHtml(ui.refreshBtnTitle || 'Refresh telemetry')}">↻</button>
           <button type="button" class="ag-cs-ctx-act-btn is-close" data-ctx-act="close" title="${escapeHtml(ui.closeBtnTitle || 'Close')}">×</button>
         </div>
@@ -2018,48 +2015,46 @@
           const targetCard = card;
           closeContextPopover();
           fillCompactCommand(targetCard);
-        } else if (act === 'copy' || act === 'export') {
+        } else if (act === 'copy') {
           const curLang = getLang();
           const curUi = uiText(curLang);
           const safeData = data || createEmptyConvoData(cascadeId, getKnownMaxContextForCard(card, data));
-          const isExport = act === 'export';
           const textPayload =
-            isExport && typeof usageCore.buildConversationMarkdownExport === 'function'
-              ? usageCore.buildConversationMarkdownExport(safeData, draftEst, cachedQuotaData, activeQuota, curLang)
-              : typeof usageCore.buildTelemetryReport === 'function'
+            typeof usageCore.buildTelemetryReport === 'function'
               ? usageCore.buildTelemetryReport(safeData, draftEst, cachedQuotaData, activeQuota, curLang)
               : JSON.stringify(safeData || {}, null, 2);
-          if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
-            navigator.clipboard.writeText(textPayload).catch(() => {});
-          }
-          if (isExport && typeof Blob === 'function' && typeof URL?.createObjectURL === 'function') {
-            try {
-              const shortCid = String(cascadeId || safeData.cascadeId || 'session').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 16) || 'session';
-              const blob = new Blob([textPayload], { type: 'text/markdown;charset=utf-8' });
-              const href = URL.createObjectURL(blob);
-              const link = document.createElement('a');
-              link.href = href;
-              link.download = `ag-session-${shortCid}.md`;
-              link.style.display = 'none';
-              document.body.appendChild(link);
-              link.click();
-              link.remove();
-              setTimeout(() => {
-                try { URL.revokeObjectURL(href); } catch {}
-              }, 1500);
-            } catch {}
-          }
-          btn.textContent = isExport
-            ? curUi.exportedBtnLabel || '✓ Exported'
-            : curUi.copiedBtnLabel || '✓ Copied';
-          setTimeout(() => {
-            if (btn.isConnected) {
-              const resetUi = uiText(getLang());
-              btn.textContent = isExport
-                ? resetUi.exportBtnLabel || 'Export'
-                : resetUi.copyBtnLabel || 'Copy';
+
+          const writeClipboard = async () => {
+            if (!navigator.clipboard || typeof navigator.clipboard.writeText !== 'function') {
+              return false;
             }
-          }, 1400);
+            try {
+              await navigator.clipboard.writeText(textPayload);
+              return true;
+            } catch {
+              return false;
+            }
+          };
+
+          const setFeedback = (label, stateKind) => {
+            if (!btn.isConnected) return;
+            clearTimeout(btn._agCsFeedbackTimer);
+            btn.setAttribute('data-action-state', stateKind);
+            btn.textContent = label;
+            btn._agCsFeedbackTimer = setTimeout(() => {
+              if (!btn.isConnected) return;
+              const resetUi = uiText(getLang());
+              btn.removeAttribute('data-action-state');
+              btn.textContent = resetUi.copyBtnLabel || 'Copy';
+            }, 1400);
+          };
+
+          writeClipboard().then((clipOk) => {
+            setFeedback(
+              clipOk ? curUi.copiedBtnLabel || '✓ Copied' : curUi.actionFailedLabel || '✕ Failed',
+              clipOk ? 'ok' : 'error'
+            );
+          });
         } else if (act === 'refresh') {
           Promise.all([fetchActiveConvo(cascadeId, true), fetchQuotaData(true)]).then(([fresh]) => {
             if (openPopover === pop && pop.isConnected) {
@@ -5602,11 +5597,12 @@
     codeHash: CODE_HASH,
     refreshConfig(next) {
       if (next && typeof next === 'object') {
-        cfg = loadSettings({ ...initialConfig, ...next });
+        runtimeInitConfig = { ...runtimeInitConfig, ...next };
+        cfg = loadSettings(runtimeInitConfig);
       } else {
         try {
           const saved = JSON.parse(localStorage.getItem(STORAGE_SETTINGS_KEY) || '{}');
-          cfg = { ...initialConfig, ...cfg, ...saved };
+          cfg = { ...runtimeInitConfig, ...cfg, ...saved };
         } catch {}
       }
       applyRootAttrs();

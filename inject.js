@@ -138,31 +138,104 @@ function releasePidFile() {
   } catch {}
 }
 
-function acquireLock() {
-  try {
-    const pid = parseInt(fs.readFileSync(PID_FILE, 'utf8'), 10);
-    if (pid && pid !== process.pid && isAlive(pid) && cdpApi.isLikelyWatcherProcess(pid)) {
-      if (REPLACE_EXISTING) {
+function acquireLock(opts = {}) {
+  const pidFile = opts.pidFile || PID_FILE;
+  const targetDir = opts.targetDir || __dirname;
+  const replaceExisting = opts.replaceExisting !== undefined ? opts.replaceExisting : REPLACE_EXISTING;
+  const killFn = typeof opts.killFn === 'function' ? opts.killFn : (p, sig) => process.kill(p, sig);
+  const exitFn = typeof opts.exitFn === 'function' ? opts.exitFn : (code) => process.exit(code);
+
+  const decision = cdpApi.resolveExistingWatchPidAction(pidFile, targetDir, {
+    selfPid: opts.selfPid,
+    killFn,
+    inspectFn: opts.inspectFn,
+    platform: opts.platform,
+  });
+
+  if (decision.action === 'refuse') {
+    const errMsg = `[!] 无法验证 .watch.pid 进程归属 (PID ${decision.pid})，出于安全策略拒绝终止或覆盖锁文件`;
+    console.error(errMsg);
+    return exitFn(1, { blocked: true, reason: decision.reason || 'unknown', pid: decision.pid });
+  }
+
+  if (decision.action === 'owned') {
+    const pid = decision.pid;
+    if (replaceExisting) {
+      try {
+        killFn(pid, 'SIGTERM');
+      } catch {}
+      const deadline = Date.now() + 2000;
+      const aliveCheck = (p) => {
         try {
-          process.kill(pid, 'SIGTERM');
-        } catch {}
-        const deadline = Date.now() + 2000;
-        while (Date.now() < deadline && isAlive(pid)) {
-          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+          killFn(p, 0);
+          return true;
+        } catch (err) {
+          return Boolean(err && err.code === 'EPERM');
         }
-        if (isAlive(pid)) {
-          try {
-            process.kill(pid, 'SIGKILL');
-          } catch {}
-        }
-      } else {
-        console.error(`[!] 守护进程已在运行 (PID ${pid})。如需重启请先运行 remove.sh / remove.bat 或附加 --replace`);
-        process.exit(1);
+      };
+      while (Date.now() < deadline && aliveCheck(pid)) {
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
       }
+      if (aliveCheck(pid)) {
+        try {
+          killFn(pid, 'SIGKILL');
+        } catch {}
+      }
+    } else {
+      console.error(`[!] 守护进程已在运行 (PID ${pid})。如需重启请先运行 remove.sh / remove.bat 或附加 --replace`);
+      return exitFn(1, { blocked: true, reason: 'already-running', pid });
     }
-  } catch {}
-  cdpApi.writeFileAtomic(PID_FILE, String(process.pid));
-  process.on('exit', releasePidFile);
+  }
+
+  // Only reached when action is 'write', 'clear' (dead/foreign/invalid), or 'owned' with --replace.
+  cdpApi.writeFileAtomic(pidFile, String(opts.selfPid || process.pid));
+  if (!opts.skipExitHook) {
+    process.on('exit', releasePidFile);
+  }
+  return { acquired: true, replaced: decision.action === 'owned', priorStatus: decision.status };
+}
+
+async function applyPageScripts(entry, { expr, configExpr, refreshOnly = false } = {}) {
+  if (refreshOnly && configExpr && entry.bootstrapScriptId) {
+    if (entry.configScriptId) {
+      await entry.session
+        .send('Page.removeScriptToEvaluateOnNewDocument', { identifier: entry.configScriptId })
+        .catch(() => {});
+      entry.configScriptId = null;
+    }
+    const { identifier } = await entry.session.send('Page.addScriptToEvaluateOnNewDocument', {
+      source: configExpr,
+    });
+    entry.configScriptId = identifier;
+    const fastRes = await entry.session.evaluate(configExpr).catch(() => null);
+    if (fastRes && fastRes.status === 'refreshed') return fastRes;
+  }
+
+  if (entry.configScriptId) {
+    await entry.session
+      .send('Page.removeScriptToEvaluateOnNewDocument', { identifier: entry.configScriptId })
+      .catch(() => {});
+    entry.configScriptId = null;
+  }
+  if (entry.bootstrapScriptId) {
+    await entry.session
+      .send('Page.removeScriptToEvaluateOnNewDocument', { identifier: entry.bootstrapScriptId })
+      .catch(() => {});
+    entry.bootstrapScriptId = null;
+  }
+  const { identifier: bootstrapId } = await entry.session.send('Page.addScriptToEvaluateOnNewDocument', {
+    source: expr,
+  });
+  entry.bootstrapScriptId = bootstrapId;
+  if (configExpr) {
+    const { identifier: cfgId } = await entry.session.send('Page.addScriptToEvaluateOnNewDocument', {
+      source: configExpr,
+    });
+    entry.configScriptId = cfgId;
+    // Apply latest config override before evaluating (possibly cached) full bootstrap expr.
+    await entry.session.evaluate(configExpr).catch(() => null);
+  }
+  return await entry.session.evaluate(expr);
 }
 
 async function watch() {
@@ -177,7 +250,7 @@ async function watch() {
   let currentCodeHash = cdpApi.computeHash(cdpApi.readRuntimeBundle());
   let currentCssHash = cdpApi.computeHash(cdpApi.readCss());
   let expr = cdpApi.buildInjectExpression(currentConfig);
-  let refreshExpr = cdpApi.buildRefreshExpression(currentConfig, currentCodeHash);
+  let configExpr = cdpApi.buildConfigScriptExpression(currentConfig, currentCodeHash);
   let shuttingDown = false;
   let tickTimer = null;
   let reloadTimer = null;
@@ -244,27 +317,14 @@ async function watch() {
   }
 
   async function apply(entry, opts = {}) {
-    if (entry.scriptId) {
-      await entry.session
-        .send('Page.removeScriptToEvaluateOnNewDocument', { identifier: entry.scriptId })
-        .catch(() => {});
-    }
-    const { identifier } = await entry.session.send('Page.addScriptToEvaluateOnNewDocument', {
-      source: expr,
-    });
-    entry.scriptId = identifier;
-    if (opts.refreshOnly && refreshExpr) {
-      const fastRes = await entry.session.evaluate(refreshExpr).catch(() => null);
-      if (fastRes && fastRes.status === 'refreshed') return fastRes;
-    }
-    return await entry.session.evaluate(expr);
+    return applyPageScripts(entry, { expr, configExpr, refreshOnly: opts.refreshOnly });
   }
 
   async function attach(page) {
     attached.set(page.id, null);
     try {
       const session = await cdpApi.CdpSession.connect(page.webSocketDebuggerUrl);
-      const entry = { session, scriptId: null };
+      const entry = { session, bootstrapScriptId: null, configScriptId: null };
       attached.set(page.id, entry);
       session.onClose = () => {
         attached.delete(page.id);
@@ -421,8 +481,10 @@ async function watch() {
           nextCssHash === currentCssHash;
         currentCodeHash = nextCodeHash;
         currentCssHash = nextCssHash;
-        expr = cdpApi.buildInjectExpression(currentConfig);
-        refreshExpr = cdpApi.buildRefreshExpression(currentConfig, currentCodeHash);
+        if (!refreshOnly) {
+          expr = cdpApi.buildInjectExpression(currentConfig);
+        }
+        configExpr = cdpApi.buildConfigScriptExpression(currentConfig, currentCodeHash);
       } catch (err) {
         log(`[!] 读取文件失败: ${err.message}`);
         return;
@@ -451,8 +513,15 @@ async function watch() {
   await tick();
 }
 
-const mainPromise = LAUNCH ? launchWithCdp() : WATCH ? watch() : injectOnce();
-mainPromise.catch((err) => {
-  console.error(`[✗] ${err.message}`);
-  process.exit(1);
-});
+module.exports = {
+  acquireLock,
+  applyPageScripts,
+};
+
+if (require.main === module) {
+  const mainPromise = LAUNCH ? launchWithCdp() : WATCH ? watch() : injectOnce();
+  mainPromise.catch((err) => {
+    console.error(`[✗] ${err.message}`);
+    process.exit(1);
+  });
+}

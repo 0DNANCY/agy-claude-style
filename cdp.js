@@ -98,8 +98,7 @@ function writeFileAtomic(filePath, content) {
     try {
       if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
     } catch {}
-    // Fallback for filesystems where cross-rename may fail while target is held open
-    fs.writeFileSync(filePath, content, 'utf8');
+    throw err;
   }
 }
 
@@ -294,7 +293,13 @@ function buildInjectExpression(customConfig) {
         else document.addEventListener('DOMContentLoaded', applyStyle, { once: true });
         ${bundle}
         if (typeof globalThis.__agCsUiMain === 'function') {
-          globalThis.__agCsUiMain(${JSON.stringify({ ...config, binding: SETTING_BINDING, codeHash })});
+          const baseCfg = ${JSON.stringify({ ...config, binding: SETTING_BINDING, codeHash })};
+          const ov = globalThis.__agCsOverrideConfig;
+          const nextCfg =
+            ov && typeof ov === 'object' && ov.codeHash === baseCfg.codeHash
+              ? { ...baseCfg, ...ov, binding: baseCfg.binding, codeHash: baseCfg.codeHash }
+              : baseCfg;
+          globalThis.__agCsUiMain(nextCfg);
         }
       } catch (e) {
         status = 'error: ' + (e && e.message ? e.message : String(e));
@@ -327,16 +332,19 @@ function buildInjectExpression(customConfig) {
   })()`;
 }
 
-function buildRefreshExpression(customConfig, expectedCodeHash) {
+function buildConfigScriptExpression(customConfig, expectedCodeHash) {
   const config = customConfig || readConfig();
-  const payload = { ...config, binding: SETTING_BINDING, codeHash: expectedCodeHash || '' };
+  const expectedHash = expectedCodeHash || '';
+  const payload = { ...config, binding: SETTING_BINDING, codeHash: expectedHash };
   return `(() => {
+    const nextCfg = ${JSON.stringify(payload)};
+    globalThis.__agCsOverrideConfig = nextCfg;
     if (
       window.__agClaudeStyle &&
       typeof window.__agClaudeStyle.refreshConfig === 'function' &&
-      (!${JSON.stringify(expectedCodeHash || '')} || window.__agClaudeStyle.codeHash === ${JSON.stringify(expectedCodeHash || '')})
+      (!${JSON.stringify(expectedHash)} || window.__agClaudeStyle.codeHash === ${JSON.stringify(expectedHash)})
     ) {
-      window.__agClaudeStyle.refreshConfig(${JSON.stringify(payload)});
+      window.__agClaudeStyle.refreshConfig(nextCfg);
       return {
         version: ${JSON.stringify(PLUGIN_VERSION)},
         status: 'refreshed',
@@ -345,6 +353,10 @@ function buildRefreshExpression(customConfig, expectedCodeHash) {
     }
     return null;
   })()`;
+}
+
+function buildRefreshExpression(customConfig, expectedCodeHash) {
+  return buildConfigScriptExpression(customConfig, expectedCodeHash);
 }
 
 const REMOVE_EXPRESSION = `(() => {
@@ -357,6 +369,7 @@ const REMOVE_EXPRESSION = `(() => {
     }
   }
   delete globalThis.__agCsCleanups;
+  delete globalThis.__agCsOverrideConfig;
   try {
     if (window.__agClaudeStyle && typeof window.__agClaudeStyle.destroy === 'function') {
       window.__agClaudeStyle.destroy();
@@ -591,16 +604,68 @@ function hasRemoteDebuggingFlag(pids = []) {
   }
 }
 
-function inspectProcessCommand(pid) {
+function checkPidAlive(pid, killFn = (p, sig) => process.kill(p, sig)) {
+  if (!Number.isInteger(pid) || pid <= 0) return 'dead';
+  try {
+    killFn(pid, 0);
+    return 'alive';
+  } catch (err) {
+    if (err && err.code === 'EPERM') return 'alive';
+    return 'dead';
+  }
+}
+
+function splitCommandArgs(cmdLine) {
+  if (typeof cmdLine !== 'string' || !cmdLine.trim()) return [];
+  const args = [];
+  let cur = '';
+  let quote = null;
+  for (let i = 0; i < cmdLine.length; i++) {
+    const ch = cmdLine[i];
+    if (quote) {
+      if (ch === '\\' && quote === '"' && i + 1 < cmdLine.length && (cmdLine[i + 1] === '"' || cmdLine[i + 1] === '\\')) {
+        cur += cmdLine[++i];
+      } else if (ch === quote) {
+        quote = null;
+      } else {
+        cur += ch;
+      }
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+    } else if (/\s/.test(ch)) {
+      if (cur.length > 0) {
+        args.push(cur);
+        cur = '';
+      }
+    } else {
+      cur += ch;
+    }
+  }
+  if (cur.length > 0) args.push(cur);
+  return args;
+}
+
+function inspectProcessInfo(pid) {
   if (!Number.isInteger(pid) || pid <= 0) return null;
   try {
     if (IS_MAC) {
-      const out = execFileSync('/bin/ps', ['-p', String(pid), '-o', 'args='], {
+      const cmd = execFileSync('/bin/ps', ['-p', String(pid), '-o', 'command='], {
         encoding: 'utf8',
         timeout: 1500,
         stdio: ['ignore', 'pipe', 'ignore'],
       }).trim();
-      return out || null;
+      if (!cmd) return null;
+      let exePath = null;
+      try {
+        exePath = execFileSync('/bin/ps', ['-p', String(pid), '-o', 'comm='], {
+          encoding: 'utf8',
+          timeout: 1500,
+          stdio: ['ignore', 'pipe', 'ignore'],
+        }).trim() || null;
+      } catch {}
+      return { cmd, args: null, exePath, cwd: null };
     }
     if (IS_WIN) {
       const out = execFileSync(
@@ -609,7 +674,7 @@ function inspectProcessCommand(pid) {
           '-NoProfile',
           '-NonInteractive',
           '-Command',
-          `(Get-CimInstance Win32_Process -Filter "ProcessId=${pid}").CommandLine`,
+          `$p = Get-CimInstance Win32_Process -Filter "ProcessId=${pid}"; if ($p) { $p | Select-Object ExecutablePath, CommandLine | ConvertTo-Json -Compress }`,
         ],
         {
           encoding: 'utf8',
@@ -618,29 +683,323 @@ function inspectProcessCommand(pid) {
           stdio: ['ignore', 'pipe', 'ignore'],
         }
       ).trim();
-      return out || null;
+      if (!out) return null;
+      const parsed = JSON.parse(out);
+      const cmd = typeof parsed.CommandLine === 'string' ? parsed.CommandLine.trim() : '';
+      const exePath = typeof parsed.ExecutablePath === 'string' ? parsed.ExecutablePath.trim() : null;
+      if (!cmd) return null;
+      return {
+        cmd,
+        args: splitCommandArgs(cmd),
+        exePath: exePath || null,
+        cwd: null,
+      };
     }
     const raw = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8');
-    const cmd = raw.split('\0').filter(Boolean).join(' ').trim();
-    return cmd || null;
+    const args = raw.split('\0').filter((s) => s.length > 0);
+    const cmd = args.join(' ').trim();
+    if (!cmd) return null;
+    let cwd = null;
+    try {
+      cwd = fs.readlinkSync(`/proc/${pid}/cwd`);
+    } catch {}
+    let exePath = null;
+    try {
+      exePath = fs.readlinkSync(`/proc/${pid}/exe`);
+    } catch {}
+    return { cmd, args, exePath, cwd };
   } catch {
     return null;
   }
 }
 
-function isLikelyWatcherProcess(pid) {
-  if (!Number.isInteger(pid) || pid <= 0) return false;
+function inspectProcessCommand(pid) {
+  const info = inspectProcessInfo(pid);
+  return info && typeof info.cmd === 'string' && info.cmd.length > 0 ? info.cmd : null;
+}
+
+function normalizePathForCompare(p, targetPlatform = process.platform) {
+  if (!p || typeof p !== 'string') return '';
+  const pathMod = targetPlatform === 'win32' ? path.win32 : path.posix;
+  let cleaned = pathMod.normalize(p.replace(/[\\\/]+$/, '') || p);
+  if (targetPlatform === 'win32') cleaned = cleaned.toLowerCase();
+  return cleaned;
+}
+
+function resolveCandidatePath(candidate, cwd, targetPlatform = process.platform) {
+  if (!candidate || typeof candidate !== 'string') return '';
+  const pathMod = targetPlatform === 'win32' ? path.win32 : path.posix;
+  if (pathMod.isAbsolute(candidate)) {
+    return normalizePathForCompare(pathMod.resolve(candidate), targetPlatform);
+  }
+  if (cwd && pathMod.isAbsolute(cwd)) {
+    return normalizePathForCompare(pathMod.resolve(cwd, candidate), targetPlatform);
+  }
+  return '';
+}
+
+function hasPathToken(haystack, targetPath, targetPlatform = process.platform) {
+  if (!haystack || !targetPath) return false;
+  const h = targetPlatform === 'win32' ? haystack.toLowerCase() : haystack;
+  const t = normalizePathForCompare(targetPath, targetPlatform);
+  let idx = 0;
+  while ((idx = h.indexOf(t, idx)) !== -1) {
+    const before = idx === 0 ? ' ' : h[idx - 1];
+    const afterIdx = idx + t.length;
+    const after = afterIdx >= h.length ? ' ' : h[afterIdx];
+    const beforeOk = idx === 0 || /[\s"']/.test(before);
+    const afterOk = afterIdx === h.length || /[\s"']/.test(after);
+    if (beforeOk && afterOk) return true;
+    idx += t.length;
+  }
+  return false;
+}
+
+function extractDirFlagValue(cmd, args, cwd, targetPlatform = process.platform) {
+  if (Array.isArray(args) && args.length > 0) {
+    for (let i = 1; i < args.length; i++) {
+      if (args[i] === '--dir' && i + 1 < args.length) {
+        return { present: true, resolved: resolveCandidatePath(args[i + 1], cwd, targetPlatform) };
+      }
+      if (args[i].startsWith('--dir=')) {
+        return { present: true, resolved: resolveCandidatePath(args[i].slice(6), cwd, targetPlatform) };
+      }
+    }
+    return { present: false, resolved: '' };
+  }
+  const m = cmd.match(/(?:^|\s)--dir(?:=|\s+)(?:"([^"]+)"|'([^']+)'|(.+?))(?=\s+--[a-z0-9-]+(?:=|\s|$)|$)/i);
+  if (!m) return { present: false, resolved: '' };
+  const rawVal = (m[1] || m[2] || m[3] || '').trim();
+  return { present: true, resolved: resolveCandidatePath(rawVal, cwd, targetPlatform) };
+}
+
+const NODE_DISALLOWED_ENTRY_FLAGS = new Set([
+  '-e',
+  '--eval',
+  '-p',
+  '--print',
+  '-i',
+  '--interactive',
+  '-c',
+  '--check',
+  '-h',
+  '--help',
+  '-v',
+  '--version',
+]);
+
+function isNodeBinaryName(binPathOrToken, targetPlatform = process.platform) {
+  if (!binPathOrToken || typeof binPathOrToken !== 'string') return false;
+  const pathMod = targetPlatform === 'win32' ? path.win32 : path.posix;
+  const base = pathMod.basename(binPathOrToken).toLowerCase();
+  return /^(?:node(?:\.exe)?|nodejs|electron(?:\.exe)?|electron helper.*|antigravity(?:\.exe)?)$/.test(base);
+}
+
+function evaluateWatcherOwnership(rawInfo, targetDir = __dirname, targetPlatform = process.platform) {
+  if (!rawInfo || !targetDir) return 'unknown';
+  const info =
+    typeof rawInfo === 'string'
+      ? { cmd: rawInfo, args: null, exePath: null, cwd: null }
+      : rawInfo;
+  const cmd = typeof info.cmd === 'string' ? info.cmd.trim() : '';
+  if (!cmd) return 'unknown';
+
+  const args = Array.isArray(info.args) ? info.args : null;
+  const pathMod = targetPlatform === 'win32' ? path.win32 : path.posix;
+  const normTargetDir = normalizePathForCompare(pathMod.resolve(targetDir), targetPlatform);
+  if (!normTargetDir) return 'unknown';
+
+  const hasFlag = (flag) =>
+    args
+      ? args.includes(flag)
+      : new RegExp(`(?:^|\\s)${flag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?=\\s|$)`).test(cmd);
+
+  if (hasFlag('--once') || hasFlag('--remove')) {
+    return 'foreign';
+  }
+
+  // 1. Native watcher binary check (must match executable itself, never mid-command arguments like `tail /path/watcher`).
+  const nativeExeName = targetPlatform === 'win32' ? 'agy-claude-style-watcher.exe' : 'agy-claude-style-watcher';
+  const expectedNativeExe = normalizePathForCompare(pathMod.join(normTargetDir, nativeExeName), targetPlatform);
+  const exePrefix = cmd.split(/\s+--/)[0].trim().replace(/^["']|["']$/g, '');
+  const leadingToken = exePrefix.split(/\s+/)[0] || '';
+  const exeMatchesNative = info.exePath
+    ? pathMod.basename(info.exePath).toLowerCase() === nativeExeName
+    : args && args[0]
+    ? pathMod.basename(args[0]).toLowerCase() === nativeExeName
+    : normalizePathForCompare(exePrefix, targetPlatform) === expectedNativeExe ||
+      (!/\s/.test(exePrefix) && pathMod.basename(exePrefix).toLowerCase() === nativeExeName);
+
+  if (exeMatchesNative) {
+    const dirFlag = extractDirFlagValue(cmd, args, info.cwd, targetPlatform);
+    if (dirFlag.present) {
+      if (dirFlag.resolved) {
+        return dirFlag.resolved === normTargetDir ? 'owned' : 'foreign';
+      }
+      return 'unknown';
+    }
+    const resolvedExe = info.exePath
+      ? normalizePathForCompare(pathMod.resolve(info.exePath), targetPlatform)
+      : args && args[0]
+      ? resolveCandidatePath(args[0], info.cwd, targetPlatform)
+      : pathMod.isAbsolute(exePrefix)
+      ? normalizePathForCompare(exePrefix, targetPlatform)
+      : '';
+    if (resolvedExe) {
+      return normalizePathForCompare(pathMod.dirname(resolvedExe), targetPlatform) === normTargetDir ? 'owned' : 'foreign';
+    }
+    return 'unknown';
+  }
+
+  // 2. Node inject.js --watch check: verify executable AND exact first script argument (no ambiguous CLI flag skipping).
+  if (!hasFlag('--watch')) return 'foreign';
+  const expectedScript = normalizePathForCompare(pathMod.join(normTargetDir, 'inject.js'), targetPlatform);
+
+  if (args && args.length >= 2) {
+    if (!isNodeBinaryName(info.exePath || args[0], targetPlatform)) return 'foreign';
+    const entryScript = args[1];
+    if (!entryScript) return 'foreign';
+    if (entryScript.startsWith('-')) {
+      return NODE_DISALLOWED_ENTRY_FLAGS.has(entryScript.toLowerCase()) ? 'foreign' : 'unknown';
+    }
+    if (pathMod.basename(entryScript).toLowerCase() !== 'inject.js') {
+      return 'foreign';
+    }
+    const resolvedEntry = resolveCandidatePath(entryScript, info.cwd, targetPlatform);
+    if (resolvedEntry) {
+      return resolvedEntry === expectedScript ? 'owned' : 'foreign';
+    }
+    return 'unknown';
+  }
+
+  // Space-joined cmd string (e.g. macOS ps): use info.exePath (from -o comm=) when available, else first token.
+  let launcherTok = '';
+  let rest = '';
+  if (info.exePath) {
+    launcherTok = info.exePath;
+    if (cmd.startsWith(info.exePath) && (cmd.length === info.exePath.length || /\s/.test(cmd[info.exePath.length]))) {
+      rest = cmd.slice(info.exePath.length).trim();
+    } else {
+      const baseExe = pathMod.basename(info.exePath);
+      if (cmd.startsWith(baseExe) && (cmd.length === baseExe.length || /\s/.test(cmd[baseExe.length]))) {
+        rest = cmd.slice(baseExe.length).trim();
+      } else {
+        rest = cmd.slice(leadingToken.length).trim();
+      }
+    }
+  } else {
+    const tokens = splitCommandArgs(cmd);
+    launcherTok = tokens[0] || leadingToken;
+    const trimmed = cmd.trimStart();
+    if (tokens[0] && (trimmed.startsWith(`"${tokens[0]}"`) || trimmed.startsWith(`'${tokens[0]}'`))) {
+      rest = trimmed.slice(tokens[0].length + 2).trim();
+    } else {
+      rest = trimmed.slice(launcherTok.length).trim();
+    }
+  }
+
+  if (!isNodeBinaryName(launcherTok, targetPlatform)) return 'foreign';
+  if (!rest) return 'foreign';
+  if (rest.startsWith('-')) {
+    const firstFlag = rest.split(/\s+/)[0].toLowerCase();
+    return NODE_DISALLOWED_ENTRY_FLAGS.has(firstFlag) ? 'foreign' : 'unknown';
+  }
+
+  const normRest = targetPlatform === 'win32' ? rest.toLowerCase() : rest;
+  const unquotedRest = normRest.replace(/^["']/, '');
+  if (unquotedRest.startsWith(expectedScript)) {
+    const nextChar = unquotedRest[expectedScript.length];
+    if (!nextChar || /[\s"']/.test(nextChar)) {
+      return 'owned';
+    }
+  }
+
+  const firstArg = rest.replace(/^["']/, '').split(/[\s"']/)[0] || '';
+  if (!firstArg || pathMod.basename(firstArg).toLowerCase() !== 'inject.js') {
+    // Handles non-inject.js first arg (e.g. other.js) AND also safe fallback for unknown spaces in script path
+    if (pathMod.isAbsolute(firstArg)) return 'foreign';
+    return firstArg.toLowerCase().endsWith('inject.js') ? 'unknown' : 'foreign';
+  }
+  const resolvedRel = resolveCandidatePath(firstArg, info.cwd, targetPlatform);
+  if (resolvedRel) {
+    return resolvedRel === expectedScript ? 'owned' : 'foreign';
+  }
+  return 'unknown';
+}
+
+function matchesWatcherForDir(rawInfo, targetDir = __dirname, targetPlatform = process.platform) {
+  return evaluateWatcherOwnership(rawInfo, targetDir, targetPlatform) === 'owned';
+}
+
+function classifyWatcherPid(pid, targetDir = __dirname, opts = {}) {
+  const killFn = typeof opts.killFn === 'function' ? opts.killFn : (p, sig) => process.kill(p, sig);
+  const inspectFn = typeof opts.inspectFn === 'function' ? opts.inspectFn : inspectProcessInfo;
+  const platform = opts.platform || process.platform;
+
+  if (!Number.isInteger(pid) || pid <= 0) {
+    return { status: 'dead', pid, reason: 'invalid-pid' };
+  }
+  if (checkPidAlive(pid, killFn) === 'dead') {
+    return { status: 'dead', pid, reason: 'esrch' };
+  }
+
+  let rawInfo = null;
   try {
-    process.kill(pid, 0);
+    rawInfo = inspectFn(pid);
   } catch {
-    return false;
+    rawInfo = null;
   }
-  const cmd = inspectProcessCommand(pid);
-  // If OS cmdline lookup succeeds and points to an unrelated process, guard against PID-reuse kills.
-  if (typeof cmd === 'string' && cmd.length > 0) {
-    return /\binject\.js\b/i.test(cmd);
+  const info =
+    typeof rawInfo === 'string'
+      ? { cmd: rawInfo, args: null, exePath: null, cwd: null }
+      : rawInfo;
+
+  if (!info || typeof info.cmd !== 'string' || !info.cmd.trim()) {
+    if (checkPidAlive(pid, killFn) === 'dead') {
+      return { status: 'dead', pid, reason: 'exited-during-inspect' };
+    }
+    return { status: 'unknown', pid, reason: 'inspect-unavailable' };
   }
-  return true;
+
+  const ownership = evaluateWatcherOwnership(info, targetDir, platform);
+  if (ownership === 'owned') {
+    return { status: 'owned', pid, info };
+  }
+  if (ownership === 'unknown') {
+    return { status: 'unknown', pid, info, reason: 'relative-path-unverified' };
+  }
+  return { status: 'foreign', pid, info };
+}
+
+function isLikelyWatcherProcess(pid, targetDir = __dirname, opts = {}) {
+  return classifyWatcherPid(pid, targetDir, opts).status === 'owned';
+}
+
+function resolveExistingWatchPidAction(pidFile = PID_FILE, targetDir = __dirname, opts = {}) {
+  const selfPid = Number.isInteger(opts.selfPid) ? opts.selfPid : process.pid;
+  let pid;
+  try {
+    pid = parseInt(fs.readFileSync(pidFile, 'utf8'), 10);
+  } catch {
+    return { action: 'write', status: 'missing', pid: null };
+  }
+  if (!Number.isInteger(pid) || pid <= 0) {
+    return { action: 'clear', status: 'invalid', pid: null };
+  }
+  if (pid === selfPid) {
+    return { action: 'write', status: 'self', pid };
+  }
+  const cls = classifyWatcherPid(pid, targetDir, opts);
+  if (cls.status === 'dead') {
+    return { action: 'clear', status: 'dead', pid };
+  }
+  if (cls.status === 'foreign') {
+    return { action: 'clear', status: 'foreign', pid, info: cls.info };
+  }
+  if (cls.status === 'owned') {
+    return { action: 'owned', status: 'owned', pid, info: cls.info };
+  }
+  return { action: 'refuse', status: 'unknown', pid, reason: cls.reason };
 }
 
 function removeStalePortFile() {
@@ -782,7 +1141,13 @@ module.exports = {
   findAntigravityExecutable,
   resolveRunningAntigravityPath,
   hasRemoteDebuggingFlag,
+  splitCommandArgs,
+  inspectProcessInfo,
   inspectProcessCommand,
+  evaluateWatcherOwnership,
+  matchesWatcherForDir,
+  classifyWatcherPid,
+  resolveExistingWatchPidAction,
   isLikelyWatcherProcess,
   removeStalePortFile,
   launchAntigravityWithCdp,
@@ -793,6 +1158,7 @@ module.exports = {
   readRuntimeBundle,
   computeHash,
   buildInjectExpression,
+  buildConfigScriptExpression,
   buildRefreshExpression,
   REMOVE_EXPRESSION,
 };
