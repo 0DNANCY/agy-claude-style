@@ -2,6 +2,15 @@
 
 All notable changes to **AGY Claude Style (`agy-claude-style`)** are documented in this file.
 
+## [Unreleased]
+
+### 🌐 语言支持增强（Swarm UI 侧栏 & Plan / Orchestrator 模式）
+- **Swarm 蜂群侧栏（`/swarm` 面板）完整 5 语言本地化**：
+  - Node（`cdp.js`）、Windows C#（`CdpClient.cs`）与 macOS Swift（`CdpClient.swift`）三端 CDP 目标过滤统一支持 `plugin://swarm--` 侧栏 OOPIF `iframe` 目标，并自动随主窗口语言切换通过轻量 `refreshConfig` 实时同步。
+  - 新增 `sidecar-core.js` 侧栏精简运行时：在 `plugin:` 协议上下文下跳过主窗口 `style.css` 与 UI 增强，仅挂载可逆 DOM 翻译器，精准保护帖子正文、成员句柄、任务描述与叙述者视图，同时放行 `<select><option>` 筛选选项翻译，卸载时无损还原。
+- **Plan / Orchestrator / Coordinator / Plugins 词典补齐**：
+  - 扩充 `i18n-locales.js` 约 180+ 条 5 语言静态词条与 25 条动态正则规则，覆盖 Swarm 面板（Overview / Board / Members / Graph / Raw / Hive / Replay / GIF 导出）及主窗口新版 Orchestrator 模型设置、Coordinator/Subagent 控件、Pause/Resume 提示与插件管理界面。
+
 ## [v2.0.0] - 2026-11-21
 
 `v2.0.0` 为重大架构与体验升级版本：正式引入 **「启动器托管模式（随宿主生灭、零后台常驻）」**（#4、#14），并全面整合 **PR #13**（@zhyan0603 / ZihanYAN）在守护进程安全加固、轻量配置热更新与 Token HUD 方面的深度优化。

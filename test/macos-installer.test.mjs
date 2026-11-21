@@ -414,6 +414,8 @@ test('CdpClient.swift defines defaultStartupGraceSeconds, activateAntigravityApp
   assert.ok(cdpSwift.includes('static func readBundleAndCssHashes('));
   assert.ok(cdpSwift.includes('static func buildConfigScriptExpression('));
   assert.ok(cdpSwift.includes('__agCsOverrideConfig'));
+  assert.ok(cdpSwift.includes('plugin://swarm--'), 'CdpClient.swift must include Swarm sidecar iframe targets');
+  assert.ok(cdpSwift.includes("location.protocol === 'plugin:'"), 'CdpClient.swift must skip CSS injection in plugin: sidecars');
   assert.ok(cdpSwift.includes('static func evaluateWatcherOwnership('));
   assert.ok(cdpSwift.includes('static func classifyWatcherPid('));
   assert.ok(
