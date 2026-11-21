@@ -18,7 +18,7 @@ const cdp = require(path.join(ROOT_DIR, 'cdp.js'));
 const injectMod = require(path.join(ROOT_DIR, 'inject.js'));
 const removeMod = require(path.join(ROOT_DIR, 'remove.js'));
 
-function createMockCdpServer() {
+function createMockCdpServer({ evaluateDelayMs = 0 } = {}) {
   const sockets = new Set();
   let injectCount = 0;
 
@@ -130,8 +130,15 @@ function createMockCdpServer() {
                 injectCount++;
                 result = { result: { type: 'object', value: { version: cdp.PLUGIN_VERSION, status: 'ok' } } };
               }
-              if (!socket.destroyed) {
-                socket.write(encodeWsTextFrame(JSON.stringify({ id: msg.id, result })));
+              const respond = () => {
+                if (!socket.destroyed) {
+                  socket.write(encodeWsTextFrame(JSON.stringify({ id: msg.id, result })));
+                }
+              };
+              if (msg.method === 'Runtime.evaluate' && evaluateDelayMs > 0) {
+                setTimeout(respond, evaluateDelayMs);
+              } else {
+                respond();
               }
             } catch {}
           }
@@ -196,7 +203,7 @@ test('formatCdpUnavailableMessage clearly distinguishes Antigravity 2.33.0+ runn
 
 test('inject.js --watch --exit-on-host-close exits cleanly and removes .watch.pid after CDP host closes', async () => {
   const dir = stageTempRuntimeDir();
-  const mock = createMockCdpServer();
+  const mock = createMockCdpServer({ evaluateDelayMs: 300 });
   let child = null;
   try {
     const port = await mock.start();
@@ -209,6 +216,10 @@ test('inject.js --watch --exit-on-host-close exits cleanly and removes .watch.pi
     const exitPromise = new Promise((resolve) => child.on('exit', (code) => resolve(code)));
 
     await waitFor(() => mock.getInjectCount() >= 1, 6000);
+    // The first evaluation only applies config. Wait until the watcher has
+    // acknowledged the full injection before simulating an attached host closing.
+    const logFile = path.join(dir, 'watch.log');
+    await waitFor(() => fs.readFileSync(logFile, 'utf8').includes('[✓] 已注入 agy-claude-style:'), 6000);
     assert.ok(fs.existsSync(path.join(dir, '.watch.pid')), '.watch.pid created while watching');
 
     // Simulate Antigravity closing while port file/env still points to the old dead port
