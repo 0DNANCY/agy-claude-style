@@ -10,6 +10,13 @@ struct CdpPageInfo {
     let webSocketDebuggerUrl: String
 }
 
+struct EnsureAntigravityResult {
+    let ok: Bool
+    let action: String
+    let port: Int?
+    let message: String
+}
+
 struct CdpError: Error, LocalizedError {
     let message: String
     init(_ message: String) { self.message = message }
@@ -350,6 +357,8 @@ final class CdpSession: NSObject, URLSessionWebSocketDelegate {
 }
 
 enum CdpHelper {
+    static let defaultStartupGraceSeconds: Double = 90.0
+
     static func getPortFilePath() -> String {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         return ((home as NSString)
@@ -680,7 +689,33 @@ enum CdpHelper {
     }
 
     @discardableResult
+    static func activateAntigravityApp(appPath: String? = nil) -> Bool {
+        if ProcessInfo.processInfo.environment["AGY_CS_NO_UI"] == "1" {
+            return false
+        }
+        let target = (appPath?.isEmpty == false)
+            ? appPath!
+            : (detectRunningAntigravityAppPath() ?? findAntigravityAppPath() ?? "Antigravity")
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        proc.arguments = ["-a", target]
+        proc.standardInput = FileHandle.nullDevice
+        proc.standardOutput = FileHandle.nullDevice
+        proc.standardError = FileHandle.nullDevice
+        do {
+            try proc.run()
+            proc.waitUntilExit()
+            return proc.terminationStatus == 0
+        } catch {
+            return false
+        }
+    }
+
+    @discardableResult
     static func launchAntigravityWithCdp(appPath: String? = nil, port: Int = 0) -> Bool {
+        if detectAntigravityProcessPids().isEmpty {
+            removeStalePortFile()
+        }
         let target = (appPath?.isEmpty == false) ? appPath! : (findAntigravityAppPath() ?? "Antigravity")
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/bin/open")
@@ -722,6 +757,75 @@ enum CdpHelper {
         removeStalePortFile()
         Thread.sleep(forTimeInterval: 0.35)
         return launchAntigravityWithCdp(appPath: targetApp, port: port)
+    }
+
+    static func ensureAntigravityWithCdp(
+        appPath: String? = nil,
+        allowRelaunch: Bool = false,
+        overridePort: Int? = nil,
+        waitSeconds: Double = 8.0
+    ) -> EnsureAntigravityResult {
+        if let port = readPort(overridePort: overridePort),
+           let pages = try? listPages(port: port),
+           !pages.isEmpty {
+            activateAntigravityApp(appPath: appPath)
+            return EnsureAntigravityResult(
+                ok: true,
+                action: "already-cdp",
+                port: port,
+                message: "Antigravity 已开启 CDP（端口 \(port)，\(pages.count) 个窗口）"
+            )
+        }
+
+        let pids = detectAntigravityProcessPids()
+        if !pids.isEmpty {
+            if hasAntigravityCdpFlag(pids: pids) {
+                activateAntigravityApp(appPath: appPath)
+                return EnsureAntigravityResult(
+                    ok: true,
+                    action: "waiting-cdp",
+                    port: nil,
+                    message: "Antigravity 已携带 CDP 参数运行，正在等待调试端口就绪..."
+                )
+            }
+            if allowRelaunch {
+                if relaunchAntigravityWithCdp(appPath: appPath, port: 0, waitSeconds: waitSeconds) {
+                    return EnsureAntigravityResult(
+                        ok: true,
+                        action: "relaunched",
+                        port: nil,
+                        message: "已温和重启 Antigravity 并附加 --remote-debugging-port=0"
+                    )
+                }
+                return EnsureAntigravityResult(
+                    ok: false,
+                    action: "relaunch-failed",
+                    port: nil,
+                    message: "未能自动关闭当前运行中的 Antigravity，请先按 Cmd+Q 完全退出后重试"
+                )
+            }
+            return EnsureAntigravityResult(
+                ok: false,
+                action: "running-without-cdp",
+                port: nil,
+                message: cdpUnavailableMessage(running: true, port: readPort(overridePort: overridePort))
+            )
+        }
+
+        if launchAntigravityWithCdp(appPath: appPath, port: 0) {
+            return EnsureAntigravityResult(
+                ok: true,
+                action: "launched",
+                port: nil,
+                message: "已以 --remote-debugging-port=0 启动 Antigravity"
+            )
+        }
+        return EnsureAntigravityResult(
+            ok: false,
+            action: "executable-not-found",
+            port: nil,
+            message: "未找到 Antigravity Desktop，请确认已安装 Antigravity.app"
+        )
     }
 
     static func cdpUnavailableMessage(running: Bool, port: Int?) -> String {
