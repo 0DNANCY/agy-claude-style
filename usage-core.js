@@ -918,6 +918,7 @@
           ? val.retryInfos[val.retryInfos.length - 1]
           : null;
       const u = hasUsageTokens(val.usage) ? val.usage : lastRetry?.usage || val.usage || {};
+      const hasCallUsage = hasUsageTokens(u);
       const inp = Number(u.inputTokens || 0);
       const cr = Number(u.cacheReadTokens || 0);
       const cw = Number(u.cacheWriteTokens || 0);
@@ -952,23 +953,6 @@
           customizationTokenBudget: Number(val.customizationTokenBudget || 0),
           rulesTokenBudget: Number(val.rulesTokenBudget || 0),
         };
-      }
-
-      const stream = durSec(val.streamingDuration) || durSec(lastRetry?.streamingDuration);
-      const ttft = durSec(val.timeToFirstToken) || durSec(lastRetry?.timeToFirstToken);
-      if (ttft > 0) {
-        lastTtft = ttft;
-        ttftSum += ttft;
-        ttftCount++;
-      }
-      const speed = stream > 0.05 && out > 0 ? Math.round(out / stream) : 0;
-      if (speed > 0) {
-        lastSpeed = speed;
-        latestValidSpeed = speed;
-        timedOutputSum += out;
-        timedStreamSum += stream;
-        if (speed > peakSpeed) peakSpeed = speed;
-        if (stream >= 0.5 && speed > sustainedPeakSpeed) sustainedPeakSpeed = speed;
       }
 
       const stepIndices = Array.isArray(gmList[i].stepIndices) ? gmList[i].stepIndices : [];
@@ -1011,6 +995,25 @@
             lastContextStepIdx = arrIndices[arrIndices.length - 1];
           }
         }
+      }
+
+      if (!hasCallUsage) continue;
+
+      const stream = durSec(val.streamingDuration) || durSec(lastRetry?.streamingDuration);
+      const ttft = durSec(val.timeToFirstToken) || durSec(lastRetry?.timeToFirstToken);
+      if (ttft > 0) {
+        lastTtft = ttft;
+        ttftSum += ttft;
+        ttftCount++;
+      }
+      const speed = stream > 0.05 && out > 0 ? Math.round(out / stream) : 0;
+      if (speed > 0) {
+        lastSpeed = speed;
+        latestValidSpeed = speed;
+        timedOutputSum += out;
+        timedStreamSum += stream;
+        if (speed > peakSpeed) peakSpeed = speed;
+        if (stream >= 0.5 && speed > sustainedPeakSpeed) sustainedPeakSpeed = speed;
       }
 
       const firstStepObj = firstArrIdx >= 0 ? steps[firstArrIdx] : null;
@@ -1698,6 +1701,8 @@
           const firstIdx = c.stepIndices?.[0] ?? -1;
           const firstArrIdx = firstIdx >= 0 ? resolveArrIdx(firstIdx) : -1;
           const startTimeSec = firstArrIdx >= 0 ? tsSec(steps[firstArrIdx]?.metadata?.createdAt) : c.createdAtSec || 0;
+          const stepObj = firstArrIdx >= 0 ? steps[firstArrIdx] : null;
+          const turnInProgress = Boolean(stepObj && (stepObj.status === 1 || stepObj.status === 2));
           turnDetails.push({
             turn: i + 1,
             userStepIdx: firstIdx,
@@ -1705,6 +1710,7 @@
             lastStepIdx: firstIdx,
             startTimeSec,
             nextStartTimeSec: Infinity,
+            inProgress: turnInProgress,
             model: c.modelDisplayName || '',
             calls: 1,
             toolCalls: 0,
@@ -1735,14 +1741,31 @@
           const thinkSum = b.calls.reduce((s, x) => s + (x.thinkingTokens || 0), 0);
           const mergedPrompt = b.prompts.join(' / ').trim();
           let turnToolCalls = 0;
+          let turnInProgress = false;
+          let lastNonSysCase = '';
           const endIdx = Math.min(steps.length, b.nextUserStepIdx);
-          for (let sIdx = Math.max(0, b.userStepIdx + 1); sIdx < endIdx; sIdx++) {
+          for (let sIdx = Math.max(0, b.userStepIdx); sIdx < endIdx; sIdx++) {
             const st = steps[sIdx];
-            if (!st || isUserTurnBoundary(st)) continue;
+            if (!st) continue;
+            if (st.status === 1 || st.status === 2) turnInProgress = true;
+            if (sIdx === b.userStepIdx || isUserTurnBoundary(st)) continue;
             const sc = st?.step?.case;
-            if (sc && sc !== 'plannerResponse' && sc !== 'systemMessage' && sc !== 'checkpoint') {
-              turnToolCalls++;
+            if (sc && sc !== 'systemMessage' && sc !== 'checkpoint') {
+              lastNonSysCase = sc;
+              if (sc !== 'plannerResponse') {
+                turnToolCalls++;
+              }
             }
+          }
+          if (
+            !turnInProgress &&
+            !Number.isFinite(b.nextUserStepIdx) &&
+            !hasUnconsumedTurn &&
+            isRunning &&
+            lastNonSysCase &&
+            lastNonSysCase !== 'plannerResponse'
+          ) {
+            turnInProgress = true;
           }
           turnDetails.push({
             turn: turnDetails.length + 1,
@@ -1751,6 +1774,7 @@
             lastStepIdx: b.lastStepIdx,
             startTimeSec: b.startTimeSec,
             nextStartTimeSec: b.nextStartTimeSec,
+            inProgress: turnInProgress,
             model: lastC.modelDisplayName || '',
             calls: b.calls.length,
             toolCalls: turnToolCalls,

@@ -2654,7 +2654,10 @@
     let foundContainer = null;
     let foundCascadeId = '';
     let foundStepIdx = -1;
+    let foundMaxStepIdx = -1;
     let foundStepTimeSec = 0;
+    let hasRunningStep = false;
+    let isEmptySteps = false;
 
     const readStepIndexFromObj = (obj) => {
       if (!obj || typeof obj !== 'object') return -1;
@@ -2662,6 +2665,8 @@
         const v = obj[k];
         if (typeof v === 'number' && Number.isInteger(v) && v >= 0) return v;
       }
+      const srcIdx = obj?.metadata?.sourceTrajectoryStepInfo?.stepIndex;
+      if (typeof srcIdx === 'number' && Number.isInteger(srcIdx) && srcIdx >= 0) return srcIdx;
       if (Array.isArray(obj.stepIndices) && obj.stepIndices.length > 0) {
         const valid = obj.stepIndices.filter((n) => Number.isInteger(n) && n >= 0);
         if (valid.length > 0) return Math.min(...valid);
@@ -2678,9 +2683,15 @@
           if (!foundCascadeId && typeof p.cascadeId === 'string' && p.cascadeId) {
             foundCascadeId = p.cascadeId;
           }
+          if (p.status === 1 || p.status === 2 || p.step?.status === 1 || p.step?.status === 2) {
+            hasRunningStep = true;
+          }
           if (foundStepIdx < 0) {
             const directIdx = readStepIndexFromObj(p);
-            if (directIdx >= 0) foundStepIdx = directIdx;
+            if (directIdx >= 0) {
+              foundStepIdx = directIdx;
+              if (directIdx > foundMaxStepIdx) foundMaxStepIdx = directIdx;
+            }
           }
           if (!foundContainer && p.container && Array.isArray(p.container.steps)) {
             foundContainer = p.container;
@@ -2689,24 +2700,36 @@
             }
             if (foundStepIdx < 0) {
               const cIdx = readStepIndexFromObj(p.container);
-              if (cIdx >= 0) foundStepIdx = cIdx;
+              if (cIdx >= 0) {
+                foundStepIdx = cIdx;
+                if (cIdx > foundMaxStepIdx) foundMaxStepIdx = cIdx;
+              }
+            }
+            if (p.container.steps.length === 0) {
+              isEmptySteps = true;
             }
             for (const s of p.container.steps) {
-              if (foundStepIdx < 0) {
-                const sIdx = readStepIndexFromObj(s);
-                if (sIdx >= 0) foundStepIdx = sIdx;
+              if (s?.status === 1 || s?.status === 2) {
+                hasRunningStep = true;
+              }
+              const sIdx = readStepIndexFromObj(s);
+              if (sIdx >= 0) {
+                if (foundStepIdx < 0) foundStepIdx = sIdx;
+                if (sIdx > foundMaxStepIdx) foundMaxStepIdx = sIdx;
               }
               if (foundStepTimeSec === 0 && s?.metadata?.createdAt && typeof usageCore.tsSec === 'function') {
                 const sec = usageCore.tsSec(s.metadata.createdAt);
                 if (sec > 0) foundStepTimeSec = sec;
               }
-              if (foundStepIdx >= 0 && foundStepTimeSec > 0) break;
             }
             return {
               container: foundContainer,
               cascadeId: foundCascadeId,
               stepIndex: foundStepIdx,
+              maxStepIndex: foundMaxStepIdx >= 0 ? foundMaxStepIdx : foundStepIdx,
               stepTimeSec: foundStepTimeSec,
+              hasRunningStep,
+              isEmptySteps,
             };
           }
         }
@@ -2714,12 +2737,15 @@
       }
       fEl = fEl.parentElement;
     }
-    if (foundCascadeId || foundStepIdx >= 0 || foundStepTimeSec > 0) {
+    if (foundCascadeId || foundStepIdx >= 0 || foundStepTimeSec > 0 || hasRunningStep) {
       return {
         container: null,
         cascadeId: foundCascadeId,
         stepIndex: foundStepIdx,
+        maxStepIndex: foundMaxStepIdx >= 0 ? foundMaxStepIdx : foundStepIdx,
         stepTimeSec: foundStepTimeSec,
+        hasRunningStep,
+        isEmptySteps,
       };
     }
     return null;
@@ -2818,6 +2844,23 @@
     const otherTargets = [];
     const otherByContainer = new Map();
 
+    const mergeFiberInfo = (prevFi, nextFi) => {
+      if (!prevFi) return nextFi || null;
+      if (!nextFi) return prevFi;
+      return {
+        container: nextFi.container || prevFi.container || null,
+        cascadeId: nextFi.cascadeId || prevFi.cascadeId || '',
+        stepIndex: prevFi.stepIndex >= 0 ? prevFi.stepIndex : nextFi.stepIndex,
+        maxStepIndex: Math.max(
+          prevFi.maxStepIndex ?? prevFi.stepIndex ?? -1,
+          nextFi.maxStepIndex ?? nextFi.stepIndex ?? -1
+        ),
+        stepTimeSec: prevFi.stepTimeSec > 0 ? prevFi.stepTimeSec : nextFi.stepTimeSec,
+        hasRunningStep: Boolean(prevFi.hasRunningStep || nextFi.hasRunningStep),
+        isEmptySteps: Boolean(!prevFi.container && nextFi.isEmptySteps),
+      };
+    };
+
     for (const resp of allResps) {
       const host = resp.closest('[data-turn-content]') || resp.parentElement || resp;
       const fiberInfo = extractFiberTurnContainer(resp);
@@ -2838,18 +2881,14 @@
           const existing = mainByContainer.get(containerRef);
           existing.host = host;
           existing.resp = resp;
-          if (fiberInfo && fiberInfo.stepIndex >= 0 && existing.fiberInfo.stepIndex < 0) {
-            existing.fiberInfo = fiberInfo;
-          }
+          existing.fiberInfo = mergeFiberInfo(existing.fiberInfo, fiberInfo);
           continue;
         }
         if (item.domTurnGroup >= 0 && mainByDomGroup.has(item.domTurnGroup)) {
           const existing = mainByDomGroup.get(item.domTurnGroup);
           existing.host = host;
           existing.resp = resp;
-          if (containerRef && !existing.fiberInfo?.container) {
-            existing.fiberInfo = fiberInfo;
-          }
+          existing.fiberInfo = mergeFiberInfo(existing.fiberInfo, fiberInfo);
           if (containerRef) mainByContainer.set(containerRef, existing);
           continue;
         }
@@ -2862,6 +2901,7 @@
           const existing = otherByContainer.get(containerRef);
           existing.host = host;
           existing.resp = resp;
+          existing.fiberInfo = mergeFiberInfo(existing.fiberInfo, fiberInfo);
           continue;
         }
         otherTargets.push(item);
@@ -2884,7 +2924,7 @@
     const activeSet = new Set();
 
     const renderBadgeOnHost = (host, t) => {
-      if (!host || !t) return;
+      if (!host || !t || t.inProgress) return;
       let bar = host.querySelector(':scope > .ag-cs-turn-bar') || host.querySelector('.ag-cs-turn-bar');
       if (!bar) {
         bar = document.createElement('div');
@@ -2922,7 +2962,22 @@
       }
     };
 
+    const convoRunning = Boolean(
+      data.isRunning || data.isThinking || getDomConvoSignal(data.cascadeId).domRunning
+    );
+    const isTargetInProgress = (target) => {
+      const fi = target?.fiberInfo;
+      return Boolean(fi?.hasRunningStep || fi?.isEmptySteps);
+    };
+
     const hasIndexedTurns = turns.some((td) => td.userStepIdx >= 0);
+    const hasFiberLocator = (fi) =>
+      Boolean(
+        fi &&
+          ((typeof fi.stepIndex === 'number' && fi.stepIndex >= 0 && hasIndexedTurns) ||
+            (typeof fi.stepTimeSec === 'number' && fi.stepTimeSec > 0))
+      );
+
     const matchTurnByFiber = (fiberInfo) => {
       if (!fiberInfo) return null;
       if (typeof fiberInfo.stepIndex === 'number' && fiberInfo.stepIndex >= 0 && hasIndexedTurns) {
@@ -2953,34 +3008,114 @@
 
     // Prefer exact Fiber step/timestamp binding; keep only the final host per turn
     const turnToHost = new Map();
-    const matchedTargets = mainTargets.map((target) => ({ target, turn: matchTurnByFiber(target.fiberInfo) }));
+    const matchedTargets = [];
+    const fiberClaimedTurns = new Map();
+    for (let idx = 0; idx < mainTargets.length; idx++) {
+      const target = mainTargets[idx];
+      const inProg = isTargetInProgress(target);
+      let turn = matchTurnByFiber(target.fiberInfo);
+      if (turn && fiberClaimedTurns.has(turn.turn)) {
+        const prev = fiberClaimedTurns.get(turn.turn).target;
+        const diffDomGroup =
+          prev.domTurnGroup >= 0 && target.domTurnGroup >= 0 && target.domTurnGroup > prev.domTurnGroup;
+        const diffContainer = Boolean(
+          prev.fiberInfo?.container &&
+            target.fiberInfo?.container &&
+            prev.fiberInfo.container !== target.fiberInfo.container
+        );
+        const beyondLastStep =
+          typeof target.fiberInfo?.stepIndex === 'number' &&
+          target.fiberInfo.stepIndex >= 0 &&
+          typeof turn.lastStepIdx === 'number' &&
+          turn.lastStepIdx >= 0 &&
+          target.fiberInfo.stepIndex > turn.lastStepIdx;
+        if (diffDomGroup || diffContainer || beyondLastStep || inProg) {
+          turn = null;
+        }
+      }
+      if (turn) {
+        fiberClaimedTurns.set(turn.turn, { target, idx });
+      }
+      matchedTargets.push({
+        target,
+        turn,
+        idx,
+        inProg,
+        hasLocator: hasFiberLocator(target.fiberInfo),
+      });
+    }
+
     const anyFiberMatched = matchedTargets.some((m) => m.turn !== null);
 
-    if (anyFiberMatched && matchedTargets.every((m) => m.turn !== null)) {
-      for (const m of matchedTargets) {
-        turnToHost.set(m.turn.turn, { host: m.target.host, turn: m.turn });
-      }
-    } else if (anyFiberMatched) {
+    if (anyFiberMatched) {
       const usedTurnIds = new Set();
       for (const m of matchedTargets) {
         if (m.turn) {
-          turnToHost.set(m.turn.turn, { host: m.target.host, turn: m.turn });
           usedTurnIds.add(m.turn.turn);
+          if (!m.inProg && !m.turn.inProgress) {
+            turnToHost.set(m.turn.turn, { host: m.target.host, turn: m.turn });
+          } else {
+            turnToHost.delete(m.turn.turn);
+          }
         }
       }
-      const remainingTargets = matchedTargets.filter((m) => !m.turn).map((m) => m.target);
-      const remainingTurns = turns.filter((t) => !usedTurnIds.has(t.turn));
-      const count = Math.min(remainingTargets.length, remainingTurns.length);
-      for (let i = 0; i < count; i++) {
-        const target = remainingTargets[remainingTargets.length - count + i];
-        const t = remainingTurns[remainingTurns.length - count + i];
-        if (target && t) turnToHost.set(t.turn, { host: target.host, turn: t });
+
+      // Only fallback-match targets that genuinely lacked Fiber step/timestamp locators,
+      // are not in-progress, and strictly satisfy DOM chronological monotonicity between matched neighbors.
+      let segStart = 0;
+      while (segStart < matchedTargets.length) {
+        if (matchedTargets[segStart].turn !== null) {
+          segStart++;
+          continue;
+        }
+        let segEnd = segStart;
+        while (segEnd < matchedTargets.length && matchedTargets[segEnd].turn === null) {
+          segEnd++;
+        }
+        const leftTurnNum = segStart > 0 && matchedTargets[segStart - 1].turn ? matchedTargets[segStart - 1].turn.turn : 0;
+        const rightTurnNum =
+          segEnd < matchedTargets.length && matchedTargets[segEnd].turn ? matchedTargets[segEnd].turn.turn : Infinity;
+
+        const gapTargets = [];
+        for (let i = segStart; i < segEnd; i++) {
+          const m = matchedTargets[i];
+          if (m.inProg || m.hasLocator) continue;
+          if (convoRunning && i === matchedTargets.length - 1) continue;
+          gapTargets.push(m.target);
+        }
+
+        if (gapTargets.length > 0) {
+          const candidateTurns = turns.filter(
+            (t) => !usedTurnIds.has(t.turn) && !t.inProgress && t.turn > leftTurnNum && t.turn < rightTurnNum
+          );
+          const count = Math.min(gapTargets.length, candidateTurns.length);
+          for (let i = 0; i < count; i++) {
+            // If anchored on the left (e.g. after a matched turn), align forward from leftTurnNum;
+            // otherwise align from the tail toward rightTurnNum.
+            const target = leftTurnNum > 0 ? gapTargets[i] : gapTargets[gapTargets.length - count + i];
+            const t = leftTurnNum > 0 ? candidateTurns[i] : candidateTurns[candidateTurns.length - count + i];
+            if (target && t) {
+              turnToHost.set(t.turn, { host: target.host, turn: t });
+              usedTurnIds.add(t.turn);
+            }
+          }
+        }
+        segStart = segEnd;
       }
     } else {
-      const count = Math.min(mainTargets.length, turns.length);
+      const completedTurns = turns.filter((t) => !t.inProgress);
+      let eligibleTargets = mainTargets.filter((target, idx) => {
+        if (isTargetInProgress(target)) return false;
+        if (convoRunning && idx === mainTargets.length - 1) return false;
+        return true;
+      });
+      if (eligibleTargets.length > completedTurns.length) {
+        eligibleTargets = eligibleTargets.slice(0, completedTurns.length);
+      }
+      const count = Math.min(eligibleTargets.length, completedTurns.length);
       for (let i = 0; i < count; i++) {
-        const target = mainTargets[mainTargets.length - count + i];
-        const t = turns[turns.length - count + i];
+        const target = eligibleTargets[eligibleTargets.length - count + i];
+        const t = completedTurns[completedTurns.length - count + i];
         if (target && t) turnToHost.set(t.turn, { host: target.host, turn: t });
       }
     }
@@ -2993,6 +3128,7 @@
     let prevSubCtx = 0;
     for (let i = 0; i < otherTargets.length; i++) {
       const target = otherTargets[i];
+      if (isTargetInProgress(target)) continue;
       const steps = target.fiberInfo?.container?.steps;
       if (Array.isArray(steps) && steps.length > 0) {
         const fb = summarizeFiberSteps(steps, data.lastModel, prevSubCtx);

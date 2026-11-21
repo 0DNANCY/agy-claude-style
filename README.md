@@ -163,7 +163,7 @@ AGY Claude Style 提供两种运行模式。**默认推荐「托管启动模式�
 <a id="方式一windows-独立安装器目标机器无需-nodejs"></a>
 ### 🪟 方式一：Windows 独立安装器（目标机器无需 Node.js）
 
-1. 直接从 [Releases](https://github.com/0DNANCY/agy-claude-style/releases) 下载 `AGY-Claude-Style-v2.0.0-Windows-x64.exe`（对应版本），或在已安装 Node.js >= 22 的 Windows 环境克隆仓库从源码构建：
+1. 直接从 [Releases](https://github.com/0DNANCY/agy-claude-style/releases) 下载 `AGY-Claude-Style-v2.1.0-Windows-x64.exe`（对应版本），或在已安装 Node.js >= 22 的 Windows 环境克隆仓库从源码构建：
    ```bash
    git clone https://github.com/0DNANCY/agy-claude-style.git
    cd agy-claude-style
@@ -182,7 +182,7 @@ AGY Claude Style 提供两种运行模式。**默认推荐「托管启动模式�
 
 3. 安装器支持的命令行参数：
    ```text
-   AGY-Claude-Style-v2.0.0-Windows-x64.exe [--silent | /S | -s] [--uninstall] [--status]
+   AGY-Claude-Style-v2.1.0-Windows-x64.exe [--silent | /S | -s] [--uninstall] [--status]
                                            [--mode=managed | --mode=daemon | --managed | --daemon]
                                            [--desktop-shortcut | --no-desktop-shortcut]
                                            [--no-autostart] [--no-kill-legacy]
@@ -199,7 +199,7 @@ AGY Claude Style 提供两种运行模式。**默认推荐「托管启动模式�
 <a id="方式二macos-独立应用目标机器无需-nodejs"></a>
 ### 🍎 方式二：macOS 独立应用（目标机器无需 Node.js）
 
-1. 直接从 [Releases](https://github.com/0DNANCY/agy-claude-style/releases) 下载 `AGY-Claude-Style-v2.0.0-macOS-universal.dmg`（对应版本），或在已安装 Node.js >= 22 与 Xcode Command Line Tools 的 macOS 环境从源码构建：
+1. 直接从 [Releases](https://github.com/0DNANCY/agy-claude-style/releases) 下载 `AGY-Claude-Style-v2.1.0-macOS-universal.dmg`（对应版本），或在已安装 Node.js >= 22 与 Xcode Command Line Tools 的 macOS 环境从源码构建：
    ```bash
    git clone https://github.com/0DNANCY/agy-claude-style.git
    cd agy-claude-style
@@ -397,7 +397,7 @@ npm run remove
 ### 🚀 自动构建与发布 Release
 
 仓库已配置 GitHub Actions 工作流（[_build-and-test.yml](.github/workflows/_build-and-test.yml)、[release.yml](.github/workflows/release.yml) 与 [ci.yml](.github/workflows/ci.yml)）：
-- **推送版本标签自动发布**：推送形如 `v2.0.0` 的标签（`git tag v2.0.0 && git push origin v2.0.0`），会自动在 `ubuntu-latest`、`windows-latest` 与 `macos-latest` 上完成测试、编译 `AGY-Claude-Style-v2.0.0-Windows-x64.exe` 与 `AGY-Claude-Style-v2.0.0-macOS-universal.dmg`（附带 `SHA256SUMS.txt`）并自动创建 GitHub Release（同时抽取 [CHANGELOG.md](CHANGELOG.md) 对应版本日志）。
+- **推送版本标签自动发布**：推送形如 `v2.1.0` 的标签（`git tag v2.1.0 && git push origin v2.1.0`），会自动在 `ubuntu-latest`、`windows-latest` 与 `macos-latest` 上完成测试、编译 `AGY-Claude-Style-v2.1.0-Windows-x64.exe` 与 `AGY-Claude-Style-v2.1.0-macOS-universal.dmg`（附带 `SHA256SUMS.txt`）并自动创建 GitHub Release（同时抽取 [CHANGELOG.md](CHANGELOG.md) 对应版本日志）。
 - **手动触发**：也可以在 GitHub 仓库 **Actions → Release → Run workflow** 手动触发编译并发布。
 
 测试套件包含对注入包语法、模拟 DOM 挂载/无损卸载、5 语言翻译引擎、思考强度滑块数学模型、用量统计与配额匹配、二维波纹场、螃蟹状态机，以及 Windows `installer.exe` 与 macOS `.app` 编译/静默安装/CDP 注入/设置同步热更新/保留配置升级/卸载清理全流程的自动化验证。

@@ -2,14 +2,33 @@
 
 All notable changes to **AGY Claude Style (`agy-claude-style`)** are documented in this file.
 
-## [Unreleased]
+## [v2.1.0] - 2026-11-22
 
-### 🌐 语言支持增强（Swarm UI 侧栏 & Plan / Orchestrator 模式）
+`v2.1.0` 新增 **Swarm 蜂群侧栏（`/swarm` 面板）与 Plan / Orchestrator 模式完整 5 语言本地化**（#15），并修复了长对话虚拟列表及模型思考阶段输出下方轮次 HUD（`#T` 徽章）可能出现历史或残缺虚假信息的问题。
+
+### 🌐 语言支持增强（Swarm UI 侧栏 & Plan / Orchestrator 模式，#15）
 - **Swarm 蜂群侧栏（`/swarm` 面板）完整 5 语言本地化**：
   - Node（`cdp.js`）、Windows C#（`CdpClient.cs`）与 macOS Swift（`CdpClient.swift`）三端 CDP 目标过滤统一支持 `plugin://swarm--` 侧栏 OOPIF `iframe` 目标，并自动随主窗口语言切换通过轻量 `refreshConfig` 实时同步。
   - 新增 `sidecar-core.js` 侧栏精简运行时：在 `plugin:` 协议上下文下跳过主窗口 `style.css` 与 UI 增强，仅挂载可逆 DOM 翻译器，精准保护帖子正文、成员句柄、任务描述与叙述者视图，同时放行 `<select><option>` 筛选选项翻译，卸载时无损还原。
 - **Plan / Orchestrator / Coordinator / Plugins 词典补齐**：
   - 扩充 `i18n-locales.js` 约 180+ 条 5 语言静态词条与 25 条动态正则规则，覆盖 Swarm 面板（Overview / Board / Members / Graph / Raw / Hive / Replay / GIF 导出）及主窗口新版 Orchestrator 模型设置、Coordinator/Subagent 控件、Pause/Resume 提示与插件管理界面。
+
+### 🐛 Token HUD 轮次徽章（`#T`）精准对齐与思考态防串位修复
+- **消除长对话思考阶段 `#T` 徽章盗用历史轮次问题**：
+  - 修复在长对话虚拟列表仅挂载最近若干轮次（如 `#T12`～`#T20`）时，新提问处于“工作中 / 思考中”阶段因 `matchTurnByFiber` 返回 `null` 而掉入 `remainingTurns` 尾部回退队列、导致 `#T20` 下方的思考中节点错误挂载未渲染历史轮次（如 `#T11`）的问题。
+  - 对缺失 Fiber 定位器的降级匹配施加严格的 DOM 先后单调性约束，并禁止自身已携带 Fiber 索引/时间戳的新轮次节点进入降级回退队列。
+- **禁止进行中（思考中 / 流式生成中 / 工具执行中）轮次提前挂载残缺 HUD**：
+  - 在 `usage-core.js` 中为仍包含 `status === 1` / `status === 2` 步骤或正在等待工具调用后模型响应的轮次标记 `inProgress: true`；在 `ui-runtime.js` 的 `extractFiberTurnContainer` 与多响应合并 `mergeFiberInfo` 中追踪 `hasRunningStep` / `isEmptySteps`（同时覆盖主会话与子智能体面板），确保模型思考期间下方不出现半成品或虚假 HUD，待生成完成后立即挂载完整 `#T` 统计。
+- **防御发送瞬间缓存窗口期抢占与 0-Token 启动占位**：
+  - 防止刚按下发送键、轨迹轮询尚未闭合上一轮 `nextUserStepIdx`（仍为 `Infinity`）的瞬间，新插入的 DOM 轮次节点覆盖抢占上一轮的 `#T` 徽章。
+  - 过滤 `generatorMetadata` 启动期仅有 `chatStartMetadata` 尚无 `usage` token 的占位条目进入 `callList`（同时保留其实时上下文窗口占用更新）。
+
+### 🧪 自动化测试扩充
+- 全平台自动化测试扩展至 **90 项**（新增 Swarm 侧栏翻译器与 OOPIF 目标发现测试、20 轮虚拟列表 + 第 21 轮思考中四阶段防串位回归测试及未完成调用过滤测试）。
+
+**Full Changelog**: https://github.com/0DNANCY/agy-claude-style/compare/v2.0.0...v2.1.0
+
+---
 
 ## [v2.0.0] - 2026-11-21
 

@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag (e.g. v2.0.0). Leave empty to use v<package.json version>.'
+        description: 'Release tag (e.g. v2.1.0). Leave empty to use v<package.json version>.'
         required: false
         type: string
       prerelease:
@@ -65,7 +65,7 @@ jobs:
           fi
 
           if [[ ! "$TAG" =~ ^v[0-9A-Za-z._-]+$ ]]; then
-            echo "::error::Invalid release tag '$TAG'. Expected a tag starting with 'v' (e.g. v2.0.0)."
+            echo "::error::Invalid release tag '$TAG'. Expected a tag starting with 'v' (e.g. v2.1.0)."
             exit 1
           fi
 

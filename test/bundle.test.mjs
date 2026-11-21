@@ -2795,6 +2795,372 @@ test('streaming Turn 2 response does not hijack #T1 badge, observer ignores exte
   }
 });
 
+test('virtualized 20-turn chat with thinking Turn 21 never leaks #T11 or #T20 onto thinking node across pre-poll, tool-thinking, and completion stages', async () => {
+  const timers = new Set();
+  const makeNode = (tag, opts = {}) => {
+    const attrs = new Map(Object.entries(opts.attrs || {}));
+    const classes = new Set((opts.className || '').split(/\s+/).filter(Boolean));
+    const children = [];
+    const matchesSimple = (n, sel) => {
+      if (!n || n.nodeType !== 1) return false;
+      let rest = sel.trim();
+      const tm = /^[a-zA-Z0-9_-]+/.exec(rest);
+      if (tm) {
+        if (n.tagName !== tm[0].toUpperCase()) return false;
+        rest = rest.slice(tm[0].length);
+      }
+      while (rest) {
+        if (rest[0] === '#') {
+          const m = /^#([a-zA-Z0-9_-]+)/.exec(rest);
+          if (!m || n.id !== m[1]) return false;
+          rest = rest.slice(m[0].length);
+        } else if (rest[0] === '.') {
+          const m = /^\.([a-zA-Z0-9_-]+)/.exec(rest);
+          if (!m || !n.classList.contains(m[1])) return false;
+          rest = rest.slice(m[0].length);
+        } else if (rest[0] === '[') {
+          const m = /^\[([^\]=]+)(?:="([^"]*)")?\]/.exec(rest);
+          if (!m) return false;
+          const ok = m[2] === undefined ? n.hasAttribute(m[1]) : n.getAttribute(m[1]) === m[2];
+          if (!ok) return false;
+          rest = rest.slice(m[0].length);
+        } else {
+          return false;
+        }
+      }
+      return true;
+    };
+    const matchesSel = (n, sel) =>
+      sel.split(',').some((part) => {
+        const cleaned = part.trim().replace(/^:scope\s*>\s*/, '');
+        const tokens = cleaned.split(/\s+/).filter(Boolean);
+        if (tokens.length === 0 || !matchesSimple(n, tokens[tokens.length - 1])) return false;
+        let cur = n.parentElement;
+        let idx = tokens.length - 2;
+        while (cur && idx >= 0) {
+          if (matchesSimple(cur, tokens[idx])) idx -= 1;
+          cur = cur.parentElement;
+        }
+        return idx < 0;
+      });
+    const node = {
+      nodeType: 1,
+      tagName: tag.toUpperCase(),
+      id: opts.id || attrs.get('id') || '',
+      children,
+      parentElement: null,
+      parentNode: null,
+      isConnected: true,
+      clientWidth: 600,
+      offsetWidth: 600,
+      clientHeight: 32,
+      offsetHeight: 32,
+      _text: opts.text || '',
+      _html: '',
+      style: { setProperty() {}, getPropertyValue() { return ''; }, removeProperty() {} },
+      classList: { contains: (c) => classes.has(c), add: (c) => classes.add(c), remove: (c) => classes.delete(c) },
+      get className() { return Array.from(classes).join(' '); },
+      set className(v) { classes.clear(); String(v).split(/\s+/).filter(Boolean).forEach((c) => classes.add(c)); },
+      get textContent() { return children.length ? children.map((c) => c.textContent).join('') : this._text; },
+      set textContent(v) { children.length = 0; this._text = String(v); },
+      set innerHTML(v) { this._html = String(v); },
+      get innerHTML() { return this._html; },
+      get firstChild() { return children[0] || null; },
+      get lastElementChild() { return children[children.length - 1] || null; },
+      appendChild(c) { c.parentElement = this; c.parentNode = this; children.push(c); return c; },
+      insertBefore(c, ref) {
+        c.parentElement = this;
+        c.parentNode = this;
+        const i = ref ? children.indexOf(ref) : -1;
+        if (i >= 0) children.splice(i, 0, c);
+        else children.push(c);
+        return c;
+      },
+      removeChild(c) { const i = children.indexOf(c); if (i >= 0) children.splice(i, 1); c.parentElement = null; c.parentNode = null; return c; },
+      remove() { if (this.parentElement) this.parentElement.removeChild(this); },
+      setAttribute(k, v) { attrs.set(k, String(v)); if (k === 'id') node.id = String(v); if (k === 'class') node.className = String(v); },
+      getAttribute(k) { return attrs.has(k) ? attrs.get(k) : null; },
+      hasAttribute(k) { return attrs.has(k); },
+      removeAttribute(k) { attrs.delete(k); },
+      toggleAttribute(k, f) { const on = f === undefined ? !attrs.has(k) : Boolean(f); if (on) attrs.set(k, ''); else attrs.delete(k); return on; },
+      addEventListener() {},
+      removeEventListener() {},
+      matches(sel) { return matchesSel(this, sel); },
+      closest(sel) { let c = this; while (c) { if (matchesSel(c, sel)) return c; c = c.parentElement; } return null; },
+      getBoundingClientRect: () => ({ left: 0, top: 0, right: 600, bottom: 32, width: 600, height: 32 }),
+      animate: () => ({ cancel() {}, finished: Promise.resolve() }),
+      querySelector(sel) { return this.querySelectorAll(sel)[0] || null; },
+      querySelectorAll(sel) {
+        const parts = sel.split(',').map((s) => s.trim()).filter(Boolean);
+        const out = [];
+        const walk = (n, depth) => {
+          for (const ch of n.children) {
+            const matched = parts.some((p) => {
+              if (p.startsWith(':scope >')) return depth === 0 && matchesSel(ch, p);
+              return matchesSel(ch, p);
+            });
+            if (matched) out.push(ch);
+            walk(ch, depth + 1);
+          }
+        };
+        walk(this, 0);
+        return out;
+      },
+    };
+    return node;
+  };
+
+  const html = makeNode('html');
+  const head = makeNode('head');
+  const body = makeNode('body', { className: 'theme-dark' });
+  html.appendChild(head);
+  html.appendChild(body);
+
+  const cascadeId = '66666666-6666-4666-8666-666666666666';
+  const convView = makeNode('div', { attrs: { 'data-testid': 'conversation-view', 'data-cascade-id': cascadeId } });
+
+  // Build 20 completed turns (#T1..#T20) in trajectory, but only mount #T12..#T20 in virtualized DOM
+  const steps = [];
+  const generatorMetadata = [];
+  const domWraps = new Map();
+  for (let t = 1; t <= 20; t++) {
+    const uStepIdx = (t - 1) * 2;
+    const rStepIdx = uStepIdx + 1;
+    const tsBase = 1700000000 + t * 100;
+    steps.push(
+      { status: 3, metadata: { createdAt: { seconds: String(tsBase) } }, step: { case: 'userInput', value: { query: `Prompt ${t}` } } },
+      { status: 3, metadata: { createdAt: { seconds: String(tsBase + 5) } }, step: { case: 'plannerResponse', value: { response: `Answer ${t}` } } }
+    );
+    generatorMetadata.push({
+      stepIndices: [uStepIdx, rStepIdx],
+      metadata: {
+        value: {
+          modelDisplayName: 'Gemini 3.8 Flash',
+          usage: { inputTokens: String(1000 + t * 100), cacheReadTokens: String(100000 + t * 1000), outputTokens: String(90 + t) },
+        },
+      },
+    });
+    if (t >= 12) {
+      const uNode = makeNode('div', { attrs: { 'data-testid': 'user-input-step' }, text: `Prompt ${t}` });
+      const rWrap = makeNode('div', { id: `turn-${t}-wrap` });
+      const rNode = makeNode('div', { attrs: { 'data-testid': 'agent-response' }, text: `Answer ${t}` });
+      rNode.__reactFiber$test = {
+        memoizedProps: {
+          cascadeId,
+          stepIndex: rStepIdx,
+          container: {
+            cascadeId,
+            steps: [{ stepIndex: rStepIdx, status: 3, metadata: { createdAt: { seconds: String(tsBase + 5) } } }],
+          },
+        },
+        return: null,
+      };
+      rWrap.appendChild(rNode);
+      convView.appendChild(uNode);
+      convView.appendChild(rWrap);
+      domWraps.set(t, rWrap);
+    }
+  }
+
+  // Mount Turn 21 ("工作中") in the DOM right after #T20
+  const u21 = makeNode('div', { attrs: { 'data-testid': 'user-input-step' }, text: '那个后台是啥任务' });
+  const r21Wrap = makeNode('div', { id: 'turn-21-thinking-wrap' });
+  const r21 = makeNode('div', { attrs: { 'data-testid': 'agent-response' }, text: '工作中' });
+  // Stage 1: pre-poll window where trajectory still only has #T1..#T20 (#T20.nextUserStepIdx === Infinity),
+  // and Turn 21 DOM node has no Fiber step yet (or a new stepIndex > #T20.lastStepIdx)
+  r21.__reactFiber$test = {
+    memoizedProps: {
+      cascadeId,
+      stepIndex: 41,
+      container: {
+        cascadeId,
+        steps: [{ stepIndex: 41, status: 1, metadata: { createdAt: { seconds: '1700002505' } } }],
+      },
+    },
+    return: null,
+  };
+  r21Wrap.appendChild(r21);
+  convView.appendChild(u21);
+  convView.appendChild(r21Wrap);
+
+  const inputBox = makeNode('div', { id: 'antigravity.agentSidePanelInputBox', attrs: { 'data-testid': 'agent-input-box' } });
+  const card = makeNode('div', { className: 'surface-composer-card' });
+  const editorEl = makeNode('div', { attrs: { contenteditable: 'true', 'data-lexical-editor': 'true' } });
+  const footer = makeNode('div', { className: 'agy-composer-footer' });
+  footer.appendChild(makeNode('button', { attrs: { 'data-testid': 'model-selector-trigger' }, text: 'Gemini 3.8 Flash' }));
+  card.appendChild(editorEl);
+  card.appendChild(footer);
+  inputBox.appendChild(card);
+  convView.appendChild(inputBox);
+  body.appendChild(convView);
+
+  const traj = { trajectory: { steps, generatorMetadata } };
+  let sumStepCount = 40;
+  let sumStatus = 2;
+
+  const rootStore = {
+    getState: () => ({
+      trajectorySummaries: {
+        summaries: { [cascadeId]: { stepCount: sumStepCount, status: sumStatus, lastModifiedTime: { seconds: '1700002505' } } },
+      },
+    }),
+    subscribe: () => () => {},
+  };
+  const rootFiber = {
+    memoizedProps: { store: rootStore },
+    dependencies: {
+      firstContext: {
+        memoizedValue: {
+          async getCascadeTrajectory() { return traj; },
+          async retrieveUserQuotaSummary() { return { groups: [] }; },
+        },
+      },
+    },
+    return: null,
+  };
+  inputBox.__reactFiber$test = { memoizedProps: { cascadeId }, return: rootFiber };
+
+  const doc = {
+    documentElement: html,
+    head,
+    body,
+    hidden: false,
+    readyState: 'complete',
+    createElement: (t) => makeNode(t),
+    getElementById: (id) => {
+      const find = (n) => (n.id === id ? n : n.children.map(find).find(Boolean) || null);
+      return find(html);
+    },
+    querySelector: (s) => html.querySelector(s),
+    querySelectorAll: (s) => html.querySelectorAll(s),
+    addEventListener() {},
+    removeEventListener() {},
+  };
+
+  let pollFn = null;
+  const sandbox = {
+    window: null,
+    globalThis: null,
+    document: doc,
+    navigator: { language: 'zh-CN' },
+    location: { pathname: `/c/${cascadeId}` },
+    localStorage: { _m: {}, getItem(k) { return this._m[k] || null; }, setItem(k, v) { this._m[k] = String(v); } },
+    getComputedStyle: () => ({ getPropertyValue: () => '' }),
+    matchMedia: () => ({ matches: false }),
+    MutationObserver: class { observe() {} disconnect() {} },
+    ResizeObserver: class { observe() {} disconnect() {} },
+    requestAnimationFrame: (fn) => {
+      const id = setTimeout(() => fn(Date.now()), 5);
+      timers.add(id);
+      return id;
+    },
+    cancelAnimationFrame: (id) => { timers.delete(id); clearTimeout(id); },
+    setTimeout: (fn, ms) => { const id = setTimeout(fn, ms); timers.add(id); return id; },
+    clearTimeout: (id) => { timers.delete(id); clearTimeout(id); },
+    setInterval: (fn) => { pollFn = fn; return 1; },
+    clearInterval: () => {},
+    performance: { now: () => Date.now() },
+    electronApi: {
+      async getCascadeTrajectory() { return traj; },
+      async getAllCascadeTrajectories() { return {}; },
+    },
+    Math, Date, JSON, Map, Set, Array, Object, String, Number, Boolean, Promise, Uint8Array, Float32Array, Intl,
+  };
+  sandbox.window = sandbox;
+  sandbox.globalThis = sandbox;
+
+  try {
+    const res = vm.runInNewContext(
+      cdp.buildInjectExpression({ ...cdp.DEFAULT_CONFIG, turnBadges: true }),
+      sandbox
+    );
+    assert.equal(res.status, 'ok');
+    await new Promise((r) => setTimeout(r, 80));
+
+    // Stage 1 (pre-poll cache window): #T12..#T20 stay on their own nodes, and Turn 21 ("工作中") has NO badge (neither #T11 nor #T20!)
+    for (let t = 12; t <= 20; t++) {
+      const bar = domWraps.get(t).querySelector('.ag-cs-turn-bar');
+      assert.ok(bar && bar.innerHTML.includes(`#T${t}`), `Expected #T${t} on turn ${t} in Stage 1`);
+    }
+    assert.equal(r21Wrap.querySelector('.ag-cs-turn-bar'), null, 'Stage 1: thinking Turn 21 must not show #T11 or hijack #T20');
+
+    // Stage 2: Trajectory poll delivers Turn 21 userInput + thinking step (and r21 lacks Fiber locator)
+    r21.__reactFiber$test = null;
+    steps.push(
+      { status: 3, metadata: { createdAt: { seconds: '1700002500' } }, step: { case: 'userInput', value: { query: '那个后台是啥任务' } } },
+      { status: 1, metadata: { createdAt: { seconds: '1700002505' } }, step: { case: 'plannerResponse', value: { thinking: 'Checking...', response: '' } } }
+    );
+    sumStepCount = 42;
+    if (pollFn) pollFn();
+    await new Promise((r) => setTimeout(r, 80));
+
+    assert.ok(domWraps.get(20).querySelector('.ag-cs-turn-bar')?.innerHTML.includes('#T20'));
+    assert.equal(r21Wrap.querySelector('.ag-cs-turn-bar'), null, 'Stage 2: unmatched thinking Turn 21 must never fallback to #T11');
+
+    // Stage 3: Turn 21 completes a tool call (Call 1) and is now thinking on Call 2 (status: 1)
+    steps[41].status = 3;
+    steps.push(
+      { status: 3, metadata: { createdAt: { seconds: '1700002506' } }, step: { case: 'viewFile', value: { content: 'task' } } },
+      { status: 1, metadata: { createdAt: { seconds: '1700002508' } }, step: { case: 'plannerResponse', value: { thinking: 'Still thinking...', response: '' } } }
+    );
+    generatorMetadata.push({
+      stepIndices: [40, 41],
+      metadata: {
+        value: {
+          modelDisplayName: 'Gemini 3.8 Flash',
+          usage: { inputTokens: '500', cacheReadTokens: '125000', outputTokens: '45' },
+        },
+      },
+    });
+    r21.__reactFiber$test = {
+      memoizedProps: {
+        cascadeId,
+        stepIndex: 43,
+        container: {
+          cascadeId,
+          steps: [
+            { stepIndex: 41, status: 3 },
+            { stepIndex: 42, status: 3 },
+            { stepIndex: 43, status: 1 },
+          ],
+        },
+      },
+      return: null,
+    };
+    sumStepCount = 44;
+    if (pollFn) pollFn();
+    await new Promise((r) => setTimeout(r, 80));
+
+    assert.equal(r21Wrap.querySelector('.ag-cs-turn-bar'), null, 'Stage 3: multi-step Turn 21 still thinking on Call 2 must not show premature HUD');
+
+    // Stage 4: Turn 21 completes Call 2 (status: 3) -> #T21 mounts cleanly!
+    steps[43].status = 3;
+    steps[43].step.value.response = '后台没有正在运行的任务。';
+    generatorMetadata.push({
+      stepIndices: [42, 43],
+      metadata: {
+        value: {
+          modelDisplayName: 'Gemini 3.8 Flash',
+          usage: { inputTokens: '800', cacheReadTokens: '125500', outputTokens: '120' },
+        },
+      },
+    });
+    r21.__reactFiber$test.memoizedProps.container.steps[2].status = 3;
+    sumStepCount = 45;
+    sumStatus = 1;
+    if (pollFn) pollFn();
+    await new Promise((r) => setTimeout(r, 80));
+
+    const bar21 = r21Wrap.querySelector('.ag-cs-turn-bar');
+    assert.ok(bar21, 'Stage 4: completed Turn 21 should mount #T21 badge');
+    assert.ok(bar21.innerHTML.includes('#T21'), `Expected #T21 in bar21, got ${bar21.innerHTML}`);
+
+    vm.runInNewContext(cdp.REMOVE_EXPRESSION, sandbox);
+  } finally {
+    for (const id of timers) clearTimeout(id);
+  }
+});
+
 test('remote (cloud) conversation populates Token HUD, top bar, turn badges, and popover via live agentStateProvider when getCascadeTrajectory is unimplemented', async () => {
   const timers = new Set();
   const makeNode = (tag, opts = {}) => {

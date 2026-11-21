@@ -302,16 +302,16 @@ test('unified artifact naming and version parity stay consistent across package,
   assert.equal(csSetup.match(/SetValue\("DisplayVersion", version \?\? "([^"]+)"/)?.[1], pkg.version);
   assert.equal(swiftClient.match(/raw\["version"\]\?\.stringValue \?\? "([^"]+)"/)?.[1], pkg.version);
 
-  assert.equal(normalizeVersion('v2.0.0'), '2.0.0');
-  assert.equal(normalizeVersion('2.0.0'), '2.0.0');
+  assert.equal(normalizeVersion('v2.1.0'), '2.1.0');
+  assert.equal(normalizeVersion('2.1.0'), '2.1.0');
 
-  assert.deepEqual(getArtifactNames('v2.0.0'), {
-    version: '2.0.0',
-    windowsInstaller: 'AGY-Claude-Style-v2.0.0-Windows-x64.exe',
-    macosDmg: 'AGY-Claude-Style-v2.0.0-macOS-universal.dmg',
+  assert.deepEqual(getArtifactNames('v2.1.0'), {
+    version: '2.1.0',
+    windowsInstaller: 'AGY-Claude-Style-v2.1.0-Windows-x64.exe',
+    macosDmg: 'AGY-Claude-Style-v2.1.0-macOS-universal.dmg',
     macosApp: 'AGY Claude Style.app',
   });
-  assert.equal(createManifest('v2.0.0').version, '2.0.0');
+  assert.equal(createManifest('v2.1.0').version, '2.1.0');
 });
 
 test('Windows C# sources define managed launch contract and stay strictly C# 5 compatible', () => {
@@ -328,7 +328,7 @@ test('Windows C# sources define managed launch contract and stay strictly C# 5 c
   assert.ok(csClient.includes('__agCsOverrideConfig'));
   assert.ok(csClient.includes('plugin://swarm--'), 'CdpClient.cs must include Swarm sidecar iframe targets');
   assert.ok(csClient.includes("location.protocol === 'plugin:'"), 'CdpClient.cs must skip CSS injection in plugin: sidecars');
-  assert.ok(createManifest('v2.0.0').parts.includes('sidecar-core.js'), 'Installer manifest must bundle sidecar-core.js');
+  assert.ok(createManifest('v2.1.0').parts.includes('sidecar-core.js'), 'Installer manifest must bundle sidecar-core.js');
   assert.equal(csClient.includes('System.Windows.Forms'), false, 'CdpClient.cs must not reference System.Windows.Forms');
 
   assert.match(csWatcher, /--launch/);

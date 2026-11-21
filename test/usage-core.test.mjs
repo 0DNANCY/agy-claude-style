@@ -972,4 +972,59 @@ test('normalizeAgentStateToTrajectory handles sliced steps, contextWindowUsage t
   assert.equal(info.turnDetails.length, 1);
   assert.equal(info.turnDetails[0].userStepIdx, 248);
   assert.equal(info.turnDetails[0].lastStepIdx, 249);
+  assert.equal(info.turnDetails[0].inProgress, false);
+});
+
+test('analyzeActiveConversation skips 0-token generatorMetadata startup stubs from callList and marks thinking turns as inProgress', () => {
+  const traj = {
+    steps: [
+      { status: 3, metadata: { createdAt: { seconds: '1700001000' } }, step: { case: 'userInput', value: { query: 'Turn 1' } } },
+      { status: 3, metadata: { createdAt: { seconds: '1700001005' } }, step: { case: 'plannerResponse', value: { response: 'Turn 1 done' } } },
+      { status: 3, metadata: { createdAt: { seconds: '1700002000' } }, step: { case: 'userInput', value: { query: 'Turn 2 with tool then thinking' } } },
+      { status: 3, metadata: { createdAt: { seconds: '1700002002' } }, step: { case: 'plannerResponse', value: { response: '' } } },
+      { status: 3, metadata: { createdAt: { seconds: '1700002003' } }, step: { case: 'viewFile', value: { content: 'abc' } } },
+      { status: 1, metadata: { createdAt: { seconds: '1700002005' } }, step: { case: 'plannerResponse', value: { thinking: 'Still thinking...', response: '' } } },
+    ],
+    generatorMetadata: [
+      {
+        stepIndices: [0, 1],
+        metadata: {
+          value: {
+            modelDisplayName: 'Gemini 3.8 Flash',
+            usage: { inputTokens: '4000', cacheReadTokens: '100000', outputTokens: '98' },
+            chatStartMetadata: { contextWindowMetadata: { estimatedTokensUsed: 104098, maxContextTokens: 256000 } },
+          },
+        },
+      },
+      {
+        stepIndices: [2, 3],
+        metadata: {
+          value: {
+            modelDisplayName: 'Gemini 3.8 Flash',
+            usage: { inputTokens: '500', cacheReadTokens: '104000', outputTokens: '40' },
+          },
+        },
+      },
+      {
+        // In-progress call startup metadata with chatStartMetadata but no usage tokens yet
+        stepIndices: [4, 5],
+        metadata: {
+          value: {
+            modelDisplayName: 'Gemini 3.8 Flash',
+            usage: {},
+            chatStartMetadata: { contextWindowMetadata: { estimatedTokensUsed: 112000, maxContextTokens: 256000 } },
+          },
+        },
+      },
+    ],
+  };
+
+  const info = usageCore.analyzeActiveConversation(traj, { cascadeId: 'thinking-in-progress' });
+  assert.equal(info.calls, 2, 'In-progress generatorMetadata without usage tokens must not inflate callList');
+  assert.ok(info.contextUsed >= 112000, 'chatStartMetadata on in-progress call should still update live contextUsed');
+  assert.equal(info.turnDetails.length, 2);
+  assert.equal(info.turnDetails[0].turn, 1);
+  assert.equal(info.turnDetails[0].inProgress, false, 'Completed Turn 1 must have inProgress=false');
+  assert.equal(info.turnDetails[1].turn, 2);
+  assert.equal(info.turnDetails[1].inProgress, true, 'Turn 2 with active thinking step (status=1) must have inProgress=true');
 });
