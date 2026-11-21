@@ -6,6 +6,7 @@ using System.IO;
 using System.Management;
 using System.Net.Http;
 using System.Net.WebSockets;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -18,6 +19,14 @@ namespace AgyClaudeStyle
         public string Title;
         public string Url;
         public string WebSocketDebuggerUrl;
+    }
+
+    public class EnsureAntigravityResult
+    {
+        public bool Ok;
+        public string Action;
+        public int? Port;
+        public string Message;
     }
 
     public class PluginManifest
@@ -381,7 +390,18 @@ namespace AgyClaudeStyle
 
     public static class CdpHelper
     {
+        public const int DefaultStartupGraceSeconds = 90;
+        private const int SW_RESTORE = 9;
         private static readonly HttpClient SharedHttp = new HttpClient { Timeout = TimeSpan.FromMilliseconds(2000) };
+
+        [DllImport("user32.dll")]
+        private static extern bool IsIconic(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+
+        [DllImport("user32.dll")]
+        private static extern bool SetForegroundWindow(IntPtr hWnd);
 
         public static string GetPortFilePath()
         {
@@ -765,12 +785,51 @@ namespace AgyClaudeStyle
             catch { }
         }
 
+        public static bool ActivateAntigravityWindow()
+        {
+            bool activated = false;
+            try
+            {
+                Process[] procs = Process.GetProcessesByName("Antigravity");
+                for (int i = 0; i < procs.Length; i++)
+                {
+                    try
+                    {
+                        if (!activated)
+                        {
+                            IntPtr hWnd = procs[i].MainWindowHandle;
+                            if (hWnd != IntPtr.Zero)
+                            {
+                                if (IsIconic(hWnd))
+                                {
+                                    ShowWindow(hWnd, SW_RESTORE);
+                                }
+                                SetForegroundWindow(hWnd);
+                                activated = true;
+                            }
+                        }
+                    }
+                    catch { }
+                    finally
+                    {
+                        try { procs[i].Dispose(); } catch { }
+                    }
+                }
+            }
+            catch { }
+            return activated;
+        }
+
         public static bool LaunchAntigravityWithCdp(string exePath, int port)
         {
             string target = !string.IsNullOrEmpty(exePath) ? exePath : FindAntigravityExePath();
             if (string.IsNullOrEmpty(target) || !File.Exists(target)) return false;
             try
             {
+                if (GetAntigravityProcessIds().Count == 0)
+                {
+                    RemoveStalePortFile();
+                }
                 ProcessStartInfo psi = new ProcessStartInfo();
                 psi.FileName = target;
                 psi.Arguments = "--remote-debugging-port=" + Math.Max(0, port);
@@ -823,6 +882,88 @@ namespace AgyClaudeStyle
             }
             RemoveStalePortFile();
             return LaunchAntigravityWithCdp(target, port);
+        }
+
+        public static async Task<EnsureAntigravityResult> EnsureAntigravityWithCdpAsync(
+            string exePath,
+            bool allowRelaunch,
+            int? overridePort,
+            int waitMs)
+        {
+            EnsureAntigravityResult result = new EnsureAntigravityResult();
+            int? port = ReadPort(overridePort);
+            if (port.HasValue)
+            {
+                try
+                {
+                    List<CdpPageInfo> pages = await ListPagesAsync(port.Value).ConfigureAwait(false);
+                    if (pages != null && pages.Count > 0)
+                    {
+                        ActivateAntigravityWindow();
+                        result.Ok = true;
+                        result.Action = "already-cdp";
+                        result.Port = port.Value;
+                        result.Message = "Antigravity 已在 CDP 调试模式运行 (端口 " + port.Value + ")";
+                        return result;
+                    }
+                }
+                catch { }
+            }
+
+            List<int> pids = GetAntigravityProcessIds();
+            if (pids.Count > 0)
+            {
+                if (HasAntigravityCdpFlag())
+                {
+                    ActivateAntigravityWindow();
+                    result.Ok = true;
+                    result.Action = "waiting-cdp";
+                    result.Port = null;
+                    result.Message = "检测到 Antigravity 已携带 --remote-debugging-port 参数，正在等待调试端口就绪...";
+                    return result;
+                }
+                if (allowRelaunch)
+                {
+                    bool relaunched = RelaunchAntigravityWithCdp(exePath, 0, waitMs);
+                    if (relaunched)
+                    {
+                        result.Ok = true;
+                        result.Action = "relaunched";
+                        result.Port = null;
+                        result.Message = "已温和重启 Antigravity 并启用 --remote-debugging-port=0";
+                    }
+                    else
+                    {
+                        result.Ok = false;
+                        result.Action = "relaunch-failed";
+                        result.Port = null;
+                        result.Message = "未能自动重启正在运行的 Antigravity（可能存在未保存更改）。请先完全退出 Antigravity 后重试。";
+                    }
+                    return result;
+                }
+                result.Ok = false;
+                result.Action = "running-without-cdp";
+                result.Port = null;
+                result.Message = CdpUnavailableMessage(true, port);
+                return result;
+            }
+
+            bool launched = LaunchAntigravityWithCdp(exePath, 0);
+            if (launched)
+            {
+                result.Ok = true;
+                result.Action = "launched";
+                result.Port = null;
+                result.Message = "已以 --remote-debugging-port=0 启动 Antigravity";
+            }
+            else
+            {
+                result.Ok = false;
+                result.Action = "executable-not-found";
+                result.Port = null;
+                result.Message = "未找到 Antigravity.exe，请确认已安装 Antigravity Desktop 后重试。";
+            }
+            return result;
         }
 
         public static string CdpUnavailableMessage(bool running, int? port)
