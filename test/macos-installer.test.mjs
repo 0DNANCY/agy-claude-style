@@ -85,19 +85,27 @@ function createMockCdpServer() {
         lastRemovedExpr = expr;
         claudeStyleMounted = false;
         result = { result: { type: 'object', value: { removed: 3 } } };
+      } else if (expr.includes("status: 'refreshed'")) {
+        result = { result: { type: 'object', value: claudeStyleMounted
+          ? { version: cdp.PLUGIN_VERSION, status: 'refreshed', state: { mounted: true } }
+          : null } };
       } else {
         lastInjectedExpr = expr;
         claudeStyleMounted = true;
-        const evalStatus = expr.includes("status: 'refreshed'") ? 'refreshed' : 'ok';
         result = {
           result: {
             type: 'object',
-            value: { version: cdp.PLUGIN_VERSION, status: evalStatus, state: { mounted: true } },
+            value: { version: cdp.PLUGIN_VERSION, status: 'ok', state: { mounted: true } },
           },
         };
       }
     }
-    sendWsMessage(socket, { id: msg.id, result });
+    // Expose the remove/add gap so tests must wait for the completed refresh.
+    if (msg.method === 'Page.removeScriptToEvaluateOnNewDocument') {
+      setTimeout(() => sendWsMessage(socket, { id: msg.id, result }), 300);
+    } else {
+      sendWsMessage(socket, { id: msg.id, result });
+    }
   }
 
   const server = http.createServer((req, res) => {
@@ -390,19 +398,24 @@ test(
 
       // 3. Test Runtime.bindingCalled -> config.json update & hot-reload
       const beforeCallCount = mockCdp.getCalls().length;
+      const nextPalette = expectedCfgObj.palette === 'obsidian' ? 'claude' : 'obsidian';
       mockCdp.emitBindingCalled(cdp.SETTING_BINDING, { key: 'palette', value: 'hacker-invalid' });
-      mockCdp.emitBindingCalled(cdp.SETTING_BINDING, { key: 'palette', value: 'claude' });
+      mockCdp.emitBindingCalled(cdp.SETTING_BINDING, { key: 'palette', value: nextPalette });
 
       const updatedCfg = await waitFor(() => {
         const parsed = JSON.parse(fs.readFileSync(path.join(installDir, 'config.json'), 'utf8'));
-        return parsed.palette === 'claude' ? parsed : null;
+        return parsed.palette === nextPalette ? parsed : null;
       });
-      assert.equal(updatedCfg.palette, 'claude');
+      assert.equal(updatedCfg.palette, nextPalette);
 
       // Confirm hot-reload fired on watcher without re-sending full ~1.4MB bundle over Page.addScriptToEvaluateOnNewDocument
       await waitFor(() => {
         const newer = mockCdp.getCalls().slice(beforeCallCount);
-        return newer.some((c) => c.method === 'Page.removeScriptToEvaluateOnNewDocument') ? true : null;
+        return newer.some((c) =>
+          c.method === 'Runtime.evaluate' &&
+          c.params?.expression?.includes("status: 'refreshed'") &&
+          c.params.expression.includes(`"palette":"${nextPalette}"`)
+        );
       });
       const reloadCalls = mockCdp.getCalls().slice(beforeCallCount);
       const reloadAddCalls = reloadCalls.filter((c) => c.method === 'Page.addScriptToEvaluateOnNewDocument');
@@ -444,7 +457,7 @@ test(
       assert.equal(upgradeResult.ok, true);
       assert.equal(upgradeResult.preservedExistingConfig, true);
       const cfgAfterUpgrade = JSON.parse(fs.readFileSync(path.join(installDir, 'config.json'), 'utf8'));
-      assert.equal(cfgAfterUpgrade.palette, 'claude');
+      assert.equal(cfgAfterUpgrade.palette, nextPalette);
 
       // 5. Test --uninstall from installed copy inside installDir
       const installedSelf = path.join(installDir, 'agy-claude-style-installer');
