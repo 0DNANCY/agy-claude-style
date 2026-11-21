@@ -1458,3 +1458,73 @@ test('acquireLock with allowGracefulDuplicateExit keeps fail-closed unknown/fore
     fs.rmSync(lockDir, { recursive: true, force: true });
   }
 });
+
+test('listPages includes Swarm sidecar iframe targets, excludes unrelated iframes, and inject expression skips CSS on plugin: sidecars', async () => {
+  const srv = http.createServer((req, res) => {
+    if (req.url === '/json/list') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(
+        JSON.stringify([
+          {
+            id: 'MAIN_PAGE',
+            type: 'page',
+            title: 'Antigravity',
+            url: 'https://127.0.0.1:2736/',
+            webSocketDebuggerUrl: 'ws://127.0.0.1:1/devtools/page/MAIN_PAGE',
+          },
+          {
+            id: 'SWARM_FRAME',
+            type: 'iframe',
+            title: 'Swarm',
+            url: 'plugin://swarm--swarm_board-42226/?token=abc&conversationId=123',
+            webSocketDebuggerUrl: 'ws://127.0.0.1:1/devtools/page/SWARM_FRAME',
+          },
+          {
+            id: 'OTHER_FRAME',
+            type: 'iframe',
+            title: 'Other Plugin',
+            url: 'plugin://other--panel-1234/',
+            webSocketDebuggerUrl: 'ws://127.0.0.1:1/devtools/page/OTHER_FRAME',
+          },
+          {
+            id: 'DEVTOOLS',
+            type: 'page',
+            title: 'DevTools',
+            url: 'devtools://devtools/bundled/inspector.html',
+            webSocketDebuggerUrl: 'ws://127.0.0.1:1/devtools/page/DEVTOOLS',
+          },
+          {
+            id: 'DATA_PAGE',
+            type: 'page',
+            title: 'Blank',
+            url: 'data:text/html,<html></html>',
+            webSocketDebuggerUrl: 'ws://127.0.0.1:1/devtools/page/DATA_PAGE',
+          },
+        ])
+      );
+      return;
+    }
+    res.writeHead(404);
+    res.end();
+  });
+
+  await new Promise((resolve) => srv.listen(0, '127.0.0.1', resolve));
+  try {
+    const port = srv.address().port;
+    const targets = await cdp.listPages(port);
+    assert.deepEqual(
+      targets.map((t) => t.id),
+      ['MAIN_PAGE', 'SWARM_FRAME']
+    );
+  } finally {
+    await new Promise((resolve) => srv.close(resolve));
+  }
+
+  const sidecarIdx = cdp.RUNTIME_PARTS.indexOf('sidecar-core.js');
+  const uiIdx = cdp.RUNTIME_PARTS.indexOf('ui-runtime.js');
+  assert.ok(sidecarIdx >= 0 && sidecarIdx < uiIdx, 'sidecar-core.js must load before ui-runtime.js');
+
+  const injectExpr = cdp.buildInjectExpression();
+  assert.ok(injectExpr.includes("location.protocol === 'plugin:'"), 'inject expression must guard CSS on sidecars');
+  assert.ok(cdp.REMOVE_EXPRESSION.includes('delete globalThis.__agCsSidecarCore'), 'REMOVE_EXPRESSION cleans __agCsSidecarCore');
+});

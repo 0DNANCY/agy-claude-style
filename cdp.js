@@ -129,18 +129,24 @@ function readPort() {
   }
 }
 
+const SWARM_SIDECAR_URL_PREFIX = 'plugin://swarm--';
+
+function isInjectableTarget(t) {
+  if (!t || !t.webSocketDebuggerUrl) return false;
+  const url = typeof t.url === 'string' ? t.url : '';
+  const lowerUrl = url.toLowerCase();
+  if (lowerUrl.startsWith('devtools://') || lowerUrl.startsWith('data:')) return false;
+  if (t.type === 'page') return true;
+  if (t.type === 'iframe' && lowerUrl.startsWith(SWARM_SIDECAR_URL_PREFIX)) return true;
+  return false;
+}
+
 async function listPages(port) {
   const res = await fetch(`http://127.0.0.1:${port}/json/list`, {
     signal: AbortSignal.timeout(2000),
   });
   const targets = await res.json();
-  return targets.filter(
-    (t) =>
-      t.type === 'page' &&
-      t.webSocketDebuggerUrl &&
-      !t.url.startsWith('devtools://') &&
-      !t.url.startsWith('data:')
-  );
+  return targets.filter(isInjectableTarget);
 }
 
 class CdpSession {
@@ -248,7 +254,7 @@ function readCss() {
   return fs.readFileSync(path.join(__dirname, 'style.css'), 'utf8');
 }
 
-const RUNTIME_PARTS = ['i18n-locales.js', 'i18n-core.js', 'usage-core.js', 'ripple-core.js', 'mascot-core.js', 'crab-assets.js', 'effort-core.js', 'perf-assets.js', 'ui-runtime.js'];
+const RUNTIME_PARTS = ['i18n-locales.js', 'i18n-core.js', 'sidecar-core.js', 'usage-core.js', 'ripple-core.js', 'mascot-core.js', 'crab-assets.js', 'effort-core.js', 'perf-assets.js', 'ui-runtime.js'];
 
 function readRuntimeBundle() {
   return RUNTIME_PARTS.map((f) => fs.readFileSync(path.join(__dirname, f), 'utf8')).join('\n');
@@ -290,8 +296,11 @@ function buildInjectExpression(customConfig) {
       if (mounted || !document.documentElement) return;
       mounted = true;
       try {
-        if (document.head) applyStyle();
-        else document.addEventListener('DOMContentLoaded', applyStyle, { once: true });
+        const isSidecar = typeof location !== 'undefined' && location.protocol === 'plugin:';
+        if (!isSidecar) {
+          if (document.head) applyStyle();
+          else document.addEventListener('DOMContentLoaded', applyStyle, { once: true });
+        }
         ${bundle}
         if (typeof globalThis.__agCsUiMain === 'function') {
           const baseCfg = ${JSON.stringify({ ...config, binding: SETTING_BINDING, codeHash })};
@@ -389,6 +398,7 @@ const REMOVE_EXPRESSION = `(() => {
   delete globalThis.__agCsEffortCore;
   delete globalThis.__agCsPerfAssets;
   delete globalThis.__agCsI18nCore;
+  delete globalThis.__agCsSidecarCore;
   delete globalThis.__agCsLocales;
   const root = document.documentElement;
   if (root) {
@@ -1233,6 +1243,8 @@ module.exports = {
   readConfig,
   updateConfigSetting,
   readPort,
+  SWARM_SIDECAR_URL_PREFIX,
+  isInjectableTarget,
   listPages,
   detectAntigravityProcess,
   findAntigravityExecutable,

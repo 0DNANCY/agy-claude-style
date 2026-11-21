@@ -79,7 +79,7 @@
 - **礼貌满分**：当输入框上方出现排队消息、`/` 命令菜单或问答确认卡片时，Clawd 会自觉调整留白或悄悄躲起来，绝不遮挡发送、编辑、删除等按钮。
 
 ### 🌐 6. 5 语言全局切换 & 设置面板原生集成
-- **5 语言全局本地化 (`language`)**：支持 **简体中文 (`zh-CN`) / 繁體中文 (`zh-TW`) / 粵語 (`yue`) / English (`en`) / 日本語 (`ja`)** 实时切换，作用于整个 Antigravity UI 及插件面板；自动跳过代码编辑器、终端、对话正文与 `data-ag-no-i18n` 保护区，移除插件时无损还原。
+- **5 语言全局本地化 (`language`)**：支持 **简体中文 (`zh-CN`) / 繁體中文 (`zh-TW`) / 粵語 (`yue`) / English (`en`) / 日本語 (`ja`)** 实时切换，作用于整个 Antigravity 主界面、Plan / Orchestrator 编排模式、插件面板以及 **Swarm 蜂群侧栏 (`plugin://swarm--` OOPIF)**；自动跳过代码编辑器、终端、对话/帖子正文与 `data-ag-no-i18n` 保护区，移除插件时无损还原。
 - **原生设置集成**：在 Antigravity `设置 → 外观` 底部自动注入 3 组共 20 项可视化开关，修改通过 CDP `Runtime.addBinding` 以轻量热更新即时生效，并经字段校验后原子写入 `config.json` 持久化。
 
 ---
@@ -338,7 +338,8 @@ agy-claude-style/
 ├── style.css                          # 全套主题调色板、首页 Studio、HUD 与滑块样式
 ├── ui-runtime.js                      # 主运行时：Store/Fiber 桥接、首页仪表盘、HUD 浮窗、设置面板集成
 ├── i18n-core.js                       # 5 语言 DOM 翻译引擎（含保护区与无损还原）
-├── i18n-locales.js                    # 简中 / 繁中 / 粤语 / 英文 / 日语多语言词典
+├── i18n-locales.js                    # 简中 / 繁中 / 粤语 / 英文 / 日语多语言词典（含 Swarm 与 Plan/Orchestrator）
+├── sidecar-core.js                    # Swarm 侧栏精简翻译运行时（跳过主样式注入并保护帖子/成员正文）
 ├── usage-core.js                      # 会话轨迹解析、Token 拆分、配额池匹配、热力图与书籍标尺计算
 ├── effort-core.js                     # 推理档位解析、阻尼刻度数学模型与 3 套滑块逻辑
 ├── mascot-core.js                     # 像素螃蟹 Clawd 状态机（休眠、唤醒、反应、状态优先级）

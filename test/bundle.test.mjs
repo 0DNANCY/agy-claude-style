@@ -3996,3 +3996,282 @@ test('unmountRipple tolerates zero-size .agy-home (field=null) and copy honestly
     for (const id of timers) clearTimeout(id);
   }
 });
+
+test('inject expression enters sidecar-lite mode on plugin://swarm-- iframe without CSS, syncs language via refreshConfig, and tears down cleanly', () => {
+  const FILTER_ACCEPT = 1;
+  const FILTER_REJECT = 2;
+  const FILTER_SKIP = 3;
+  const SHOW_ELEMENT = 1;
+  const SHOW_TEXT = 4;
+
+  function makeText(text) {
+    return {
+      nodeType: 3,
+      nodeValue: String(text),
+      parentElement: null,
+      parentNode: null,
+      isConnected: true,
+      childNodes: [],
+      children: [],
+    };
+  }
+
+  function matchesSimple(node, simple) {
+    let rest = simple.trim();
+    if (!rest) return false;
+    const tagM = /^[a-zA-Z0-9_-]+/.exec(rest);
+    if (tagM) {
+      if (node.tagName !== tagM[0].toUpperCase()) return false;
+      rest = rest.slice(tagM[0].length);
+    }
+    while (rest) {
+      if (rest[0] === '#') {
+        const m = /^#([a-zA-Z0-9_-]+)/.exec(rest);
+        if (!m || node.id !== m[1]) return false;
+        rest = rest.slice(m[0].length);
+      } else if (rest[0] === '.') {
+        const m = /^\.([a-zA-Z0-9_-]+)/.exec(rest);
+        if (!m || !node.classList.contains(m[1])) return false;
+        rest = rest.slice(m[0].length);
+      } else if (rest[0] === '[') {
+        const m = /^\[([^\]=*^$]+)(?:="([^"]*)")?\]/.exec(rest);
+        if (!m) return false;
+        const ok = m[2] === undefined ? node.hasAttribute(m[1]) : node.getAttribute(m[1]) === m[2];
+        if (!ok) return false;
+        rest = rest.slice(m[0].length);
+      } else {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  function matchesSelector(node, sel) {
+    if (!node || node.nodeType !== 1) return false;
+    return sel.split(',').some((part) => {
+      const tokens = part.trim().split(/\s+/).filter(Boolean);
+      if (!tokens.length || !matchesSimple(node, tokens[tokens.length - 1])) return false;
+      let cur = node.parentElement;
+      let idx = tokens.length - 2;
+      while (cur && idx >= 0) {
+        if (matchesSimple(cur, tokens[idx])) idx--;
+        cur = cur.parentElement;
+      }
+      return idx < 0;
+    });
+  }
+
+  function makeEl(tag, opts = {}) {
+    const attrs = new Map(Object.entries(opts.attrs || {}));
+    const classes = new Set((opts.className || '').split(/\s+/).filter(Boolean));
+    const childNodes = [];
+    const el = {
+      nodeType: 1,
+      tagName: tag.toUpperCase(),
+      id: opts.id || attrs.get('id') || '',
+      parentElement: null,
+      parentNode: null,
+      isConnected: true,
+      childNodes,
+      get children() {
+        return childNodes.filter((c) => c.nodeType === 1);
+      },
+      get lastElementChild() {
+        const ch = this.children;
+        return ch[ch.length - 1] || null;
+      },
+      classList: {
+        contains: (c) => classes.has(c),
+        add: (c) => classes.add(c),
+        remove: (c) => classes.delete(c),
+      },
+      appendChild(n) {
+        const item = typeof n === 'string' ? makeText(n) : n;
+        item.parentElement = this;
+        item.parentNode = this;
+        childNodes.push(item);
+        return item;
+      },
+      append(...nodes) {
+        for (const n of nodes) this.appendChild(n);
+        return this;
+      },
+      remove() {
+        if (!this.parentNode) return;
+        const idx = this.parentNode.childNodes.indexOf(this);
+        if (idx >= 0) this.parentNode.childNodes.splice(idx, 1);
+        this.parentNode = null;
+        this.parentElement = null;
+        this.isConnected = false;
+      },
+      setAttribute(k, v) {
+        attrs.set(k, String(v));
+        if (k === 'id') this.id = String(v);
+      },
+      getAttribute(k) {
+        return attrs.has(k) ? attrs.get(k) : null;
+      },
+      hasAttribute(k) {
+        return attrs.has(k);
+      },
+      removeAttribute(k) {
+        attrs.delete(k);
+      },
+      matches(sel) {
+        return matchesSelector(this, sel);
+      },
+      closest(sel) {
+        let cur = this;
+        while (cur) {
+          if (matchesSelector(cur, sel)) return cur;
+          cur = cur.parentElement;
+        }
+        return null;
+      },
+      contains(other) {
+        let cur = other;
+        while (cur) {
+          if (cur === this) return true;
+          cur = cur.parentElement;
+        }
+        return false;
+      },
+      querySelectorAll(sel) {
+        const out = [];
+        const walk = (n) => {
+          for (const c of n.childNodes) {
+            if (c.nodeType === 1) {
+              if (matchesSelector(c, sel)) out.push(c);
+              walk(c);
+            }
+          }
+        };
+        walk(this);
+        return out;
+      },
+      get textContent() {
+        return childNodes.map((c) => (c.nodeType === 3 ? c.nodeValue : c.textContent)).join('');
+      },
+      set textContent(v) {
+        childNodes.length = 0;
+        this.appendChild(makeText(v));
+      },
+    };
+    if (opts.text) el.appendChild(makeText(opts.text));
+    return el;
+  }
+
+  class MockMutationObserver {
+    observe() {}
+    disconnect() {}
+  }
+
+  const html = makeEl('html', { attrs: { lang: 'en' } });
+  const head = makeEl('head');
+  const body = makeEl('body');
+  html.append(head, body);
+
+  const tabBoard = makeEl('button', { text: 'Board' });
+  const select = makeEl('select', { id: 'f-agent' });
+  const optAll = makeEl('option', { text: 'From anyone' });
+  const optCoord = makeEl('option', { text: 'From coordinator' });
+  select.append(optAll, optCoord);
+  const msgBody = makeEl('div', { className: 'msg-body' });
+  const postText = makeEl('p', { text: 'Board' });
+  msgBody.append(postText);
+  body.append(tabBoard, select, msgBody);
+
+  const doc = {
+    nodeType: 9,
+    documentElement: html,
+    head,
+    body,
+    get childNodes() {
+      return [html];
+    },
+    defaultView: { MutationObserver: MockMutationObserver },
+    getElementById(id) {
+      return html.querySelectorAll(`#${id}`)[0] || null;
+    },
+    createElement(tag) {
+      return makeEl(tag);
+    },
+    querySelectorAll(sel) {
+      return html.querySelectorAll(sel);
+    },
+    addEventListener() {},
+    removeEventListener() {},
+    createTreeWalker(root, whatToShow, filter) {
+      const list = [];
+      const accept = (n) => {
+        if (n.nodeType === 1 && !(whatToShow & SHOW_ELEMENT)) return FILTER_SKIP;
+        if (n.nodeType === 3 && !(whatToShow & SHOW_TEXT)) return FILTER_SKIP;
+        if (filter && typeof filter.acceptNode === 'function') return filter.acceptNode(n);
+        return FILTER_ACCEPT;
+      };
+      const traverse = (node) => {
+        for (const ch of node.childNodes) {
+          const res = accept(ch);
+          if (res === FILTER_REJECT) continue;
+          if (res === FILTER_ACCEPT) list.push(ch);
+          if (ch.nodeType === 1) traverse(ch);
+        }
+      };
+      traverse(root);
+      let idx = -1;
+      return {
+        currentNode: null,
+        nextNode() {
+          idx += 1;
+          if (idx >= list.length) return false;
+          this.currentNode = list[idx];
+          return true;
+        },
+      };
+    },
+  };
+
+  const sandbox = {
+    console,
+    document: doc,
+    location: { protocol: 'plugin:', href: 'plugin://swarm--swarm_board-42226/?token=test' },
+    NodeFilter: { SHOW_ELEMENT, SHOW_TEXT, FILTER_ACCEPT, FILTER_REJECT },
+    MutationObserver: MockMutationObserver,
+  };
+  sandbox.window = sandbox;
+  sandbox.globalThis = sandbox;
+
+  const codeHash = cdp.computeHash(cdp.readRuntimeBundle());
+  const injectRes = vm.runInNewContext(
+    cdp.buildInjectExpression({ ...cdp.DEFAULT_CONFIG, language: 'zh-CN' }),
+    sandbox
+  );
+
+  assert.equal(injectRes.status, 'ok');
+  assert.equal(doc.getElementById(cdp.STYLE_ID), null, 'sidecar must not inject main style.css');
+  assert.equal(sandbox.window.__agClaudeStyle.sidecar, true);
+  assert.equal(sandbox.window.__agClaudeStyle.getState().language, 'zh-CN');
+  assert.equal(tabBoard.textContent, '看板');
+  assert.equal(optAll.textContent, '来自所有人');
+  assert.equal(optCoord.textContent, '来自 coordinator');
+  assert.equal(postText.textContent, 'Board');
+
+  // Lightweight config sync switches language live in Swarm sidecar
+  const refreshRes = vm.runInNewContext(
+    cdp.buildConfigScriptExpression({ ...cdp.DEFAULT_CONFIG, language: 'ja' }, codeHash),
+    sandbox
+  );
+  assert.equal(refreshRes.status, 'refreshed');
+  assert.equal(tabBoard.textContent, 'ボード');
+  assert.equal(optAll.textContent, 'すべての投稿者');
+  assert.equal(optCoord.textContent, '送信者: coordinator');
+
+  // Remove expression restores DOM text and cleans globals
+  vm.runInNewContext(cdp.REMOVE_EXPRESSION, sandbox);
+  assert.equal(tabBoard.textContent, 'Board');
+  assert.equal(optAll.textContent, 'From anyone');
+  assert.equal(optCoord.textContent, 'From coordinator');
+  assert.equal(html.getAttribute('lang'), 'en');
+  assert.equal(sandbox.window.__agClaudeStyle, undefined);
+  assert.equal(sandbox.globalThis.__agCsSidecarCore, undefined);
+});

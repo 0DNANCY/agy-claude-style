@@ -2,6 +2,11 @@
   if (typeof module === 'object' && module.exports) module.exports = factory;
   else root.__agCsUiMain = factory;
 })(typeof globalThis !== 'undefined' ? globalThis : window, function (initialConfig) {
+  const sidecarCore = globalThis.__agCsSidecarCore;
+  if (sidecarCore && typeof location !== 'undefined' && sidecarCore.isSidecarLocation(location)) {
+    return sidecarCore.mountSidecar(initialConfig);
+  }
+
   const VERSION = 2;
   const CODE_HASH = initialConfig?.codeHash || '';
   if (window.__agTokenHud) {

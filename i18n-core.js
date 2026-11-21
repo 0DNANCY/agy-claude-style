@@ -153,11 +153,21 @@
     }
   }
 
+  function joinSel(base, extra) {
+    if (!Array.isArray(extra) || !extra.length) return base;
+    const parts = extra.filter((s) => typeof s === 'string' && s.trim());
+    return parts.length ? base + ',' + parts.join(',') : base;
+  }
+
   /**
    * Create a reversible multi-locale DOM translator modeled after Claudized-Antigravity.
    * Restores every modified Text node and attribute in-place before switching locales or detaching.
    */
-  function createDomTranslator(resolveBundle) {
+  function createDomTranslator(resolveBundle, options = {}) {
+    const contentSel = joinSel(CONTENT, options && options.content);
+    const namesSel = joinSel(NAMES, options && options.names);
+    const controlsSel = joinSel(CONTROLS, options && options.controls);
+    const resolveExtraRules = typeof options?.extraRules === 'function' ? options.extraRules : null;
     const texts = new Map();
     const attrs = new Map();
     let observer = null;
@@ -182,7 +192,9 @@
 
     function compileBundle(nextBundle) {
       bundle = nextBundle;
-      compiledRules = (nextBundle.rules || []).map(([src, flags, to]) => ({
+      const baseRules = nextBundle.rules || [];
+      const extra = resolveExtraRules ? resolveExtraRules(nextBundle.lang) || [] : [];
+      compiledRules = baseRules.concat(extra).map(([src, flags, to]) => ({
         re: new RegExp(src, flags),
         to,
       }));
@@ -275,17 +287,17 @@
       if (closestSel(el, OPT_OUT)) return 0;
       const hard = closestSel(el, HARD);
       if (hard) {
-        const ctl = closestSel(el, CONTROLS);
+        const ctl = closestSel(el, controlsSel);
         return ctl && hard.contains(ctl) ? 2 : 0;
       }
-      const content = closestSel(el, CONTENT);
+      const content = closestSel(el, contentSel);
       if (content) {
-        const ctl = closestSel(el, CONTROLS);
+        const ctl = closestSel(el, controlsSel);
         return ctl && content.contains(ctl) ? 2 : 0;
       }
-      const names = closestSel(el, NAMES);
+      const names = closestSel(el, namesSel);
       if (!names) return 2;
-      const ctl = closestSel(el, CONTROLS);
+      const ctl = closestSel(el, controlsSel);
       return ctl && ctl !== names && names.contains(ctl) ? 2 : 1;
     }
 
@@ -341,7 +353,7 @@
 
     function walkControlsIn(el) {
       if (!el || typeof el.querySelectorAll !== 'function' || closestSel(el, OPT_OUT)) return;
-      for (const ctl of el.querySelectorAll(CONTROLS)) {
+      for (const ctl of el.querySelectorAll(controlsSel)) {
         if (!closestSel(ctl, OPT_OUT)) walk(ctl);
       }
     }
@@ -352,8 +364,8 @@
       if (root.nodeType !== 1 && root.nodeType !== 9) return;
       if (root.nodeType === 1) {
         if (closestSel(root, OPT_OUT)) return;
-        const fenced = closestSel(root, HARD) || closestSel(root, CONTENT);
-        if (fenced && !(closestSel(root, CONTROLS) && fenced.contains(closestSel(root, CONTROLS)))) {
+        const fenced = closestSel(root, HARD) || closestSel(root, contentSel);
+        if (fenced && !(closestSel(root, controlsSel) && fenced.contains(closestSel(root, controlsSel)))) {
           if (matchesSel(root, FIELD)) doAttrs(root);
           return walkControlsIn(root);
         }
@@ -366,7 +378,7 @@
         acceptNode: (n) => {
           if (n.nodeType !== 1) return NodeFilter.FILTER_ACCEPT;
           if (matchesSel(n, OPT_OUT)) return NodeFilter.FILTER_REJECT;
-          if (matchesSel(n, HARD) || matchesSel(n, CONTENT)) {
+          if (matchesSel(n, HARD) || matchesSel(n, contentSel)) {
             if (matchesSel(n, FIELD)) doAttrs(n);
             contents.push(n);
             return NodeFilter.FILTER_REJECT;

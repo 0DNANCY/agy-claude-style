@@ -5,6 +5,7 @@ import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const i18nCore = require('../i18n-core.js');
 const i18nLocales = require('../i18n-locales.js');
+const sidecarCore = require('../sidecar-core.js');
 
 function createMiniDom() {
   const FILTER_ACCEPT = 1;
@@ -390,6 +391,150 @@ test('createDomTranslator translates full Antigravity UI across all 5 locales, g
     assert.equal(modelBtn.getAttribute('aria-label'), 'Select model, current: Gemini 4 Hydrogen (High)');
     assert.equal(homeGreeting.textContent, 'Welcome back, girl. Where should we pick up?');
     assert.equal(copyCodeBtn.textContent, 'Copy code');
+
+    translator.destroy();
+  } finally {
+    globalThis.NodeFilter = prevNF;
+    globalThis.MutationObserver = prevMO;
+  }
+});
+
+test('i18n-locales dictionary has unique English keys, complete 5-language rows, and valid regex rules', () => {
+  const seen = new Set();
+  for (const row of i18nLocales.DICT_ROWS) {
+    assert.equal(typeof row[0], 'string');
+    assert.ok(row[0].length > 0);
+    assert.equal(seen.has(row[0]), false, `Duplicate DICT_ROWS key: ${row[0]}`);
+    seen.add(row[0]);
+    assert.equal(row.length, 5, `Row must have 5 columns for ${row[0]}`);
+    for (let col = 1; col < 5; col++) {
+      const val = row[col];
+      if (typeof val === 'string') {
+        assert.ok(val.length > 0, `Empty translation at col ${col} for ${row[0]}`);
+      } else {
+        assert.equal(typeof val, 'object', `Expected string or selector map at col ${col} for ${row[0]}`);
+        assert.ok(val && typeof val['*'] === 'string' && val['*'].length > 0, `Missing default '*' for ${row[0]}`);
+      }
+    }
+  }
+
+  for (const lang of ['zh-CN', 'zh-TW', 'yue', 'ja']) {
+    const bundle = i18nLocales.resolveLocaleBundle(lang);
+    assert.ok(bundle && bundle.dict && Array.isArray(bundle.rules));
+    for (const [src, flags, to] of bundle.rules) {
+      assert.doesNotThrow(() => new RegExp(src, flags), `Invalid regex ${src} in ${lang}`);
+      assert.equal(typeof to, 'string');
+    }
+    for (const [src, flags, to] of sidecarCore.getSwarmExtraRules(lang)) {
+      assert.doesNotThrow(() => new RegExp(src, flags), `Invalid swarm extra regex ${src} in ${lang}`);
+      assert.equal(typeof to, 'string');
+    }
+  }
+});
+
+test('Swarm sidecar translator translates chrome, <select><option>, dynamic rules, and Plan/Orchestrator UI while protecting user content', () => {
+  const { doc, html, body, makeEl, NodeFilter, MutationObserver } = createMiniDom();
+  const prevNF = globalThis.NodeFilter;
+  const prevMO = globalThis.MutationObserver;
+  globalThis.NodeFilter = NodeFilter;
+  globalThis.MutationObserver = MutationObserver;
+
+  try {
+    const header = makeEl('header');
+    const swarmTitle = makeEl('h1', { id: 'swarm-title', text: 'Board' }); // user title must stay untouched
+    const liveLabel = makeEl('span', { id: 'live-label', text: 'Live' });
+    const tabOverview = makeEl('button', { text: 'Overview' });
+    const tabBoard = makeEl('button', { text: 'Board' });
+    const tabMembers = makeEl('button', { text: 'Members' });
+    const tabGraph = makeEl('button', { text: 'Graph' });
+    header.append(swarmTitle, liveLabel, tabOverview, tabBoard, tabMembers, tabGraph);
+
+    const overviewSec = makeEl('section', { id: 'tab-overview' });
+    const ovBlocked = makeEl('span', { text: 'Blocked' });
+    const ovNow = makeEl('span', { text: 'Now' });
+    const ovRunning = makeEl('span', { text: 'Running' });
+    const ovTask = makeEl('b', { className: 'o2-runt', text: 'Overview' }); // user task title protected
+    const ovWait = makeEl('span', { text: 'Waiting on @worker-1' });
+    const ovDone = makeEl('p', { text: '3 of 5 tasks done' });
+    overviewSec.append(ovBlocked, ovNow, ovRunning, ovTask, ovWait, ovDone);
+
+    const filterSelect = makeEl('select', {
+      id: 'f-agent',
+      attrs: { 'aria-label': 'Filter by poster', title: 'Show posts by one member' },
+    });
+    const optAny = makeEl('option', { text: 'From anyone' });
+    const optCoord = makeEl('option', { text: 'From coordinator' });
+    filterSelect.append(optAny, optCoord);
+
+    const unreadDivider = makeEl('div', { attrs: { 'data-testid': 'swarm-unread-divider' }, text: 'New' });
+
+    const msgBody = makeEl('div', { className: 'msg-body' });
+    const msgProse = makeEl('p', { text: 'Export GIF' }); // prose inside .msg-body must stay untouched
+    const msgMoreBtn = makeEl('button', { text: 'Show more' }); // button inside .msg-body IS translated
+    msgBody.append(msgProse, msgMoreBtn);
+
+    const planArea = makeEl('div');
+    const orchTitle = makeEl('h3', { text: 'Orchestrator Settings' });
+    const orchModel = makeEl('span', { text: 'Orchestrator Model' });
+    const execModel = makeEl('span', { text: 'Executor Model' });
+    const olderBtn = makeEl('button', {
+      attrs: { 'aria-label': 'No more older messages, showing 41 of 41' },
+      text: 'No more older messages',
+    });
+    planArea.append(orchTitle, orchModel, execModel, olderBtn);
+
+    body.append(header, overviewSec, filterSelect, unreadDivider, msgBody, planArea);
+
+    const translator = i18nCore.createDomTranslator(i18nLocales.resolveLocaleBundle, {
+      content: sidecarCore.SWARM_CONTENT_SELECTORS,
+      names: sidecarCore.SWARM_NAME_SELECTORS,
+      controls: sidecarCore.SWARM_CONTROL_SELECTORS,
+      extraRules: sidecarCore.getSwarmExtraRules,
+    });
+
+    translator.setLanguage('zh-CN', doc);
+    assert.equal(swarmTitle.textContent, 'Board');
+    assert.equal(liveLabel.textContent, '实时');
+    assert.equal(tabOverview.textContent, '概览');
+    assert.equal(tabBoard.textContent, '看板');
+    assert.equal(tabMembers.textContent, '成员');
+    assert.equal(tabGraph.textContent, '图谱');
+    assert.equal(ovBlocked.textContent, '受阻');
+    assert.equal(ovNow.textContent, '当前');
+    assert.equal(ovRunning.textContent, '运行中');
+    assert.equal(ovTask.textContent, 'Overview');
+    assert.equal(ovWait.textContent, '等待 @worker-1 响应');
+    assert.equal(ovDone.textContent, '已完成 3 / 5 项任务');
+    assert.equal(filterSelect.getAttribute('aria-label'), '按发帖成员筛选');
+    assert.equal(filterSelect.getAttribute('title'), '仅显示某位成员的帖子');
+    assert.equal(optAny.textContent, '来自所有人');
+    assert.equal(optCoord.textContent, '来自 coordinator');
+    assert.equal(unreadDivider.textContent, '新消息');
+    assert.equal(msgProse.textContent, 'Export GIF');
+    assert.equal(msgMoreBtn.textContent, '显示更多');
+    assert.equal(orchTitle.textContent, '编排器设置');
+    assert.equal(orchModel.textContent, '规划模型');
+    assert.equal(execModel.textContent, '执行模型');
+    assert.equal(olderBtn.textContent, '没有更早的消息了');
+    assert.equal(olderBtn.getAttribute('aria-label'), '没有更早的消息了（当前 41 / 41）');
+
+    translator.setLanguage('ja', doc);
+    assert.equal(tabBoard.textContent, 'ボード');
+    assert.equal(ovBlocked.textContent, 'ブロック中');
+    assert.equal(ovNow.textContent, '現在');
+    assert.equal(optAny.textContent, 'すべての投稿者');
+    assert.equal(optCoord.textContent, '送信者: coordinator');
+    assert.equal(unreadDivider.textContent, '新着');
+    assert.equal(orchTitle.textContent, 'オーケストレーター設定');
+
+    translator.setLanguage('en', doc);
+    assert.equal(html.getAttribute('lang'), 'en');
+    assert.equal(tabBoard.textContent, 'Board');
+    assert.equal(optAny.textContent, 'From anyone');
+    assert.equal(optCoord.textContent, 'From coordinator');
+    assert.equal(unreadDivider.textContent, 'New');
+    assert.equal(orchTitle.textContent, 'Orchestrator Settings');
+    assert.equal(olderBtn.getAttribute('aria-label'), 'No more older messages, showing 41 of 41');
 
     translator.destroy();
   } finally {

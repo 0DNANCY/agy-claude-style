@@ -448,7 +448,10 @@ namespace AgyClaudeStyle
                 string type = GetStr(t, "type");
                 string wsUrl = GetStr(t, "webSocketDebuggerUrl");
                 string pageUrl = GetStr(t, "url") ?? "";
-                if (type == "page" &&
+                bool isPage = type == "page";
+                bool isSwarmSidecar = type == "iframe" &&
+                    pageUrl.StartsWith("plugin://swarm--", StringComparison.OrdinalIgnoreCase);
+                if ((isPage || isSwarmSidecar) &&
                     !string.IsNullOrEmpty(wsUrl) &&
                     !pageUrl.StartsWith("devtools://", StringComparison.OrdinalIgnoreCase) &&
                     !pageUrl.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
@@ -663,8 +666,11 @@ namespace AgyClaudeStyle
             sb.Append("      if (mounted || !document.documentElement) return;\n");
             sb.Append("      mounted = true;\n");
             sb.Append("      try {\n");
-            sb.Append("        if (document.head) applyStyle();\n");
-            sb.Append("        else document.addEventListener('DOMContentLoaded', applyStyle, { once: true });\n");
+            sb.Append("        const isSidecar = typeof location !== 'undefined' && location.protocol === 'plugin:';\n");
+            sb.Append("        if (!isSidecar) {\n");
+            sb.Append("          if (document.head) applyStyle();\n");
+            sb.Append("          else document.addEventListener('DOMContentLoaded', applyStyle, { once: true });\n");
+            sb.Append("        }\n");
             sb.Append("        ").Append(bundle).Append('\n');
             sb.Append("        if (typeof globalThis.__agCsUiMain === 'function') {\n");
             sb.Append("          const baseCfg = ").Append(MiniJson.Stringify(initCfg, false)).Append(";\n");

@@ -422,7 +422,9 @@ enum CdpHelper {
             let wsUrl = t["webSocketDebuggerUrl"]?.stringValue ?? ""
             let pageUrl = t["url"]?.stringValue ?? ""
             let lowerUrl = pageUrl.lowercased()
-            if type == "page" && !wsUrl.isEmpty && !lowerUrl.hasPrefix("devtools://") && !lowerUrl.hasPrefix("data:") {
+            let isPage = type == "page"
+            let isSwarmSidecar = type == "iframe" && lowerUrl.hasPrefix("plugin://swarm--")
+            if (isPage || isSwarmSidecar) && !wsUrl.isEmpty && !lowerUrl.hasPrefix("devtools://") && !lowerUrl.hasPrefix("data:") {
                 let id = t["id"]?.stringValue ?? wsUrl
                 let title = t["title"]?.stringValue ?? ""
                 pages.append(CdpPageInfo(id: id, title: title, url: pageUrl, webSocketDebuggerUrl: wsUrl))
@@ -568,8 +570,11 @@ enum CdpHelper {
         sb.append("      if (mounted || !document.documentElement) return;\n")
         sb.append("      mounted = true;\n")
         sb.append("      try {\n")
-        sb.append("        if (document.head) applyStyle();\n")
-        sb.append("        else document.addEventListener('DOMContentLoaded', applyStyle, { once: true });\n")
+        sb.append("        const isSidecar = typeof location !== 'undefined' && location.protocol === 'plugin:';\n")
+        sb.append("        if (!isSidecar) {\n")
+        sb.append("          if (document.head) applyStyle();\n")
+        sb.append("          else document.addEventListener('DOMContentLoaded', applyStyle, { once: true });\n")
+        sb.append("        }\n")
         sb.append("        ")
         sb.append(bundle)
         sb.append("\n")
