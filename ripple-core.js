@@ -194,6 +194,10 @@
         moving = true;
       },
       advance(seconds) {
+        if (!moving && sources.length === 0) {
+          behind = 0;
+          return;
+        }
         behind += Math.min(seconds, MAX_ADVANCE);
         while (behind >= WAVE_STEP) {
           step();

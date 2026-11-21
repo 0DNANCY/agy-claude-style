@@ -73,3 +73,14 @@ test('cloudClear keeps subtle atmospheric range without over-brightening idle da
   assert.ok(min < 0.35, `expected low cloud valley (< 0.35), got ${min}`);
   assert.ok(max >= min);
 });
+
+test('createWaveField idle advance short-circuits cleanly without disturbing rest state', () => {
+  const wf = rippleCore.createWaveField(12, 8, () => 0.5);
+  assert.equal(wf.active(), false);
+  wf.advance(0.05);
+  wf.advance(0.05);
+  assert.equal(wf.active(), false);
+  for (let i = 0; i < wf.height.length; i++) {
+    assert.equal(wf.height[i], 0);
+  }
+});

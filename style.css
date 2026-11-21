@@ -1338,6 +1338,15 @@ html[data-ag-cs-style] [data-ag-cs-effort="extra"] { color: var(--ag-cs-effort-x
   height: 14px;
   transform: rotate(-90deg);
 }
+.ag-cs-context-ring[data-ctx-low="warn"] {
+  background: rgba(251, 179, 21, 0.14);
+  color: #fbb315;
+}
+.ag-cs-context-ring[data-ctx-low="danger"] {
+  background: rgba(220, 60, 61, 0.16);
+  color: #f87171;
+  box-shadow: 0 0 0 1px rgba(220, 60, 61, 0.35);
+}
 
 /* Progressive narrow-footer collapse ladder via Antigravity's @container/input-footer */
 @container input-footer (max-width: 630px) {
@@ -1852,6 +1861,11 @@ html[data-ag-cs-style] #ag-cs-settings-sec [role="group"] button[data-pressed] {
   font-size: 14px;
   padding: 0 6px;
 }
+.ag-cs-ctx-act-btn[data-action-state="error"] {
+  border-color: rgba(220, 60, 61, 0.65);
+  background: rgba(220, 60, 61, 0.14);
+  color: #f87171;
+}
 
 .ag-cs-ctx-hero {
   display: flex;
@@ -1886,6 +1900,32 @@ html[data-ag-cs-style] #ag-cs-settings-sec [role="group"] button[data-pressed] {
 }
 .ag-cs-ctx-quota-pill {
   font-weight: 600;
+}
+.ag-cs-ctx-warn-banner {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  padding: 5px 8px;
+  border-radius: 7px;
+  border: 1px solid rgba(251, 179, 21, 0.42);
+  background: rgba(251, 179, 21, 0.12);
+  color: #fbbf24;
+  font-size: 11px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease;
+}
+.ag-cs-ctx-warn-banner:hover {
+  background: rgba(251, 179, 21, 0.2);
+}
+.ag-cs-ctx-warn-banner[data-ctx-low="danger"] {
+  border-color: rgba(220, 60, 61, 0.5);
+  background: rgba(220, 60, 61, 0.14);
+  color: #f87171;
+}
+.ag-cs-ctx-warn-banner[data-ctx-low="danger"]:hover {
+  background: rgba(220, 60, 61, 0.22);
 }
 
 .ag-cs-ctx-bar {
@@ -2334,6 +2374,18 @@ html[data-ag-cs-style] #ag-cs-settings-sec [role="group"] button[data-pressed] {
   align-items: center;
   flex-shrink: 0;
   cursor: pointer;
+}
+.ag-cs-hud-compact-btn[data-ctx-low="warn"] {
+  border-color: rgba(251, 179, 21, 0.55);
+  background: rgba(251, 179, 21, 0.16);
+  color: #fbbf24;
+  font-weight: 600;
+}
+.ag-cs-hud-compact-btn[data-ctx-low="danger"] {
+  border-color: rgba(220, 60, 61, 0.65);
+  background: rgba(220, 60, 61, 0.18);
+  color: #f87171;
+  font-weight: 600;
 }
 .ag-cs-hud-footer-chip {
   order: 5;

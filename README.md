@@ -17,7 +17,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-8FA4FF?style=flat-square" alt="License: MIT" /></a>
 </p>
 
-[✨ 核心特性](#核心特性) · [🦀 Clawd 饲养指南](#clawd-饲养指南) · [🚀 马上领养](#快速开始) · [⚙️ 配置调教](#配置说明) · [🗂️ 项目结构](#项目结构) · [💌 来源声明](#来源声明)
+[✨ 核心特性](#核心特性) · [🦀 Clawd 饲养指南](#clawd-饲养指南) · [🔄 运行模式](#运行模式对比) · [🚀 马上领养](#快速开始) · [⚙️ 配置调教](#配置说明) · [🗂️ 项目结构](#项目结构) · [💌 来源声明](#来源声明)
 
 </div>
 
@@ -33,6 +33,7 @@
 - [🦀 小螃蟹 Clawd 饲养指南](#clawd-饲养指南)
 - [🎒 环境要求](#环境要求)
 - [🚀 快速开始](#快速开始)
+  - [🔄 运行模式对比：托管启动 vs 常驻守护](#运行模式对比)
   - [🪟 方式一：Windows 独立安装器（目标机器无需 Node.js）](#方式一windows-独立安装器目标机器无需-nodejs)
   - [🍎 方式二：macOS 独立应用（目标机器无需 Node.js）](#方式二macos-独立应用目标机器无需-nodejs)
   - [💻 方式三：Node.js 脚本模式（Windows / macOS / Linux）](#方式三nodejs-脚本模式windows--macos--linux)
@@ -64,14 +65,14 @@
 - **梁武峰 (`liangwufeng`)**：内置 31 帧 320×320 WebP 抠像人像背景，支持 `performanceBackdrop`（`card` 卡片内 / `page` 全窗口 / `off` 关闭）三种渲染模式。
 
 ### 📊 4. 贴心 Token HUD 与右下角电量小圆环
-- **右下角剩余用量圆环 (`ringMode`)**：支持在**当前上下文剩余可用百分比 (`context`)** 与**模型配额剩余百分比 (`quota`)** 之间切换，随剩余容量动态变色提示（🔵 `>30%` 元气满满 · 🟡 `≤30%` 注意补水 · 🔴 `≤10%` 快见底啦）；点击圆环直达对应标签页。
+- **右下角剩余用量圆环 (`ringMode`) & 低余量告警**：支持在**当前上下文剩余可用百分比 (`context`)** 与**模型配额剩余百分比 (`quota`)** 之间切换，随剩余容量动态变色提示（🔵 `>30%` 元气满满 · 🟡 `≤30%` 注意补水 · 🔴 `≤10%` 快见底啦）；当上下文余量 **`≤20%`（黄色提醒）** 或 **`≤10%`（红色紧急告警）** 时，`context` 模式圆环、`hudTopBar` `/compact` 按钮及浮窗顶部横幅会高亮提示，点击横幅或 `/compact` 即可向**当前所在对话输入框**精准填入 `/compact`。
 - **每轮对话 Token 徽章 (`turnBadges`)**：在每轮 AI 回复底部展示 `#T{n}` 模型名、上下文总量与本轮增量、输出与思考 Token、工具调用次数、子代理汇总、输出速率（`tok/s`）及缓存命中率。
 - **4 标签页深度遥测浮窗**：
-  - **上下文拆分**：展示系统提示与规则、工具声明、对话历史消息、工具执行结果明细（支持展开查看）、实时草稿 Token 估算，并提供一键填充 `/compact` 与复制遥测报告操作。
+  - **上下文拆分**：展示系统提示与规则、工具声明、对话历史消息、工具执行结果明细（支持展开查看）、实时草稿 Token 估算（输入时局部平滑刷新），并提供低余量警示横幅一键填充 `/compact` 与复制遥测报告摘要操作（成功显示 `✓ 已复制`，剪贴板写入失败或不可用时明确提示 `✕ 失败`）。
   - **对话轮次**：按轮次回溯上下文增长与每轮耗时速率详情。
   - **工具与子代理**：统计子代理调用明细与工具结果 Token 排行榜。
   - **模型配额**：实时查看各模型配额池剩余百分比与 5h / 周重置倒计时 ⏳。
-- **可选环绕式 HUD**：提供 `hudTopBar`、`hudBottomBar`、`hudRimProgress`、`hudFooterChip`、`hudCompact` 五项可折叠增强开关，默认关闭，按需启用。
+- **可选环绕式 HUD**：提供 `hudTopBar`、`hudBottomBar`、`hudRimProgress`、`hudFooterChip`、`hudCompact` 五项可折叠增强开关，默认关闭，按需启用；其中开启 `hudBottomBar` 后，**即使 `ringMode` 处于 `context` 模式也会同步拉取并展示当前模型配额余量**。
 
 ### 🦀 5. 像素螃蟹小跟班 `Clawd` (`mascot`)
 - 在输入框右上角蹲着一只超有戏的像素小螃蟹 `Clawd`（内置 **19 套双层精灵图动画**），会跟着对话节奏在 `idle`、`thinking`、`typing`、`error`、`sleeping`、`waking` 等状态间切换，无聊了还会自己抱着小本本摸鱼或对你招手 👋。
@@ -79,7 +80,7 @@
 
 ### 🌐 6. 5 语言全局切换 & 设置面板原生集成
 - **5 语言全局本地化 (`language`)**：支持 **简体中文 (`zh-CN`) / 繁體中文 (`zh-TW`) / 粵語 (`yue`) / English (`en`) / 日本語 (`ja`)** 实时切换，作用于整个 Antigravity UI 及插件面板；自动跳过代码编辑器、终端、对话正文与 `data-ag-no-i18n` 保护区，移除插件时无损还原。
-- **原生设置集成**：在 Antigravity `设置 → 外观` 底部自动注入 3 组共 20 项可视化开关，修改通过 CDP `Runtime.addBinding` 即时生效并持久化写入 `config.json`。
+- **原生设置集成**：在 Antigravity `设置 → 外观` 底部自动注入 3 组共 20 项可视化开关，修改通过 CDP `Runtime.addBinding` 以轻量热更新即时生效，并经字段校验后原子写入 `config.json` 持久化。
 
 ---
 
@@ -124,9 +125,9 @@ Clawd 是由 [crab-assets.js](crab-assets.js) 与 [mascot-core.js](mascot-core.j
 
 > [!IMPORTANT]
 > **Antigravity 2.33.0+ 启动说明**：从 `2.33.0` 起，Antigravity 不再默认生成 `DevToolsActivePort`，需附加 `--remote-debugging-port=0` 启动参数：
-> - **macOS**：完全退出（`Cmd + Q`）后运行 `./launch.sh` 或 `open -a Antigravity --args --remote-debugging-port=0`（安装器也会在配置目录生成 `launch-antigravity.command`，并在界面提供一键「以 CDP 模式重启」）。
-> - **Windows**：完全退出后运行 `launch.bat` 或使用安装器创建的「开始菜单 → `Antigravity (AGY Claude Style)`」快捷方式（带 `--remote-debugging-port=0`）。
-> - **默认自动接管**：默认启用 `"autoRelaunchWithCdp": true`，守护进程检测到 Antigravity 已运行但未开启 CDP（且未携带 `--remote-debugging-port` 启动参数）时会自动温和重启一次并附加调试参数；如需关闭可在 `config.json` 中设为 `false`。
+> - **macOS**：推荐使用安装器生成的 `Antigravity (AGY Claude Style).app`、`launch-antigravity.command`，或在脚本模式运行 `npm run managed` / `./launch.sh --relaunch`（自动附加 `--remote-debugging-port=0` 启动或温和重启，并拉起随宿主退出 watcher）。也可手动 `open -a Antigravity --args --remote-debugging-port=0`。
+> - **Windows**：推荐使用安装器创建的桌面 / 开始菜单「`Antigravity (AGY Claude Style)`」快捷方式（`Antigravity (AGY Claude Style).lnk`），或在脚本模式运行 `npm run managed` / `launch.bat --relaunch`（自动附加 `--remote-debugging-port=0` 启动或温和重启，并拉起随宿主退出 watcher）。
+> - **默认自动接管**：默认启用 `"autoRelaunchWithCdp": true`，在**托管一键启动**（原生快捷方式 / `.app` / `.command` / `npm run managed`）与**常驻守护**模式下，检测到 Antigravity 已运行但未开启 CDP（且未携带 `--remote-debugging-port` 启动参数）时都会自动温和重启一次并附加调试参数；如需关闭可在 `config.json` 中设为 `false`。
 - **Node.js >= 22**（仅脚本模式、测试与从源码构建安装器需要）：项目零第三方 npm 依赖，直接使用 Node.js 内置的 `fetch`、`WebSocket` 与 `node:test`。
 - **.NET Framework 4.x (`csc.exe`)**（仅在 Windows 上从源码构建独立安装包时需要，Windows 10/11 系统默认自带）。
 - **Xcode Command Line Tools (`swiftc`)**（仅在 macOS 上从源码构建 `.app` / `.dmg` 时需要，macOS 安装命令行工具后自带）。
@@ -134,12 +135,32 @@ Clawd 是由 [crab-assets.js](crab-assets.js) 与 [mascot-core.js](mascot-core.j
 ---
 
 <a id="快速开始"></a>
-<a id="方式一windows-独立安装器目标机器无需-nodejs"></a>
 ## 🚀 快速开始
 
 > [!TIP]
 > **开箱即用**：不想自己编译？可直接前往仓库 [Releases](https://github.com/0DNANCY/agy-claude-style/releases) 下载 GitHub Actions 自动编译发布的 `AGY-Claude-Style-v<version>-Windows-x64.exe`（Windows）或 `AGY-Claude-Style-v<version>-macOS-universal.dmg`（macOS Universal，支持 Apple Silicon 与 Intel），目标机器无需安装 Node.js！
 
+<a id="运行模式对比"></a>
+### 🔄 运行模式对比：托管启动（推荐默认） vs 常驻守护
+
+AGY Claude Style 提供两种运行模式。**默认推荐「托管启动模式」**，平时无需任何后台进程驻留；如果你习惯直接点击系统原版 Antigravity 图标启动，也可以一键切换为「常驻守护模式」：
+
+| 对比维度 | 🦀 托管启动模式（免后台常驻 · **推荐默认**） | 🛰️ 常驻守护模式（开机自启 · 兼容原习惯） |
+| --- | --- | --- |
+| **开机自启** | ❌ 不注册开机自启 | ✅ 注册开机自启（Windows Startup / macOS `LaunchAgent`） |
+| **平时后台驻留** | **0 进程常驻**（未启动 Antigravity 时不占任何后台进程） | 1 个轻量原生守护进程在后台持续监听 |
+| **日常启动入口** | 通过插件启动入口打开：<br/>• Windows：开始菜单 / 桌面「`Antigravity (AGY Claude Style)`」快捷方式<br/>• macOS：`Antigravity (AGY Claude Style).app` 或 `launch-antigravity.command`<br/>• 脚本模式：`launch.bat` / `./launch.sh` / `npm run managed` | 直接点击系统原版 Antigravity 桌面或程序坞图标 |
+| **CDP 启动与接管** | 自动附加 `--remote-debugging-port=0` 启动（若已运行且未开 CDP，快捷方式/启动器及 `npm run managed` 会自动温和重启；`launch.bat` / `./launch.sh` 可加 `--relaunch`），并拉起带 `--exit-on-host-close` 的 watcher | 后台持续监听 CDP；若发现未开 CDP 的实例且 `autoRelaunchWithCdp` 为 `true` 时自动温和重启接管 |
+| **关闭后行为与宽限保护** | Antigravity 所有窗口及进程关闭后 **watcher 自动退出**，不留后台进程；且内置 **90 秒启动宽限保护**（`--startup-grace`），防止启动失败或中途取消时孤儿进程挂起 | 持续在后台待命等待下次启动（除非在 `config.json` 中手动设置 `"exitOnHostClose": true`） |
+
+> [!NOTE]
+> **零侵入安全原则与自由切换**：
+> - 两种模式均严格遵守**零修改 Antigravity 安装目录文件**、**不使用 DLL 劫持或 IFEO 映像劫持**、**零安全误报**的原则。
+> - 安装后可**随时重新运行安装器**（在界面直接切换模式，或传入 `--mode=managed` / `--mode=daemon`）在两种模式间自由切换；从常驻守护切回托管启动时，安装器会自动卸载并删除开机自启项、停止原常驻后台进程。
+
+---
+
+<a id="方式一windows-独立安装器目标机器无需-nodejs"></a>
 ### 🪟 方式一：Windows 独立安装器（目标机器无需 Node.js）
 
 1. 直接从 [Releases](https://github.com/0DNANCY/agy-claude-style/releases) 下载 `AGY-Claude-Style-v1.3.0-Windows-x64.exe`（对应版本），或在已安装 Node.js >= 22 的 Windows 环境克隆仓库从源码构建：
@@ -151,18 +172,27 @@ Clawd 是由 [crab-assets.js](crab-assets.js) 与 [mascot-core.js](mascot-core.j
    构建完成后会在项目根目录生成带有像素螃蟹图标的单文件 `AGY-Claude-Style-v<version>-Windows-x64.exe` 🦀。
 
 2. 双击运行 `AGY-Claude-Style-v<version>-Windows-x64.exe`（可分发到未安装 Node.js 的 Windows 电脑直接运行）：
-   - 自动检测本机 Antigravity Desktop，并将独立运行环境与插件资源部署至 `%LOCALAPPDATA%\agy-claude-style`。
-   - 若安装目录已存在 `config.json`，升级/重装时自动保留原有用户配置；全新安装则写入默认配置。
-   - 自动注册 Windows 开机自启快捷方式（`AGY-Claude-Style.lnk`）与「设置 → 应用」卸载项，并启动后台静默守护进程 `agy-claude-style-watcher.exe` 实时注入当前及后续新开窗口。
-   - 如需卸载，可在安装器界面点击「卸载并恢复原版」，或在 Windows「设置 → 应用」中卸载。
+   - **GUI 模式选择**：安装器界面提供运行模式切换单选框——**「免后台常驻 · 随 Antigravity 启动并自动退出（推荐）」**（托管启动模式）与**「开机自启 · 后台常驻监听」**（常驻守护模式），并可勾选**「在桌面创建「`Antigravity (AGY Claude Style)`」启动快捷方式」**（默认勾选）。选择后点击「开始安装」（已安装时显示「应用模式 / 升级」）即可安装或无损切换模式。
+   - **资源部署与配置保留**：自动检测本机 Antigravity Desktop，将独立运行环境与插件资源部署至 `%LOCALAPPDATA%\agy-claude-style`（记录模式状态至 `.install-mode`；若已存在 `config.json` 则自动保留原有用户配置）。
+   - **统一托管启动快捷方式 (`Antigravity (AGY Claude Style).lnk`)**：安装器会在安装目录、开始菜单（及可选桌面）生成 `Antigravity (AGY Claude Style).lnk`，直接指向 `agy-claude-style-watcher.exe --launch --relaunch --exit-on-host-close --dir "<installDir>"`。双击即可带 CDP 启动（或温和重启接管）Antigravity，并在宿主关闭后自动退出 watcher。
+   - **两种模式行为**：
+     - **托管启动模式（默认）**：不注册 Windows Startup 开机自启（若此前安装过常驻模式，会自动清理 `AGY-Claude-Style.lnk` 并停止旧常驻守护）；安装完成时仅在检测到 Antigravity 已开启 CDP 端口的情况下才临时拉起 `--exit-on-host-close` watcher 完成注入，否则保持后台 0 进程常驻。
+     - **常驻守护模式**：额外注册 Windows 开机自启快捷方式（`Startup\AGY-Claude-Style.lnk`）并立即启动后台静默守护进程 `agy-claude-style-watcher.exe` 持续监听。
+   - **卸载还原**：两种模式均会注册 Windows「设置 → 应用」卸载项；在安装器界面点击「卸载并恢复原版」或在系统「设置 → 应用」中卸载，可自动停止守护、删除 Startup / 开始菜单 / 桌面快捷方式并恢复原生界面。
 
 3. 安装器支持的命令行参数：
    ```text
    AGY-Claude-Style-v1.3.0-Windows-x64.exe [--silent | /S | -s] [--uninstall] [--status]
+                                           [--mode=managed | --mode=daemon | --managed | --daemon]
+                                           [--desktop-shortcut | --no-desktop-shortcut]
                                            [--no-autostart] [--no-kill-legacy]
                                            [--install-dir <路径>] [--cdp-port <端口>]
                                            [--out <结果JSON路径>] [--popup]
    ```
+   - `--mode=managed` / `--managed`：以托管启动模式安装或切换（默认模式，不写入 Startup 自启）。
+   - `--mode=daemon` / `--daemon`：以常驻守护模式安装或切换（写入 Startup 开机自启并常驻后台）。
+   - `--desktop-shortcut` / `--no-desktop-shortcut`：控制是否在桌面创建 `Antigravity (AGY Claude Style).lnk` 启动快捷方式（默认创建）。
+   - `--no-autostart`：跳过 Startup、开始菜单、桌面快捷方式及卸载注册表写入（未显式传 `--mode` 时按 `managed` 模式处理）。
 
 ---
 
@@ -179,9 +209,29 @@ Clawd 是由 [crab-assets.js](crab-assets.js) 与 [mascot-core.js](mascot-core.j
 
 2. 打开 `.dmg`，将 `AGY Claude Style.app` 拖入「应用程序」（或直接双击运行）：
    - 若首次打开时 macOS 提示“无法验证开发者”（Release 构建采用 Ad-hoc 签名），请**右键点击 `AGY Claude Style.app` → 打开**，或在终端执行 `xattr -cr "/Applications/AGY Claude Style.app"`。
-   - 自动检测本机 `Antigravity.app`，并将独立运行时与插件资源部署至 `~/Library/Application Support/agy-claude-style`（升级时自动保留已有 `config.json`）。
-   - 自动注册 `LaunchAgent`（`~/Library/LaunchAgents/io.github.0dnancy.agy-claude-style.plist`）实现登录自启，并立即启动原生 Swift 后台守护进程 `agy-claude-style-watcher` 实时注入及热更新。
-   - 如需卸载，重新打开 `AGY Claude Style.app` 点击「卸载并恢复原版」即可自动停止守护、移除自启并恢复原版界面。
+   - **GUI 模式选择**：打开 `AGY Claude Style.app` 后，可在界面选择运行模式——**「免后台常驻 · 随 Antigravity 启动并自动退出（推荐）」**（托管启动模式）或**「开机自启 · 后台常驻监听」**（常驻守护模式），并勾选**「在 `~/Applications` 创建「`Antigravity (AGY Claude Style).app`」启动器」**（默认勾选），然后点击「开始安装」（已安装时显示「应用模式 / 升级」）。
+   - **资源部署与托管启动入口**：自动检测本机 `Antigravity.app`，将独立运行时与插件资源部署至 `~/Library/Application Support/agy-claude-style`（升级时自动保留已有 `config.json`，并写入 `.install-mode`），同时生成两个托管启动入口：
+     - **`Antigravity (AGY Claude Style).app`**：生成在安装目录与 `~/Applications/`（默认），点击后在后台脱离启动 `agy-claude-style-watcher --launch --relaunch --exit-on-host-close --dir "<installDir>"`，自动附加 CDP 参数启动或温和重启 Antigravity 并在宿主关闭后自动退出。
+     - **`launch-antigravity.command`**：位于安装目录 `~/Library/Application Support/agy-claude-style/launch-antigravity.command`，内部同样调用上述托管启动命令并在后台脱离运行，方便在访达或终端中直接启动。
+   - **两种模式行为**：
+     - **托管启动模式（默认）**：**不注册 `LaunchAgent`**（若此前存在 `~/Library/LaunchAgents/io.github.0dnancy.agy-claude-style.plist` 会自动 unload 并删除），平时后台 0 进程常驻；日常通过 `Antigravity (AGY Claude Style).app` 或 `launch-antigravity.command` 启动即可。
+     - **常驻守护模式**：注册 `LaunchAgent`（`~/Library/LaunchAgents/io.github.0dnancy.agy-claude-style.plist`）实现登录自启，并立即启动原生 Swift 后台守护进程 `agy-claude-style-watcher` 实时注入及热更新。
+   - **卸载还原**：重新打开 `AGY Claude Style.app` 点击「卸载并恢复原版」，即可自动停止守护、卸载并删除 `LaunchAgent`、清理 `~/Applications/Antigravity (AGY Claude Style).app` 与安装目录并恢复原版界面。
+
+3. 安装器支持的命令行参数：
+   ```text
+   "/Applications/AGY Claude Style.app/Contents/MacOS/AGY Claude Style" \
+     [--silent | /S | -s] [--uninstall] [--status] \
+     [--mode=managed | --mode=daemon | --managed | --daemon] \
+     [--app-launcher | --no-app-launcher] \
+     [--no-autostart] [--no-kill-legacy] \
+     [--install-dir <路径>] [--cdp-port <端口>] \
+     [--out <结果JSON路径>] [--popup]
+   ```
+   - `--mode=managed` / `--managed`：以托管启动模式安装或切换（默认模式，不注册 `LaunchAgent`）。
+   - `--mode=daemon` / `--daemon`：以常驻守护模式安装或切换（写入 `LaunchAgent` 登录自启并常驻后台）。
+   - `--app-launcher` / `--no-app-launcher`：控制是否在 `~/Applications` 创建 `Antigravity (AGY Claude Style).app` 启动器（默认创建）。
+   - `--no-autostart`：跳过 `LaunchAgent` 与 `~/Applications` 启动器写入（未显式传 `--mode` 时按 `managed` 模式处理）。
 
 ---
 
@@ -198,30 +248,37 @@ Clawd 是由 [crab-assets.js](crab-assets.js) 与 [mascot-core.js](mascot-core.j
 2. 按操作系统选择对应启动方式：
 
    - **Windows**：
-     - `launch.bat`（或 `npm run launch` / `npm run relaunch`）：**Antigravity 2.33.0+ 推荐**，以 `--remote-debugging-port=0` 启动 Antigravity 并自动开启后台守护进程。
-     - `watch.bat`（或 `npm run watch`）：无黑框后台启动守护进程（`watch-hidden.vbs`），每 2 秒自动检测并注入新窗口/重载页面，并在 `style.css`、`*.js`、`config.json` 变动时自动热更新。日志输出至 `watch.log`。
+     - `launch.bat [--relaunch] [--daemon]`：
+       - **默认托管模式**（不带 `--daemon`）：调用 `node inject.js --launch` 以 `--remote-debugging-port=0` 启动 Antigravity（若已运行且未开 CDP，需附带 `--relaunch` 才会温和重启，或直接改用 `npm run managed` 按配置自动接管），并通过 `watch-hidden.vbs` 无黑框拉起带 `--watch --exit-on-host-close --skip-if-running` 的 watcher；宿主关闭后自动退出（含 90 秒启动宽限保护），平时不留常驻后台进程。
+       - **常驻守护模式**（`launch.bat --daemon`）：通过 `watch-hidden.vbs --watch --replace` 启动常驻后台守护进程（不随宿主关闭自动退出）。
+       - **`watch-hidden.vbs` 参数转发**：支持将传入的命令行参数原样转发给 `node inject.js`；不传参数直接运行（如 `watch.bat` / `autostart-on.bat`）时默认回退为 `--watch --replace`。
+     - `npm run managed`：跨平台等价于 `node inject.js --managed`（即 `--launch --watch --exit-on-host-close`），一条命令完成带 CDP 启动/接管与随宿主退出监听（`npm run launch` / `npm run relaunch` 则仅执行单次带 CDP 启动/重启 `node inject.js --launch [--relaunch]`）。
+     - `watch.bat`（或 `npm run watch`）：无黑框后台启动常驻守护进程（`watch-hidden.vbs` 默认 `--watch --replace`），持续检测并注入新窗口/重载页面，并在 `style.css`、`*.js`、`config.json` 变动时自动热更新。日志输出至 `watch.log`。
      - `inject.bat`（或 `npm run inject`）：单次立即注入当前所有 Antigravity 窗口（窗口刷新后失效）。
      - `remove.bat`（或 `npm run remove`）：停止后台守护进程并无损清除所有注入节点与属性，恢复原生界面。
-     - `autostart-on.bat` / `autostart-off.bat`：为当前脚本目录开启或取消 Windows 开机自启。
+     - `autostart-on.bat` / `autostart-off.bat`：为当前脚本目录开启或取消 Windows 开机自启（通过 `watch-hidden.vbs` 启动常驻守护）。
 
    - **macOS / Linux**：
      ```bash
      chmod +x *.sh
-     ./launch.sh          # Antigravity 2.33.0+ 推荐：带 CDP 参数启动 Antigravity 并开启守护（加 --relaunch 可自动重启已运行实例）
-     ./watch.sh           # 启动后台守护（等价于 nohup node inject.js --watch --replace）
-     ./inject.sh          # 单次注入
-     ./remove.sh          # 停止守护并恢复原生界面
+     ./launch.sh              # 默认托管模式：以绝对路径 "$PWD/inject.js" 带 CDP 启动 Antigravity 并拉起 --watch --exit-on-host-close --skip-if-running（关闭宿主后自动退出，含 PID 归属校验去重）
+     ./launch.sh --relaunch   # 若 Antigravity 已运行但未开 CDP，自动温和重启后再接管
+     ./launch.sh --daemon     # 常驻守护模式：以绝对路径 "$PWD/inject.js" 拉起 --watch --replace 后台常驻监听
+     npm run managed          # 跨平台一站式托管启动（等价于 node inject.js --managed）
+     ./watch.sh               # 以绝对路径启动常驻后台守护（nohup node "$PWD/inject.js" --watch --replace）
+     ./inject.sh              # 单次注入
+     ./remove.sh              # 停止守护（Fail-Closed 校验 PID 归属）并恢复原生界面
      ```
 
 > [!TIP]
-> 只是想先尝鲜看看小螃蟹？先运行一次 `npm run inject` 就能立刻在 Antigravity 里看到 Clawd；随时想恢复原貌只需 `npm run remove`，干干净净不留痕迹 `(ﾉ◕ヮ◕)ﾉ*:･ﾟ✧`
+> 只是想先尝鲜看看小螃蟹？先运行一次 `npm run inject` 就能立刻在 Antigravity 里看到 Clawd；平时推荐使用 `npm run managed`（或 `launch.bat` / `./launch.sh`）免常驻随开随用，随时想恢复原貌只需 `npm run remove`，干干净净不留痕迹 `(ﾉ◕ヮ◕)ﾉ*:･ﾟ✧`
 
 ---
 
 <a id="配置说明"></a>
 ## ⚙️ 配置说明 (`config.json`)
 
-所有配置均可在 Antigravity `设置 → 外观` 中实时可视化调整，也可以直接编辑 `config.json`（守护模式会自动热更新）。默认模板见 [config.example.json](config.example.json)。
+所有配置均可在 Antigravity `设置 → 外观` 中实时可视化调整，也可以直接编辑 `config.json`（监听进程会自动执行 `<2KB` 轻量配置热更新）。默认完整键值定义见 [cdp.js](cdp.js) 中的 `DEFAULT_CONFIG`，常用配置模板见 [config.example.json](config.example.json)。
 
 | 配置键 | 可选值 / 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
@@ -229,27 +286,37 @@ Clawd 是由 [crab-assets.js](crab-assets.js) 与 [mascot-core.js](mascot-core.j
 | `palette` | `'obsidian'` \| `'claude'` \| `'host'` | `'obsidian'` | 🎨 配色方案（黑曜石蓝暗色 / Claude / 跟随宿主） |
 | `homeLayout` | `'studio'` \| `'classic'` \| `'off'` | `'studio'` | 🏠 新会话首页布局模式 |
 | `homeRipple` | `boolean` | `true` | 🌊 首页交互式字符矩阵波纹背景 |
-| `logoInk` | `'accent'` \| `'foreground'` | `'accent'` | ✒️ 首页 Antigravity Logo 线条色调 |
 | `composerRestyle` | `boolean` | `true` | 💊 极简胶囊工作区栏与输入框重排 |
-| `placeholderStyle` | `'studio'` \| `'host'` | `'studio'` | 💬 输入框占位提示文本风格 |
-| `smoothCaret` | `boolean` | `true` | ✨ 输入框丝滑插值打字光标 |
-| `sidebarRestyle` | `boolean` | `true` | 📑 侧边栏 Claude 风格行高与悬停高亮 |
-| `sidebarCompact` | `boolean` | `false` | 📏 侧边栏紧凑间距模式 |
 | `mascot` | `'crab'` \| `'off'` | `'crab'` | 🦀 输入框右上角像素螃蟹挂件 `Clawd` |
-| `effortSliderStyle` | `'claude'` \| `'chatgpt'` \| `'liangwufeng'` | `'claude'` | 🎚️ 思考强度滑块浮窗风格 |
-| `effortAccent` | `boolean` | `true` | 💜 Claude 模式下启用蓝紫思考强度色阶 |
-| `performanceBackdrop` | `'card'` \| `'page'` \| `'off'` | `'card'` | 🖼️ 梁武峰模式下 31 帧人像背景渲染范围 |
+| `logoInk` | `'accent'` \| `'foreground'` | `'accent'` | ✒️ 首页 Antigravity Logo 线条色调 |
 | `inlineStats` | `boolean` | `true` | 🍩 启用内嵌会话统计与右下角剩余用量圆环 |
 | `ringMode` | `'context'` \| `'quota'` | `'context'` | 🔋 右下角圆环显示上下文剩余或模型配额剩余 |
 | `turnBadges` | `boolean` | `true` | 🏷️ 对话流每轮 AI 回复底部显示 Token 徽章 |
 | `hudTopBar` | `boolean` | `false` | 📏 输入框顶部上下文进度条 |
-| `hudBottomBar` | `boolean` | `false` | 📊 输入框底部详细 HUD 遥测栏 |
+| `hudBottomBar` | `boolean` | `false` | 📊 输入框底部详细 HUD 遥测栏（开启后即使在 `context` 模式也同步显示模型配额余量） |
 | `hudRimProgress` | `boolean` | `false` | 🌈 输入框边框环绕上下文进度条 |
 | `hudFooterChip` | `boolean` | `false` | 💠 底栏剩余容量标签胶囊 |
 | `hudCompact` | `boolean` | `false` | 🧩 Token HUD 紧凑排版模式 |
-| `autoRelaunchWithCdp` | `boolean` | `true` | 🔄 Antigravity 2.33.0+ 运行中未开 CDP 时自动温和重启并附加调试参数 |
-| `exitOnHostClose` | `boolean` | `false` | 🛑 Antigravity 宿主关闭后自动退出后台守护进程（避免常驻） |
-| `pollIntervalMs` | `number`（最小 `1000`） | `2500` | ⏱️ 遥测轮询间隔（毫秒） |
+| `effortSliderStyle` | `'claude'` \| `'chatgpt'` \| `'liangwufeng'` | `'claude'` | 🎚️ 思考强度滑块浮窗风格 |
+| `effortAccent` | `boolean` | `true` | 💜 Claude 模式下启用蓝紫思考强度色阶 |
+| `performanceBackdrop` | `'card'` \| `'page'` \| `'off'` | `'card'` | 🖼️ 梁武峰模式下 31 帧人像背景渲染范围 |
+| `smoothCaret` | `boolean` | `true` | ✨ 输入框丝滑插值打字光标 |
+| `sidebarRestyle` | `boolean` | `true` | 📑 侧边栏 Claude 风格行高与悬停高亮 |
+| `sidebarCompact` | `boolean` | `false` | 📏 侧边栏紧凑间距模式 |
+| `placeholderStyle` | `'studio'` \| `'host'` | `'studio'` | 💬 输入框占位提示文本风格 |
+| `autoRelaunchWithCdp` | `boolean` | `true` | 🔄 Antigravity 2.33.0+ 运行中未开 CDP 时自动温和重启并附加 `--remote-debugging-port=0` |
+| `exitOnHostClose` | `boolean` | `false` | 🛑 常驻守护在已注入的 Antigravity 宿主全部关闭后是否自动退出（托管模式会通过 `--exit-on-host-close` 强制开启） |
+| `pollIntervalMs` | `integer`（`250`–`60000`，UI 下限 `1000`） | `2500` | ⏱️ UI 遥测轮询间隔（毫秒；`config.example.json` 省略此项，运行时自动回退默认值 `2500`） |
+
+> [!NOTE]
+> **关于 `exitOnHostClose` 与托管启动模式的行为区别**：
+> - **托管启动模式**（Windows `Antigravity (AGY Claude Style).lnk`、macOS `.app` / `launch-antigravity.command`、`launch.bat` / `./launch.sh` / `npm run managed`）：watcher 启动时会显式携带 `--exit-on-host-close`（或 `--managed`），**即使 `config.json` 中 `exitOnHostClose` 为 `false`，也会在 Antigravity 全部窗口及进程关闭后自动退出**，并启用 **90 秒启动宽限保护**（`--startup-grace`）防止宿主启动失败或中途关闭时孤儿进程挂起。
+> - **常驻守护模式**（直接运行 `node inject.js --watch` / `launch.bat --daemon` / `./launch.sh --daemon` / 安装器 `daemon` 模式）：默认 `exitOnHostClose: false` 会保持后台常驻；如果你手动在 `config.json` 中将其改为 `true`，守护进程只会在**至少成功注入过一次窗口且之后所有宿主全部关闭**时退出，不会在开机等待 Antigravity 打开期间因启动宽限超时提前退出。
+
+### 🛡️ 热更新、配置合并与守护进程安全机制
+- **轻量 `<2KB` 配置热更新**：当仅 `config.json` 变动（或通过设置面板调整开关）且 `style.css` 与运行时脚本哈希未变时，Node.js 与 Windows/macOS 原生监听进程均仅向页面下发不足 `2KB` 的配置刷新脚本（保留整包启动脚本并独立更新配置脚本），避免重复注入整包运行时与样式表。
+- **原子写入与 3-Way 配置合并**：通过设置面板或安装器保存修改时，先校验字段合法性再通过临时文件重命名**原子写入** `config.json`，防止并发写入损坏；前端加载时将前后 `config.json` 快照与 `localStorage` 本地状态执行 **3-way 合并**，仅将外部实际修改过的键值覆盖到当前界面，完整保留你本地调整过的其他 UI 偏好。
+- **Fail-Closed PID 归属校验**：启动、停止（`remove.js` / 安装器卸载）或替换（`--replace`）监听进程时，均校验 `.watch.pid` 对应进程的命令行、可执行文件与目标目录归属——仅终止确认属于本目录的 `--watch` / `--managed` 或原生 watcher；失效或确认属于其他程序的 PID 仅清理锁文件而不误杀；当进程信息无法检查或相对路径无法验证归属时执行 **Fail-Closed 拒绝策略**，绝不误杀未知进程或盲目覆写/删除 `.watch.pid`。
 
 ---
 
@@ -258,48 +325,49 @@ Clawd 是由 [crab-assets.js](crab-assets.js) 与 [mascot-core.js](mascot-core.j
 
 ```text
 agy-claude-style/
-├── .github/workflows/         # GitHub Actions CI 测试与自动构建发布 Release 工作流
-│   ├── _build-and-test.yml    # 共享可复用工作流（统一版本解析、跨平台测试与产物命名）
-│   ├── ci.yml                 # PR / main 分支跨平台测试与编译验证
-│   └── release.yml            # 推送 v* 标签或手动触发自动发布 Windows/macOS 安装包
-├── assets/                    # README 可爱像素螃蟹 Clawd 视觉插图资源
-├── cdp.js                     # CDP WebSocket/HTTP 客户端、页面发现与注入/移除表达式构建
-├── inject.js                  # 单次注入与 --watch 热更新守护进程（含设置持久化绑定）
-├── remove.js                  # 停止守护进程并清理恢复原生界面
-├── config.example.json        # 默认配置文件模板
-├── style.css                  # 全套主题调色板、首页 Studio、HUD 与滑块样式
-├── ui-runtime.js              # 主运行时：Store/Fiber 桥接、首页仪表盘、HUD 浮窗、设置面板集成
-├── i18n-core.js               # 5 语言 DOM 翻译引擎（含保护区与无损还原）
-├── i18n-locales.js            # 简中 / 繁中 / 粤语 / 英文 / 日语多语言词典
-├── usage-core.js              # 会话轨迹解析、Token 拆分、配额池匹配、热力图与书籍标尺计算
-├── effort-core.js             # 推理档位解析、阻尼刻度数学模型与 3 套滑块逻辑
-├── mascot-core.js             # 像素螃蟹 Clawd 状态机（休眠、唤醒、反应、状态优先级）
-├── ripple-core.js             # 首页字符矩阵噪声与二维水波方程求解器
-├── crab-assets.js             # 内置 19 套像素螃蟹双层精灵图（body + ink PNG Data URI）
-├── perf-assets.js             # 内置 31 帧 320×320 WebP 人像序列
-├── installer/                 # Windows (C#) 与 macOS (Swift) 独立安装器及原生守护进程源码
+├── .github/workflows/                 # GitHub Actions CI 测试与自动构建发布 Release 工作流
+│   ├── _build-and-test.yml            # 共享可复用工作流（统一版本解析、跨平台测试与产物命名）
+│   ├── ci.yml                         # PR / main 分支跨平台测试与编译验证
+│   └── release.yml                    # 推送 v* 标签或手动触发自动发布 Windows/macOS 安装包
+├── assets/                            # README 可爱像素螃蟹 Clawd 视觉插图资源
+├── cdp.js                             # CDP 客户端、配置校验/原子写入、PID 归属校验、注入/轻量刷新表达式与 ensureAntigravityWithCdp 启动协调
+├── inject.js                          # 单次注入、--managed 托管启动与 --watch 热更新监听进程（含 <2KB 配置刷新与设置绑定）
+├── remove.js                          # 校验 PID 归属后停止守护/监听进程并清理恢复原生界面
+├── config.example.json                # 默认配置文件模板
+├── style.css                          # 全套主题调色板、首页 Studio、HUD 与滑块样式
+├── ui-runtime.js                      # 主运行时：Store/Fiber 桥接、首页仪表盘、HUD 浮窗、设置面板集成
+├── i18n-core.js                       # 5 语言 DOM 翻译引擎（含保护区与无损还原）
+├── i18n-locales.js                    # 简中 / 繁中 / 粤语 / 英文 / 日语多语言词典
+├── usage-core.js                      # 会话轨迹解析、Token 拆分、配额池匹配、热力图与书籍标尺计算
+├── effort-core.js                     # 推理档位解析、阻尼刻度数学模型与 3 套滑块逻辑
+├── mascot-core.js                     # 像素螃蟹 Clawd 状态机（休眠、唤醒、反应、状态优先级）
+├── ripple-core.js                     # 首页字符矩阵噪声与二维水波方程求解器
+├── crab-assets.js                     # 内置 19 套像素螃蟹双层精灵图（body + ink PNG Data URI）
+├── perf-assets.js                     # 内置 31 帧 320×320 WebP 人像序列
+├── installer/                         # Windows (C#) 与 macOS (Swift) 独立安装器及原生托管/守护进程源码
 │   ├── common/
-│   │   ├── CdpClient.cs       # C# 轻量 CDP WebSocket 客户端与配置热更新同步
-│   │   └── MiniJson.cs        # 零依赖 JSON 解析与序列化
+│   │   ├── CdpClient.cs               # C# 轻量 CDP 客户端、窗口激活、启动协调与配置热更新同步
+│   │   └── MiniJson.cs                # 零依赖 JSON 解析与序列化
 │   ├── setup/
-│   │   ├── Program.cs         # Windows 安装/升级/卸载 GUI 与 CLI 入口
-│   │   └── app.manifest       # Windows DPI 与清单配置
+│   │   ├── Program.cs                 # Windows 安装/托管与常驻模式切换/升级/卸载 GUI 与 CLI 入口
+│   │   └── app.manifest               # Windows DPI 与清单配置
 │   ├── watcher/
-│   │   └── Program.cs         # Windows 无窗后台 CDP 守护进程
+│   │   └── Program.cs                 # Windows 无窗 CDP 托管启动器与后台守护进程（支持 --launch / --exit-on-host-close / 90s 宽限保护）
 │   └── macos/
-│       ├── Common/            # Swift 零依赖 JSON 解析与 URLSession WebSocket CDP 客户端
-│       ├── Setup/main.swift   # macOS Cocoa GUI / LaunchAgent 安装与卸载入口
-│       └── Watcher/main.swift # macOS 原生后台 CDP 守护进程
+│       ├── Common/                    # Swift 零依赖 JSON 解析与 URLSession WebSocket CDP 客户端 / 启动协调
+│       ├── Setup/main.swift           # macOS Cocoa GUI / 托管启动器 (.app / .command) / LaunchAgent 安装与卸载入口
+│       └── Watcher/main.swift         # macOS 原生 CDP 托管启动器与后台守护进程（支持 --launch / --exit-on-host-close / 90s 宽限保护）
 ├── scripts/
-│   ├── build-common.mjs       # 共享构建工具（图标生成、清单、ZIP 打包）
-│   ├── build-installer.mjs    # 编译生成 Windows 独立 AGY-Claude-Style-v<version>-Windows-x64.exe
-│   └── build-macos.mjs        # 编译生成 macOS Universal .app 与 .dmg
-├── test/                      # 基于 node:test 的单元测试与安装器 E2E 测试套件
-├── launch.bat / launch.sh     # Antigravity 2.33.0+ 带 CDP 参数启动脚本
-├── watch.bat / watch.sh       # 后台守护启动脚本（Windows 配合 watch-hidden.vbs）
-├── inject.bat / inject.sh     # 单次注入脚本
-├── remove.bat / remove.sh     # 停止守护与还原脚本
-└── autostart-on.bat / off.bat # Windows 开机自启快捷方式管理脚本
+│   ├── build-common.mjs               # 共享构建工具（图标生成、清单、ZIP 打包）
+│   ├── build-installer.mjs            # 编译生成 Windows 独立 AGY-Claude-Style-v<version>-Windows-x64.exe
+│   └── build-macos.mjs                # 编译生成 macOS Universal .app 与 .dmg
+├── test/                              # 基于 node:test 的单元测试与安装器 E2E 测试套件
+├── launch.bat / launch.sh             # 带 CDP 参数启动 Antigravity（默认托管模式随宿主退出，加 --daemon 切换常驻；launch.sh 以绝对路径启动）
+├── watch.bat / watch.sh               # 常驻后台守护启动脚本（watch.sh 使用 "$PWD/inject.js" 绝对路径）
+├── watch-hidden.vbs                   # Windows 无黑框隐藏启动封装（透传参数给 inject.js，无参默认 --watch --replace）
+├── inject.bat / inject.sh             # 单次注入脚本
+├── remove.bat / remove.sh             # 停止监听/守护与还原脚本
+└── autostart-on.bat / autostart-off.bat # Windows 开机自启快捷方式管理脚本
 ```
 
 ---
@@ -317,8 +385,9 @@ npm run build:installer
 # 在 macOS 上从源码编译生成 Universal .app 与 AGY-Claude-Style-v<version>-macOS-universal.dmg
 npm run build:macos
 
-# 运行单次注入 / 监听热更新 / 卸载还原
+# 运行单次注入 / 托管启动 / 常驻监听 / 卸载还原
 npm run inject
+npm run managed
 npm run watch
 npm run remove
 ```

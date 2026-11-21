@@ -5,12 +5,14 @@ import Darwin
 
 final class AttachedEntry {
     let session: CdpSession
-    var scriptId: String?
+    var bootstrapScriptId: String?
+    var configScriptId: String?
     let title: String
 
-    init(session: CdpSession, scriptId: String? = nil, title: String) {
+    init(session: CdpSession, bootstrapScriptId: String? = nil, configScriptId: String? = nil, title: String) {
         self.session = session
-        self.scriptId = scriptId
+        self.bootstrapScriptId = bootstrapScriptId
+        self.configScriptId = configScriptId
         self.title = title
     }
 }
@@ -21,14 +23,16 @@ final class WatcherApp {
     private let pidFile: String
     private let lockFile: String
     private let isWatch: Bool
+    private let pollMs: Int
     private let logLock = NSLock()
 
-    init(baseDir: String, isWatch: Bool) {
+    init(baseDir: String, isWatch: Bool, pollMs: Int = 2000) {
         self.baseDir = baseDir
         self.logFile = (baseDir as NSString).appendingPathComponent("watch.log")
         self.pidFile = (baseDir as NSString).appendingPathComponent(".watch.pid")
         self.lockFile = (baseDir as NSString).appendingPathComponent(".watch.lock")
         self.isWatch = isWatch
+        self.pollMs = max(100, min(10000, pollMs))
     }
 
     func log(_ line: String) {
@@ -141,7 +145,19 @@ final class WatcherApp {
 
     private func stopRunningWatcherInDir() {
         let selfPid = getpid()
-        if let pid = readPidFile(), pid != selfPid {
+        guard let pid = readPidFile(), pid != selfPid else {
+            try? FileManager.default.removeItem(atPath: pidFile)
+            return
+        }
+        let cls = CdpHelper.classifyWatcherPid(pid, baseDir: baseDir)
+        switch cls.status {
+        case .unknown:
+            // Fail closed: never kill or delete .watch.pid when ownership cannot be verified.
+            return
+        case .dead, .foreign:
+            try? FileManager.default.removeItem(atPath: pidFile)
+            return
+        case .owned:
             if kill(pid, 0) == 0 {
                 _ = kill(pid, SIGTERM)
                 let deadline = Date().addingTimeInterval(2.0)
@@ -154,8 +170,8 @@ final class WatcherApp {
                     Thread.sleep(forTimeInterval: 0.1)
                 }
             }
+            try? FileManager.default.removeItem(atPath: pidFile)
         }
-        try? FileManager.default.removeItem(atPath: pidFile)
     }
 
     private func computeDirStamp() -> [String: String] {
@@ -188,31 +204,76 @@ final class WatcherApp {
         return nil
     }
 
-    func runWatch(overridePort: Int?, exitOnHostCloseFlag: Bool = false, parentPid: Int32? = nil) -> Int32 {
+    func runWatch(
+        overridePort: Int?,
+        exitOnHostCloseFlag: Bool = false,
+        parentPid: Int32? = nil,
+        startupGraceEnabled: Bool = false,
+        startupGraceSeconds: Double = CdpHelper.defaultStartupGraceSeconds,
+        replaceExisting: Bool = false,
+        waitBrieflyForLock: Bool = false,
+        initialLog: String? = nil
+    ) -> Int32 {
         try? FileManager.default.createDirectory(atPath: baseDir, withIntermediateDirectories: true, attributes: nil)
+        if replaceExisting {
+            stopRunningWatcherInDir()
+        }
         let lockFd = open(lockFile, O_CREAT | O_RDWR, 0o644)
         if lockFd < 0 {
             return 1
         }
-        if flock(lockFd, LOCK_EX | LOCK_NB) != 0 {
+        var locked = (flock(lockFd, LOCK_EX | LOCK_NB) == 0)
+        if !locked && waitBrieflyForLock {
+            let lockDeadline = Date().addingTimeInterval(1.5)
+            while Date() < lockDeadline {
+                Thread.sleep(forTimeInterval: 0.1)
+                if flock(lockFd, LOCK_EX | LOCK_NB) == 0 {
+                    locked = true
+                    break
+                }
+            }
+        }
+        if !locked {
             close(lockFd)
             return 0
         }
 
         let selfPid = getpid()
+        if let existingPid = readPidFile(), existingPid != selfPid {
+            let cls = CdpHelper.classifyWatcherPid(existingPid, baseDir: baseDir)
+            if cls.status == .unknown {
+                log("[!] 无法验证 .watch.pid 进程归属 (PID \(existingPid))，出于安全策略拒绝覆盖锁文件")
+                flock(lockFd, LOCK_UN)
+                close(lockFd)
+                return 1
+            }
+            if cls.status == .owned {
+                log("[*] 检测到同目录守护进程已在运行 (PID \(existingPid))，退出重复实例")
+                flock(lockFd, LOCK_UN)
+                close(lockFd)
+                return 0
+            }
+        }
         try? String(selfPid).write(toFile: pidFile, atomically: true, encoding: .utf8)
         try? "".write(toFile: logFile, atomically: false, encoding: .utf8)
 
         var manifest: PluginManifest
         var currentExpr: String
-        var cfgAutoRelaunch = false
+        var currentConfigExpr: String
+        var currentCodeHash: String
+        var currentCssHash: String
+        var cfgAutoRelaunch = true
         var cfgExitOnHostClose = false
         do {
             manifest = try PluginManifest.load(baseDir: baseDir)
             let initCfg = CdpHelper.readConfig(baseDir: baseDir, manifest: manifest)
-            cfgAutoRelaunch = initCfg["autoRelaunchWithCdp"]?.boolValue ?? false
+            cfgAutoRelaunch = initCfg["autoRelaunchWithCdp"]?.boolValue ?? true
             cfgExitOnHostClose = initCfg["exitOnHostClose"]?.boolValue ?? false
+            let hashes = try CdpHelper.readBundleAndCssHashes(baseDir: baseDir, manifest: manifest)
+            currentCodeHash = hashes.codeHash
+            currentCssHash = hashes.cssHash
             currentExpr = try CdpHelper.buildInjectExpression(baseDir: baseDir, manifest: manifest)
+            currentConfigExpr = CdpHelper.buildConfigScriptExpression(baseDir: baseDir, manifest: manifest, expectedCodeHash: currentCodeHash)
         } catch {
             log("[!] 初始化加载失败: \(error.localizedDescription)")
             releasePidFile(selfPid: selfPid)
@@ -221,7 +282,11 @@ final class WatcherApp {
             return 1
         }
 
-        log("[*] AGY Claude Style (agy-claude-style) 守护模式启动 (PID \(selfPid))，每 2 秒检查一次窗口")
+        let modeLabel = exitOnHostCloseFlag ? "托管监听模式" : "守护模式"
+        log("[*] AGY Claude Style (agy-claude-style) \(modeLabel)启动 (PID \(selfPid))，轮询间隔 \(pollMs)ms")
+        if let initialLog = initialLog, !initialLog.isEmpty {
+            log(initialLog)
+        }
 
         let stateLock = NSLock()
         var attached: [String: AttachedEntry] = [:]
@@ -258,23 +323,66 @@ final class WatcherApp {
         intSource.setEventHandler(handler: requestExit)
         intSource.resume()
 
-        let applyToEntry: (AttachedEntry, String) throws -> JsonValue = { entry, exprToUse in
-            if let oldId = entry.scriptId, !oldId.isEmpty {
+        let applyToEntry: (AttachedEntry, String, String, Bool) throws -> JsonValue = { entry, fullExprToUse, configExprToUse, refreshOnly in
+            if refreshOnly, let _ = entry.bootstrapScriptId, !configExprToUse.isEmpty {
+                if let oldCfgId = entry.configScriptId, !oldCfgId.isEmpty {
+                    _ = try? entry.session.send(
+                        "Page.removeScriptToEvaluateOnNewDocument",
+                        params: ["identifier": .string(oldCfgId)],
+                        timeoutMs: 5000
+                    )
+                    entry.configScriptId = nil
+                }
+                let addCfgRes = try entry.session.send(
+                    "Page.addScriptToEvaluateOnNewDocument",
+                    params: ["source": .string(configExprToUse)],
+                    timeoutMs: 15000
+                )
+                if let newCfgId = addCfgRes["identifier"]?.stringValue {
+                    entry.configScriptId = newCfgId
+                }
+                if let fastVal = try? entry.session.evaluate(configExprToUse, awaitPromise: false),
+                   fastVal.objectValue?["status"]?.stringValue == "refreshed" {
+                    return fastVal
+                }
+            }
+
+            if let oldCfgId = entry.configScriptId, !oldCfgId.isEmpty {
                 _ = try? entry.session.send(
                     "Page.removeScriptToEvaluateOnNewDocument",
-                    params: ["identifier": .string(oldId)],
+                    params: ["identifier": .string(oldCfgId)],
                     timeoutMs: 5000
                 )
+                entry.configScriptId = nil
             }
-            let addRes = try entry.session.send(
+            if let oldBootId = entry.bootstrapScriptId, !oldBootId.isEmpty {
+                _ = try? entry.session.send(
+                    "Page.removeScriptToEvaluateOnNewDocument",
+                    params: ["identifier": .string(oldBootId)],
+                    timeoutMs: 5000
+                )
+                entry.bootstrapScriptId = nil
+            }
+            let addBootRes = try entry.session.send(
                 "Page.addScriptToEvaluateOnNewDocument",
-                params: ["source": .string(exprToUse)],
+                params: ["source": .string(fullExprToUse)],
                 timeoutMs: 15000
             )
-            if let newId = addRes["identifier"]?.stringValue {
-                entry.scriptId = newId
+            if let newBootId = addBootRes["identifier"]?.stringValue {
+                entry.bootstrapScriptId = newBootId
             }
-            return try entry.session.evaluate(exprToUse, awaitPromise: false)
+            if !configExprToUse.isEmpty {
+                let addCfgRes = try entry.session.send(
+                    "Page.addScriptToEvaluateOnNewDocument",
+                    params: ["source": .string(configExprToUse)],
+                    timeoutMs: 15000
+                )
+                if let newCfgId = addCfgRes["identifier"]?.stringValue {
+                    entry.configScriptId = newCfgId
+                }
+                _ = try? entry.session.evaluate(configExprToUse, awaitPromise: false)
+            }
+            return try entry.session.evaluate(fullExprToUse, awaitPromise: false)
         }
 
         let attachPage: (CdpPageInfo) -> Void = { page in
@@ -291,7 +399,7 @@ final class WatcherApp {
                 let s = try CdpSession.connect(wsUrl: page.webSocketDebuggerUrl, timeoutMs: 4000)
                 session = s
                 let title = CdpHelper.shortTitle(page)
-                let entry = AttachedEntry(session: s, scriptId: nil, title: title)
+                let entry = AttachedEntry(session: s, title: title)
 
                 s.onClose = {
                     stateLock.lock()
@@ -323,6 +431,7 @@ final class WatcherApp {
                 stateLock.lock()
                 let bindingName = manifest.settingBinding
                 let exprSnap = currentExpr
+                let cfgExprSnap = currentConfigExpr
                 stateLock.unlock()
 
                 _ = try s.send("Runtime.addBinding", params: ["name": .string(bindingName)], timeoutMs: 5000)
@@ -332,7 +441,7 @@ final class WatcherApp {
                 attaching.remove(page.id)
                 stateLock.unlock()
 
-                let evalVal = try applyToEntry(entry, exprSnap)
+                let evalVal = try applyToEntry(entry, exprSnap, cfgExprSnap, false)
                 let status = evalVal.objectValue?["status"]?.stringValue ?? "ok"
                 stateLock.lock()
                 hadAttachedWindow = true
@@ -372,22 +481,43 @@ final class WatcherApp {
             do {
                 let nextManifest = try PluginManifest.load(baseDir: self.baseDir)
                 let nextCfg = CdpHelper.readConfig(baseDir: self.baseDir, manifest: nextManifest)
-                let nextExpr = try CdpHelper.buildInjectExpression(baseDir: self.baseDir, manifest: nextManifest)
+                let nextHashes = try CdpHelper.readBundleAndCssHashes(baseDir: self.baseDir, manifest: nextManifest)
+                stateLock.lock()
+                let refreshOnly = !currentCodeHash.isEmpty && nextHashes.codeHash == currentCodeHash && nextHashes.cssHash == currentCssHash
+                stateLock.unlock()
+
+                let nextExpr: String
+                if refreshOnly {
+                    stateLock.lock()
+                    nextExpr = currentExpr
+                    stateLock.unlock()
+                } else {
+                    nextExpr = try CdpHelper.buildInjectExpression(baseDir: self.baseDir, manifest: nextManifest)
+                }
+                let nextConfigExpr = CdpHelper.buildConfigScriptExpression(
+                    baseDir: self.baseDir,
+                    manifest: nextManifest,
+                    expectedCodeHash: nextHashes.codeHash
+                )
+
                 stateLock.lock()
                 manifest = nextManifest
+                currentCodeHash = nextHashes.codeHash
+                currentCssHash = nextHashes.cssHash
                 currentExpr = nextExpr
-                cfgAutoRelaunch = nextCfg["autoRelaunchWithCdp"]?.boolValue ?? false
+                currentConfigExpr = nextConfigExpr
+                cfgAutoRelaunch = nextCfg["autoRelaunchWithCdp"]?.boolValue ?? true
                 cfgExitOnHostClose = nextCfg["exitOnHostClose"]?.boolValue ?? false
                 let entries = Array(attached.values)
                 stateLock.unlock()
 
                 var n = 0
                 for entry in entries {
-                    if (try? applyToEntry(entry, nextExpr)) != nil {
+                    if (try? applyToEntry(entry, nextExpr, nextConfigExpr, refreshOnly)) != nil {
                         n += 1
                     }
                 }
-                self.log("[↻] \(changedName) 已变更，已热更新 \(n) 个窗口")
+                self.log("[↻] \(changedName) 已变更，已热更新 \(n) 个窗口\(refreshOnly ? "（轻量配置同步）" : "")")
             } catch {
                 self.log("[!] 读取文件失败: \(error.localizedDescription)")
             }
@@ -429,6 +559,7 @@ final class WatcherApp {
 
         let envCdpOverride = !(ProcessInfo.processInfo.environment["AG_CDP_PORT"]?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
         let isExplicitPort = (overridePort != nil || envCdpOverride)
+        let watchStart = Date()
         var lastPort: Int?
         var consecutivePortFailures = 0
         var noCdpRunningTicks = 0
@@ -449,7 +580,7 @@ final class WatcherApp {
                 performReload(nil)
             }
 
-            var sleepSeconds = 2
+            var sleepMs = pollMs
             let port = CdpHelper.readPort(overridePort: overridePort)
             var pages: [CdpPageInfo]? = nil
             if let port = port {
@@ -514,6 +645,11 @@ final class WatcherApp {
                     log("[*] Antigravity 宿主已关闭，守护进程自动退出")
                     break
                 }
+                if exitOnClose && startupGraceEnabled && !hadWin && attachedEmpty && consecutivePortFailures >= 2 && runningPids.isEmpty && Date().timeIntervalSince(watchStart) >= startupGraceSeconds {
+                    let graceText = startupGraceSeconds.rounded() == startupGraceSeconds ? String(Int(startupGraceSeconds)) : String(startupGraceSeconds)
+                    log("[*] 启动宽限期（\(graceText) 秒）已到且未检测到 Antigravity CDP 窗口，监听进程自动退出")
+                    break
+                }
 
                 if !runningPids.isEmpty {
                     noCdpRunningTicks += 1
@@ -556,13 +692,13 @@ final class WatcherApp {
                     warnedNoCdpSig = ""
                     cdpFlagCheckedSig = ""
                     cdpFlagCheckedVal = false
-                    if consecutivePortFailures >= 3 {
-                        sleepSeconds = 5
+                    if consecutivePortFailures >= 3 && !(startupGraceEnabled && !hadWin) {
+                        sleepMs = max(pollMs, 5000)
                     }
                 }
             }
 
-            _ = exitSem.wait(timeout: .now() + .seconds(sleepSeconds))
+            _ = exitSem.wait(timeout: .now() + DispatchTimeInterval.milliseconds(sleepMs))
         }
 
         dirSource?.cancel()
@@ -582,6 +718,58 @@ final class WatcherApp {
         close(lockFd)
         return 0
     }
+
+    func runLaunchAndWatch(
+        overridePort: Int?,
+        relaunchFlag: Bool,
+        replaceExisting: Bool,
+        parentPid: Int32?,
+        startupGraceSeconds: Double,
+        outFile: String?
+    ) -> Int32 {
+        try? FileManager.default.createDirectory(atPath: baseDir, withIntermediateDirectories: true, attributes: nil)
+        var cfgAutoRelaunch = true
+        if let manifest = try? PluginManifest.load(baseDir: baseDir) {
+            let initCfg = CdpHelper.readConfig(baseDir: baseDir, manifest: manifest)
+            cfgAutoRelaunch = initCfg["autoRelaunchWithCdp"]?.boolValue ?? true
+        }
+        let allowRelaunch = relaunchFlag || cfgAutoRelaunch
+        let res = CdpHelper.ensureAntigravityWithCdp(allowRelaunch: allowRelaunch, overridePort: overridePort)
+        if !res.ok {
+            log("[!] 启动 Antigravity (CDP) 失败 [\(res.action)]: \(res.message)")
+            Self.writeResult(outFile: outFile, ok: false, message: res.message, pages: nil)
+            if outFile == nil && ProcessInfo.processInfo.environment["AGY_CS_NO_UI"] != "1" {
+                let alertProc = Process()
+                alertProc.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+                alertProc.arguments = [
+                    "-e",
+                    "on run argv\ndisplay alert \"AGY Claude Style\" message (item 1 of argv) as warning\nend run",
+                    "--",
+                    res.message
+                ]
+                alertProc.standardInput = FileHandle.nullDevice
+                alertProc.standardOutput = FileHandle.nullDevice
+                alertProc.standardError = FileHandle.nullDevice
+                do {
+                    try alertProc.run()
+                    alertProc.waitUntilExit()
+                } catch {}
+            }
+            return 1
+        }
+
+        let launchMsg = "[*] 启动就绪 [\(res.action)]: \(res.message)"
+        return runWatch(
+            overridePort: overridePort,
+            exitOnHostCloseFlag: true,
+            parentPid: parentPid,
+            startupGraceEnabled: true,
+            startupGraceSeconds: startupGraceSeconds,
+            replaceExisting: replaceExisting,
+            waitBrieflyForLock: true,
+            initialLog: launchMsg
+        )
+    }
 }
 
 func runWatcherMain() -> Int32 {
@@ -589,8 +777,22 @@ func runWatcherMain() -> Int32 {
     var customDir: String?
     var overridePort: Int?
     var outFile: String?
+    var relaunchFlag = false
+    var replaceExisting = false
     var exitOnHostCloseFlag = false
     var parentPid: Int32?
+
+    var startupGraceSeconds = CdpHelper.defaultStartupGraceSeconds
+    if let envGrace = ProcessInfo.processInfo.environment["AG_STARTUP_GRACE_SEC"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+       let g = Double(envGrace), g.isFinite, g > 0 {
+        startupGraceSeconds = g
+    }
+
+    var pollMs = 2000
+    if let envPoll = ProcessInfo.processInfo.environment["AG_WATCH_POLL_MS"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+       let p = Int(envPoll) {
+        pollMs = max(100, min(10000, p))
+    }
 
     if let envPpid = ProcessInfo.processInfo.environment["AG_PARENT_PID"]?.trimmingCharacters(in: .whitespacesAndNewlines),
        let p = Int32(envPpid), p > 0 {
@@ -604,6 +806,9 @@ func runWatcherMain() -> Int32 {
         if a == "--watch" { mode = "watch" }
         else if a == "--once" { mode = "once" }
         else if a == "--remove" { mode = "remove" }
+        else if a == "--launch" { mode = "launch" }
+        else if a == "--relaunch" { relaunchFlag = true }
+        else if a == "--replace" { replaceExisting = true }
         else if a == "--exit-on-host-close" { exitOnHostCloseFlag = true }
         else if a == "--parent-pid" && i + 1 < args.count {
             i += 1
@@ -615,6 +820,14 @@ func runWatcherMain() -> Int32 {
             if let p = Int(args[i]), p > 0 { overridePort = p }
         }
         else if a == "--out" && i + 1 < args.count { i += 1; outFile = args[i] }
+        else if a == "--startup-grace" && i + 1 < args.count {
+            i += 1
+            if let g = Double(args[i]), g.isFinite, g > 0 { startupGraceSeconds = g }
+        }
+        else if a.hasPrefix("--startup-grace=") {
+            let raw = String(a.dropFirst("--startup-grace=".count))
+            if let g = Double(raw), g.isFinite, g > 0 { startupGraceSeconds = g }
+        }
         i += 1
     }
 
@@ -622,7 +835,7 @@ func runWatcherMain() -> Int32 {
         ? customDir!
         : ((args[0] as NSString).deletingLastPathComponent)
     let baseDir = URL(fileURLWithPath: rawBase.isEmpty ? "." : rawBase).standardizedFileURL.path
-    let app = WatcherApp(baseDir: baseDir, isWatch: mode == "watch")
+    let app = WatcherApp(baseDir: baseDir, isWatch: (mode == "watch" || mode == "launch"), pollMs: pollMs)
 
     if mode == "once" {
         return app.runOnce(overridePort: overridePort, outFile: outFile)
@@ -630,7 +843,25 @@ func runWatcherMain() -> Int32 {
     if mode == "remove" {
         return app.runRemove(overridePort: overridePort, outFile: outFile)
     }
-    return app.runWatch(overridePort: overridePort, exitOnHostCloseFlag: exitOnHostCloseFlag, parentPid: parentPid)
+    if mode == "launch" {
+        return app.runLaunchAndWatch(
+            overridePort: overridePort,
+            relaunchFlag: relaunchFlag,
+            replaceExisting: replaceExisting,
+            parentPid: parentPid,
+            startupGraceSeconds: startupGraceSeconds,
+            outFile: outFile
+        )
+    }
+    return app.runWatch(
+        overridePort: overridePort,
+        exitOnHostCloseFlag: exitOnHostCloseFlag,
+        parentPid: parentPid,
+        startupGraceEnabled: exitOnHostCloseFlag,
+        startupGraceSeconds: startupGraceSeconds,
+        replaceExisting: replaceExisting,
+        waitBrieflyForLock: false
+    )
 }
 
 exit(runWatcherMain())

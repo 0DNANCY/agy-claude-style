@@ -74,20 +74,36 @@
       delete cleanBase.codeHash;
       const baseJson = JSON.stringify(cleanBase);
       const prevBaseJson = localStorage.getItem(STORAGE_FILE_CFG_KEY);
+      let saved = {};
+      try {
+        const rawSaved = JSON.parse(localStorage.getItem(STORAGE_SETTINGS_KEY) || '{}');
+        if (rawSaved && typeof rawSaved === 'object') saved = rawSaved;
+      } catch {}
       if (prevBaseJson && prevBaseJson !== baseJson) {
+        // 3-way diff merge: only keys modified externally in config.json override saved UI state.
+        let prevBase = {};
+        try {
+          prevBase = JSON.parse(prevBaseJson) || {};
+        } catch {}
+        const merged = { ...saved };
+        for (const key of Object.keys(cleanBase)) {
+          if (prevBase[key] !== cleanBase[key]) {
+            merged[key] = cleanBase[key];
+          }
+        }
         localStorage.setItem(STORAGE_FILE_CFG_KEY, baseJson);
-        localStorage.setItem(STORAGE_SETTINGS_KEY, baseJson);
-        return { ...base };
+        localStorage.setItem(STORAGE_SETTINGS_KEY, JSON.stringify(merged));
+        return { ...base, ...merged };
       }
       if (!prevBaseJson) localStorage.setItem(STORAGE_FILE_CFG_KEY, baseJson);
-      const saved = JSON.parse(localStorage.getItem(STORAGE_SETTINGS_KEY) || '{}');
       return { ...base, ...saved };
     } catch {
       return { ...base };
     }
   }
 
-  let cfg = loadSettings(initialConfig);
+  let runtimeInitConfig = { ...initialConfig };
+  let cfg = loadSettings(runtimeInitConfig);
   let destroyed = false;
 
   function saveSetting(key, value) {
@@ -221,6 +237,7 @@
   let cachedStore = null;
   let cachedTrajCtx = null;
   let trajCtxScannedAnchorCount = -1;
+  let lastTrajAnchorEl = null;
   let storeUnsub = null;
   let storeDebounce = null;
   const cloudOnlyCascadeIds = new Set();
@@ -265,11 +282,12 @@
     const anchors = document.querySelectorAll(
       '[data-testid="conversation-view"], [data-testid="agent-input-box"], [data-testid="agent-response"], [data-testid="conversation-row-sidebar"], [data-testid="new-conversation-button"], [data-testid="home-greeting"]'
     );
+    const primaryAnchor = anchors[0] || null;
     if (
       cachedSvc &&
       cachedStore &&
       isAppRootStore(cachedStore) &&
-      (cachedTrajCtx || trajCtxScannedAnchorCount === anchors.length)
+      (cachedTrajCtx || (trajCtxScannedAnchorCount === anchors.length && lastTrajAnchorEl === primaryAnchor))
     ) {
       return { svc: cachedSvc, store: cachedStore, trajCtx: cachedTrajCtx };
     }
@@ -297,6 +315,7 @@
       if (cachedSvc && bestRootStore && cachedTrajCtx) break;
     }
     trajCtxScannedAnchorCount = anchors.length;
+    lastTrajAnchorEl = primaryAnchor;
     const chosenStore = bestRootStore || fallbackStore;
     if (chosenStore && chosenStore !== cachedStore) {
       if (storeUnsub) {
@@ -1200,11 +1219,17 @@
     if (!rippleMount) return;
     clearTimeout(rippleMount.timer);
     if (rippleMount.rafId) cancelAnimationFrame(rippleMount.rafId);
-    if (rippleMount.ro) rippleMount.ro.disconnect();
-    rippleMount.root.removeEventListener('pointerdown', rippleMount.onPress);
+    if (rippleMount.ro && typeof rippleMount.ro.disconnect === 'function') rippleMount.ro.disconnect();
+    if (rippleMount.root && typeof rippleMount.root.removeEventListener === 'function') {
+      rippleMount.root.removeEventListener('pointerdown', rippleMount.onPress);
+    }
     document.removeEventListener('visibilitychange', rippleMount.onVis);
-    rippleMount.field.dispose();
-    rippleMount.host.remove();
+    if (rippleMount.field && typeof rippleMount.field.dispose === 'function') {
+      rippleMount.field.dispose();
+    }
+    if (rippleMount.host && typeof rippleMount.host.remove === 'function') {
+      rippleMount.host.remove();
+    }
     rippleMount = null;
   }
 
@@ -1231,8 +1256,8 @@
       width: -1,
       height: -1,
       dpr: 0,
-      waves: rippleCore.createWaveField(0, 0),
-      field: rippleCore.createGlyphField(canvas, 0, 0, rippleCore.createWaveField(0, 0)),
+      waves: null,
+      field: null,
       timer: 0,
       rafId: 0,
       ro: null,
@@ -1248,16 +1273,27 @@
       const h = home.clientHeight;
       const dpr = Math.min(window.devicePixelRatio || 1, 2);
       if (w === state.width && h === state.height && dpr === state.dpr) return;
-      const cols = Math.ceil(w / rippleCore.RIPPLE.cellWidth);
-      const rows = Math.ceil(h / rippleCore.RIPPLE.cellHeight);
       state.width = w;
       state.height = h;
       state.dpr = dpr;
+      if (w <= 0 || h <= 0) {
+        if (state.field) {
+          state.field.dispose();
+          state.field = null;
+        }
+        state.waves = null;
+        canvas.width = 0;
+        canvas.height = 0;
+        drawnOnce = false;
+        return;
+      }
+      const cols = Math.ceil(w / rippleCore.RIPPLE.cellWidth);
+      const rows = Math.ceil(h / rippleCore.RIPPLE.cellHeight);
       canvas.width = Math.round(cols * rippleCore.RIPPLE.cellWidth * dpr);
       canvas.height = Math.round(rows * rippleCore.RIPPLE.cellHeight * dpr);
       canvas.style.width = `${cols * rippleCore.RIPPLE.cellWidth}px`;
       canvas.style.height = `${rows * rippleCore.RIPPLE.cellHeight}px`;
-      state.field.dispose();
+      if (state.field) state.field.dispose();
       state.waves = rippleCore.createWaveField(cols, rows);
       state.field = rippleCore.createGlyphField(canvas, cols, rows, state.waves);
       drawnOnce = false;
@@ -1286,19 +1322,19 @@
       frameWanted = false;
       if (destroyed) return;
       const still = motionReduced();
-      state.waves.advance(still ? 0 : (now - previous) / 1000);
+      if (state.waves) state.waves.advance(still ? 0 : (now - previous) / 1000);
       previous = now;
-      if (canvas.width > 0 && state.field.needsDraw(now, still)) {
+      if (canvas.width > 0 && state.field && state.field.needsDraw(now, still)) {
         const pal = readRipplePalette(canvas);
         state.field.draw(now, pal, still);
         drawnOnce = true;
       }
-      if (state.field.busy() && !still) wake();
+      if (state.field && state.field.busy() && !still) wake();
       else sleep(now);
     }
 
     state.onPress = (ev) => {
-      if (ev.button !== 0 || motionReduced()) return;
+      if (ev.button !== 0 || motionReduced() || !state.waves) return;
       const rect = canvas.getBoundingClientRect();
       const col = Math.floor((ev.clientX - rect.left) / rippleCore.RIPPLE.cellWidth);
       const row = Math.floor((ev.clientY - rect.top) / rippleCore.RIPPLE.cellHeight);
@@ -1331,7 +1367,7 @@
     }
     layout();
     state.refreshTheme = () => {
-      state.field.invalidate();
+      if (state.field) state.field.invalidate();
       if (document.hidden && canvas.width > 0) drawFrame(performance.now());
       else wake();
     };
@@ -1340,8 +1376,20 @@
   }
 
   // ── Composer Decorations, Token HUD Inspector, Effort Slider & Smooth Caret ─
+  const MAX_ACTIVE_TRAJ_CACHE = 40;
+  const MAX_SUBAGENT_TRAJ_CACHE = 80;
   const activeTrajCache = new Map(); // cascadeId -> { fetching, lastMod, lastStep, data }
   const subagentTrajCache = new Map(); // subId -> { stepCount, status, analysis }
+  function pruneMapCache(map, maxEntries, protectedKeys) {
+    if (!map || map.size <= maxEntries) return;
+    for (const k of map.keys()) {
+      if (map.size <= maxEntries) break;
+      if (protectedKeys && protectedKeys.has(k)) continue;
+      const val = map.get(k);
+      if (val && (val.fetching || val.promise)) continue;
+      map.delete(k);
+    }
+  }
   const knownModelMaxCtx = new Map(); // normalized model base -> maxContextTokens
   const expandedHudGroups = new Set();
   let cachedQuotaData = null;
@@ -1581,8 +1629,11 @@
     };
   }
 
-  function fillCompactCommand() {
-    const ed = document.querySelector('[data-testid="agent-input-box"] [contenteditable="true"]');
+  function fillCompactCommand(scopeEl) {
+    const scopedBox = scopeEl?.closest?.('[data-testid="agent-input-box"]') || scopeEl;
+    const ed =
+      scopedBox?.querySelector?.('[contenteditable="true"]') ||
+      document.querySelector('[data-testid="agent-input-box"] [contenteditable="true"]');
     if (!ed) return false;
     try {
       ed.focus();
@@ -1618,6 +1669,15 @@
     const modelName = data?.lastModel || getCurrentModelLabel(card) || ui.activeModelFallback || 'Active Model';
     const remStr = `${formatCompactK(ring.remainingTokens)} / ${formatCompactK(totalW)} (${ring.contextRemainingPct.toFixed(1)}%)`;
     const usedStr = `${formatCompactK(ring.usedTokens)} (${ring.contextUsedPct.toFixed(1)}%)`;
+    const isLowCtx = Boolean((data?.calls > 0 || ring.usedTokens > 0) && ring.contextRemainingPct <= 20);
+    const lowCtxLevel = ring.contextRemainingPct <= 10 ? 'danger' : 'warn';
+    const lowCtxBannerHtml = isLowCtx
+      ? `<button type="button" class="ag-cs-ctx-warn-banner" data-ctx-act="compact" data-ctx-low="${lowCtxLevel}">${escapeHtml(
+          typeof ui.lowCtxBanner === 'function'
+            ? ui.lowCtxBanner(Math.round(ring.contextRemainingPct))
+            : `Low context (${Math.round(ring.contextRemainingPct)}% free) — click to fill /compact`
+        )}</button>`
+      : '';
     const activeReset5h = fmtBucketReset(activeQuota?.b5h, lang);
     const activeResetWeek = fmtBucketReset(activeQuota?.bWeek, lang);
     const quotaBadgeHtml =
@@ -1692,8 +1752,8 @@
         <div class="ag-cs-ctx-kpi-grid">
           <div class="ag-cs-ctx-kpi">
             <span class="ag-cs-ctx-k">${escapeHtml(ui.kpiRemaining || 'Remaining Free')}</span>
-            <span class="ag-cs-ctx-v" style="color:${ring.color}">${formatCompactK(ring.remainingTokens)} <small>(${ring.contextRemainingPct.toFixed(1)}%)</small></span>
-            <span class="ag-cs-ctx-sub">${escapeHtml(ui.usedWord || 'Used')} ${formatCompactK(ring.usedTokens)} / ${formatCompactK(totalW)}</span>
+            <span class="ag-cs-ctx-v" data-ag-live-kpi-rem-v="1" style="color:${ring.color}">${formatCompactK(ring.remainingTokens)} <small>(${ring.contextRemainingPct.toFixed(1)}%)</small></span>
+            <span class="ag-cs-ctx-sub" data-ag-live-kpi-rem-sub="1">${escapeHtml(ui.usedWord || 'Used')} ${formatCompactK(ring.usedTokens)} / ${formatCompactK(totalW)}</span>
           </div>
           <div class="ag-cs-ctx-kpi">
             <span class="ag-cs-ctx-k">${escapeHtml(ui.kpiCacheHit || 'Cache Hit Rate')}</span>
@@ -1731,10 +1791,12 @@
                       .join('')}
                   </div>`
                 : '';
+              const labelAttr = r.id === 'draft' ? ' data-ag-live-draft-label="1"' : '';
+              const valAttr = r.id === 'draft' ? ' data-ag-live-draft-val="1"' : r.id === 'rem' ? ' data-ag-live-rem-val="1"' : '';
               return `
                 <div class="ag-cs-ctx-row${r.highlight ? ' is-highlight' : ''}${hasCh ? ' is-expandable' : ''}" ${hasCh ? `data-expand-group="${r.id}"` : ''}>
-                  <span class="ag-cs-ctx-row-label"><span class="ag-cs-ctx-dot" style="background:${r.color}"></span>${escapeHtml(r.label)}${hasCh ? ` <small class="ag-cs-ctx-caret">${isExp ? '▾' : '▸'}</small>` : ''}</span>
-                  <span class="ag-cs-ctx-row-val">${formatCompactK(r.val)} <small>(${((r.val / totalW) * 100).toFixed(1)}%)</small></span>
+                  <span class="ag-cs-ctx-row-label"><span class="ag-cs-ctx-dot" style="background:${r.color}"></span><span${labelAttr}>${escapeHtml(r.label)}</span>${hasCh ? ` <small class="ag-cs-ctx-caret">${isExp ? '▾' : '▸'}</small>` : ''}</span>
+                  <span class="ag-cs-ctx-row-val"${valAttr}>${formatCompactK(r.val)} <small>(${((r.val / totalW) * 100).toFixed(1)}%)</small></span>
                 </div>
                 ${chHtml}`;
             })
@@ -1904,9 +1966,10 @@
       </div>
       <div class="ag-cs-ctx-hero">
         <div class="ag-cs-ctx-hero-line">
-          <span class="ag-cs-ctx-rem-main" style="color:${ring.color}">${escapeHtml(ui.remAvailLabel || 'Remaining')} ${remStr}</span>
-          <span class="ag-cs-ctx-used-sub">${escapeHtml(ui.usedWord || 'Used')} ${usedStr}${draft > 0 ? ` · ${escapeHtml(ui.draftWord || 'Draft')} +${formatCompactK(draft)}` : ''}</span>
+          <span class="ag-cs-ctx-rem-main" data-ag-live-rem-hero="1" style="color:${ring.color}">${escapeHtml(ui.remAvailLabel || 'Remaining')} ${remStr}</span>
+          <span class="ag-cs-ctx-used-sub" data-ag-live-used="1">${escapeHtml(ui.usedWord || 'Used')} ${usedStr}${draft > 0 ? ` · ${escapeHtml(ui.draftWord || 'Draft')} +${formatCompactK(draft)}` : ''}</span>
         </div>
+        ${lowCtxBannerHtml}
         ${quotaBadgeHtml ? `<div class="ag-cs-ctx-hero-sub">${quotaBadgeHtml}</div>` : ''}
         <div class="ag-cs-ctx-bar">
           <span class="ag-cs-ctx-seg-sys" style="width:${pctOf(sys)}%" title="${escapeHtml(ui.segSystemRules || 'System')}: ${formatCompactK(sys)}"></span>
@@ -1914,7 +1977,7 @@
           <span class="ag-cs-ctx-seg-msgs" style="width:${pctOf(msgs)}%" title="${escapeHtml(ui.segChatMessages || 'Messages')}: ${formatCompactK(msgs)}"></span>
           <span class="ag-cs-ctx-seg-toolres" style="width:${pctOf(toolRes)}%" title="${escapeHtml(ui.segToolResults || 'Tool Results')}: ${formatCompactK(toolRes)}"></span>
           ${overhead > 0 ? `<span class="ag-cs-ctx-seg-overhead" style="width:${pctOf(overhead)}%;background:#64748b" title="${escapeHtml(ui.segOverhead || 'Context Overhead')}: ${formatCompactK(overhead)}"></span>` : ''}
-          <span class="ag-cs-ctx-seg-draft" style="width:${pctOf(draft)}%" title="${escapeHtml(ui.draftWord || 'Draft')}: ${formatCompactK(draft)}"></span>
+          <span class="ag-cs-ctx-seg-draft" data-ag-live-draft-seg="1" style="width:${pctOf(draft)}%" title="${escapeHtml(ui.draftWord || 'Draft')}: ${formatCompactK(draft)}"></span>
         </div>
       </div>
       <div class="ag-cs-ctx-tabs" role="tablist">
@@ -1928,6 +1991,8 @@
       </div>
     `;
     pop._agCsRenderedData = data;
+    pop._agCsHadDraft = draft > 0;
+    pop._agCsLowCtxAttr = isLowCtx ? lowCtxLevel : '';
     const newBodyEl = pop.querySelector('.ag-cs-ctx-body');
     if (newBodyEl && prevBodyScrollTop > 0) newBodyEl.scrollTop = prevBodyScrollTop;
 
@@ -1947,23 +2012,49 @@
         if (act === 'close') {
           closeContextPopover();
         } else if (act === 'compact') {
+          const targetCard = card;
           closeContextPopover();
-          fillCompactCommand();
+          fillCompactCommand(targetCard);
         } else if (act === 'copy') {
           const curLang = getLang();
           const curUi = uiText(curLang);
           const safeData = data || createEmptyConvoData(cascadeId, getKnownMaxContextForCard(card, data));
-          const report =
+          const textPayload =
             typeof usageCore.buildTelemetryReport === 'function'
               ? usageCore.buildTelemetryReport(safeData, draftEst, cachedQuotaData, activeQuota, curLang)
               : JSON.stringify(safeData || {}, null, 2);
-          if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
-            navigator.clipboard.writeText(report).catch(() => {});
-          }
-          btn.textContent = curUi.copiedBtnLabel || '✓ Copied';
-          setTimeout(() => {
-            if (btn.isConnected) btn.textContent = uiText(getLang()).copyBtnLabel || 'Copy';
-          }, 1400);
+
+          const writeClipboard = async () => {
+            if (!navigator.clipboard || typeof navigator.clipboard.writeText !== 'function') {
+              return false;
+            }
+            try {
+              await navigator.clipboard.writeText(textPayload);
+              return true;
+            } catch {
+              return false;
+            }
+          };
+
+          const setFeedback = (label, stateKind) => {
+            if (!btn.isConnected) return;
+            clearTimeout(btn._agCsFeedbackTimer);
+            btn.setAttribute('data-action-state', stateKind);
+            btn.textContent = label;
+            btn._agCsFeedbackTimer = setTimeout(() => {
+              if (!btn.isConnected) return;
+              const resetUi = uiText(getLang());
+              btn.removeAttribute('data-action-state');
+              btn.textContent = resetUi.copyBtnLabel || 'Copy';
+            }, 1400);
+          };
+
+          writeClipboard().then((clipOk) => {
+            setFeedback(
+              clipOk ? curUi.copiedBtnLabel || '✓ Copied' : curUi.actionFailedLabel || '✕ Failed',
+              clipOk ? 'ok' : 'error'
+            );
+          });
         } else if (act === 'refresh') {
           Promise.all([fetchActiveConvo(cascadeId, true), fetchQuotaData(true)]).then(([fresh]) => {
             if (openPopover === pop && pop.isConnected) {
@@ -2179,7 +2270,11 @@
     }
 
     let entry = activeTrajCache.get(cascadeId);
-    if (!entry) {
+    if (entry) {
+      // Touch for LRU ordering
+      activeTrajCache.delete(cascadeId);
+      activeTrajCache.set(cascadeId, entry);
+    } else {
       entry = {
         fetching: false,
         promise: null,
@@ -2194,6 +2289,11 @@
         data: null,
       };
       activeTrajCache.set(cascadeId, entry);
+      pruneMapCache(
+        activeTrajCache,
+        MAX_ACTIVE_TRAJ_CACHE,
+        openPopoverCascadeId ? new Set([openPopoverCascadeId]) : null
+      );
     }
     const now = Date.now();
     const changed =
@@ -2270,11 +2370,13 @@
                 });
                 if (!subRes) return cm;
                 const subAnalysis = usageCore.analyzeActiveConversation(subRes, { cascadeId: cm.id });
+                subagentTrajCache.delete(cm.id);
                 subagentTrajCache.set(cm.id, {
                   stepCount: Math.max(cm.stepCount, subAnalysis?.totalSteps || 0),
                   status: cm.status,
                   analysis: subAnalysis,
                 });
+                pruneMapCache(subagentTrajCache, MAX_SUBAGENT_TRAJ_CACHE, null);
                 return { ...cm, analysis: subAnalysis };
               } catch {
                 return cm;
@@ -2930,8 +3032,12 @@
         card.insertBefore(topBar, card.firstChild);
       }
       const ctxRemPctRound = Math.round(ring.contextRemainingPct);
+      const isLowCtx = Boolean((d.calls > 0 || ring.usedTokens > 0) && ring.contextRemainingPct <= 20);
+      const lowCtxAttr = isLowCtx ? (ring.contextRemainingPct <= 10 ? 'danger' : 'warn') : '';
+      if (lowCtxAttr) topBar.setAttribute('data-ctx-low', lowCtxAttr);
+      else topBar.removeAttribute('data-ctx-low');
       const ctxColor = ctxRemPctRound <= 10 ? '#dc3c3d' : ctxRemPctRound <= 30 ? '#fbb315' : '#257de0';
-      const topKey = `${ctxRemPctRound}|${ring.remainingTokens}|${totalW}|${ring.usedTokens}|${d.sysTokens || 0}|${d.toolsTokens || 0}|${chatMsgs}|${d.toolResultsTokens || 0}|${d.overheadTokens || 0}|${draftEst.tokens}|${Math.round(d.cacheHitPct || 0)}|${topSpeed}|${lang}`;
+      const topKey = `${ctxRemPctRound}|${lowCtxAttr}|${ring.remainingTokens}|${totalW}|${ring.usedTokens}|${d.sysTokens || 0}|${d.toolsTokens || 0}|${chatMsgs}|${d.toolResultsTokens || 0}|${d.overheadTokens || 0}|${draftEst.tokens}|${Math.round(d.cacheHitPct || 0)}|${topSpeed}|${lang}`;
       if (topBar.getAttribute('data-ag-cs-top-key') !== topKey) {
         topBar.setAttribute('data-ag-cs-top-key', topKey);
         topBar.innerHTML = `
@@ -2948,14 +3054,14 @@
             <span>${escapeHtml(ui.usedWord || 'Used')} ${formatCompactK(ring.usedTokens)}${draftEst.tokens > 0 ? ` +${formatCompactK(draftEst.tokens)}` : ''}</span>
             <span>${escapeHtml(ui.cacheShort || 'Cache')} ${Math.round(d.cacheHitPct || 0)}%</span>
             ${topSpeed > 0 ? `<span>⚡ ${topSpeed} tok/s</span>` : ''}
-            <button type="button" class="ag-cs-hud-compact-btn" data-hud-compact-btn="1">/compact</button>
+            <button type="button" class="ag-cs-hud-compact-btn"${lowCtxAttr ? ` data-ctx-low="${lowCtxAttr}"` : ''} data-hud-compact-btn="1">/compact</button>
           </div>
         `;
         const cBtn = topBar.querySelector('[data-hud-compact-btn]');
         if (cBtn) {
           cBtn.addEventListener('click', (ev) => {
             ev.stopPropagation();
-            fillCompactCommand();
+            fillCompactCommand(card);
           });
         }
       }
@@ -2997,7 +3103,6 @@
     if (cfg.hudRimProgress === true) {
       if (composerShell) {
         composerShell.setAttribute('data-ag-cs-rim', '1');
-        composerShell.style.setProperty('--ag-cs-rim-pct', `${ring.pct.toFixed(1)}%`);
         composerShell.style.setProperty('--ag-cs-rim-color', ring.color);
       }
       const rimHost = card.querySelector(':scope > div.relative.w-full') || card;
@@ -3023,7 +3128,6 @@
     } else {
       if (composerShell && composerShell.hasAttribute('data-ag-cs-rim')) {
         composerShell.removeAttribute('data-ag-cs-rim');
-        composerShell.style.removeProperty('--ag-cs-rim-pct');
         composerShell.style.removeProperty('--ag-cs-rim-color');
       }
       if (rimBar) rimBar.remove();
@@ -4514,7 +4618,11 @@
           }
         });
       }
-      if (cfg.ringMode === 'quota') {
+      const needQuotaPoll =
+        cfg.ringMode === 'quota' ||
+        cfg.hudBottomBar === true ||
+        Boolean(openPopover && openPopover.isConnected && activeHudTab === 'quotas');
+      if (needQuotaPoll) {
         const needQuotaRefresh = !cachedQuotaData || Date.now() - lastQuotaFetchAt >= 25000;
         const qProm = fetchQuotaData(false);
         if (needQuotaRefresh && qProm && typeof qProm.then === 'function') {
@@ -4606,7 +4714,13 @@
       typeof ui.ringTooltip === 'function'
         ? ui.ringTooltip(remStr, maxStr, ring.contextRemainingPct.toFixed(1), usedStr, ring.contextUsedPct.toFixed(1), ring.quotaRemainingPct)
         : `Remaining ${remStr} / ${maxStr} (${ring.contextRemainingPct.toFixed(1)}%) · Used ${usedStr} (${ring.contextUsedPct.toFixed(1)}%)`;
-    const ringKey = `${ring.mode}|${pctRound}|${dash}|${color}|${ringTitle}`;
+    const lowCtxRingAttr =
+      ring.mode === 'context' && (d.calls > 0 || ring.usedTokens > 0) && ring.contextRemainingPct <= 20
+        ? ring.contextRemainingPct <= 10
+          ? 'danger'
+          : 'warn'
+        : '';
+    const ringKey = `${ring.mode}|${lowCtxRingAttr}|${pctRound}|${dash}|${color}|${ringTitle}`;
 
     if (!ringBtn) {
       ringBtn = document.createElement('button');
@@ -4614,6 +4728,7 @@
       ringBtn.className = 'ag-cs-context-ring';
       ringBtn.setAttribute('data-ag-no-i18n', '');
       ringBtn.setAttribute('data-ring-mode', ring.mode);
+      if (lowCtxRingAttr) ringBtn.setAttribute('data-ctx-low', lowCtxRingAttr);
       ringBtn.setAttribute('title', ringTitle);
       ringBtn.innerHTML = `<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="${r}" fill="none" stroke="var(--ag-cs-heat-empty)" stroke-width="2.2"/><circle class="ag-cs-ring-fill" cx="8" cy="8" r="${r}" fill="none" stroke="${color}" stroke-width="2.2" stroke-dasharray="${dash} ${circ.toFixed(2)}" stroke-linecap="round"/></svg><span>${pctRound}%</span>`;
       ringBtn.addEventListener('click', (ev) => {
@@ -4626,6 +4741,8 @@
     } else if (ringBtn.getAttribute('data-ag-cs-ring-key') !== ringKey) {
       ringBtn.setAttribute('data-ag-cs-ring-key', ringKey);
       ringBtn.setAttribute('data-ring-mode', ring.mode);
+      if (lowCtxRingAttr) ringBtn.setAttribute('data-ctx-low', lowCtxRingAttr);
+      else ringBtn.removeAttribute('data-ctx-low');
       ringBtn.setAttribute('title', ringTitle);
       const fillCircle = ringBtn.querySelector('.ag-cs-ring-fill');
       const pctSpan = ringBtn.querySelector('span');
@@ -5209,6 +5326,84 @@
     }
   }
 
+  let popoverDraftRaf = 0;
+  let popoverDraftTimer = 0;
+
+  function flushLiveDraftPopoverUpdate() {
+    popoverDraftRaf = 0;
+    popoverDraftTimer = 0;
+    if (destroyed || !openPopover || !openPopover.isConnected) return;
+    const latest =
+      activeTrajCache.get(openPopoverCascadeId)?.data ||
+      openPopoverAnchor?.closest?.('.surface-composer-card')?._agCsLastData ||
+      null;
+    const card =
+      openPopoverAnchor?.closest?.('.surface-composer-card') ||
+      document.querySelector('[data-testid="agent-input-box"] .surface-composer-card');
+    const { ring, draftEst } = getRingTelemetryForCard(card, latest);
+    const draft = Number(draftEst.tokens || 0);
+    const hasDraft = draft > 0;
+    const isLowCtx = Boolean((latest?.calls > 0 || ring.usedTokens > 0) && ring.contextRemainingPct <= 20);
+    const curLowCtxAttr = isLowCtx ? (ring.contextRemainingPct <= 10 ? 'danger' : 'warn') : '';
+    const usedHero = openPopover.querySelector('[data-ag-live-used]');
+    if (
+      activeHudTab === 'breakdown' &&
+      usedHero &&
+      Boolean(openPopover._agCsHadDraft) === hasDraft &&
+      (openPopover._agCsLowCtxAttr || '') === curLowCtxAttr
+    ) {
+      const lang = getLang();
+      const ui = uiText(lang);
+      const totalW = ring.maxTokens || 256000;
+      const pctOf = (v) => Math.max(0, Math.min(100, (v / totalW) * 100)).toFixed(2);
+      const remStr = `${formatCompactK(ring.remainingTokens)} / ${formatCompactK(totalW)} (${ring.contextRemainingPct.toFixed(1)}%)`;
+      const usedStr = `${formatCompactK(ring.usedTokens)} (${ring.contextUsedPct.toFixed(1)}%)`;
+      const remHero = openPopover.querySelector('[data-ag-live-rem-hero]');
+      const draftSeg = openPopover.querySelector('[data-ag-live-draft-seg]');
+      const kpiRemV = openPopover.querySelector('[data-ag-live-kpi-rem-v]');
+      const kpiRemSub = openPopover.querySelector('[data-ag-live-kpi-rem-sub]');
+      const draftLabel = openPopover.querySelector('[data-ag-live-draft-label]');
+      const draftVal = openPopover.querySelector('[data-ag-live-draft-val]');
+      const remVal = openPopover.querySelector('[data-ag-live-rem-val]');
+
+      if (remHero) {
+        remHero.style.color = ring.color;
+        remHero.textContent = `${ui.remAvailLabel || 'Remaining'} ${remStr}`;
+      }
+      usedHero.textContent = `${ui.usedWord || 'Used'} ${usedStr}${hasDraft ? ` · ${ui.draftWord || 'Draft'} +${formatCompactK(draft)}` : ''}`;
+      if (draftSeg) draftSeg.style.width = `${pctOf(draft)}%`;
+      if (kpiRemV) {
+        kpiRemV.style.color = ring.color;
+        kpiRemV.innerHTML = `${formatCompactK(ring.remainingTokens)} <small>(${ring.contextRemainingPct.toFixed(1)}%)</small>`;
+      }
+      if (kpiRemSub) {
+        kpiRemSub.textContent = `${ui.usedWord || 'Used'} ${formatCompactK(ring.usedTokens)} / ${formatCompactK(totalW)}`;
+      }
+      if (draftLabel) {
+        draftLabel.textContent =
+          typeof ui.liveDraftN === 'function' ? ui.liveDraftN(draftEst.chars) : `Live Draft (${draftEst.chars} chars)`;
+      }
+      if (draftVal) {
+        draftVal.innerHTML = `${formatCompactK(draft)} <small>(${((draft / totalW) * 100).toFixed(1)}%)</small>`;
+      }
+      if (remVal) {
+        remVal.innerHTML = `${formatCompactK(ring.remainingTokens)} <small>(${((ring.remainingTokens / totalW) * 100).toFixed(1)}%)</small>`;
+      }
+      return;
+    }
+    renderContextPopoverContent(openPopover, latest, openPopoverCascadeId);
+    if (openPopoverAnchor) positionPopoverAboveAnchor(openPopover, openPopoverAnchor);
+  }
+
+  function scheduleLiveDraftPopoverUpdate() {
+    if (popoverDraftRaf || popoverDraftTimer || destroyed) return;
+    if (typeof requestAnimationFrame === 'function') {
+      popoverDraftRaf = requestAnimationFrame(flushLiveDraftPopoverUpdate);
+    } else {
+      popoverDraftTimer = setTimeout(flushLiveDraftPopoverUpdate, 16);
+    }
+  }
+
   function onDocCaretEvent(ev) {
     const type = ev?.type || '';
     const isTyping = type === 'input' || type === 'keyup' || type === 'compositionupdate' || type === 'compositionend';
@@ -5219,9 +5414,7 @@
         scheduleSync();
       }
       if (openPopover && openPopover.isConnected) {
-        const latest = activeTrajCache.get(openPopoverCascadeId)?.data || openPopoverAnchor?.closest?.('.surface-composer-card')?._agCsLastData || null;
-        renderContextPopoverContent(openPopover, latest, openPopoverCascadeId);
-        if (openPopoverAnchor) positionPopoverAboveAnchor(openPopover, openPopoverAnchor);
+        scheduleLiveDraftPopoverUpdate();
       }
     }
   }
@@ -5250,10 +5443,19 @@
     if (m.type === 'attributes' && m.target !== document.body && m.target !== document.documentElement) {
       return true;
     }
+    const targetEl = m.target && typeof m.target.closest === 'function' ? m.target : m.target?.parentElement;
     if (m.type === 'characterData') {
-      const el = m.target && m.target.closest ? m.target : m.target?.parentElement;
-      if (!el || !el.closest) return true;
-      return !el.closest('[data-testid="conversation-view"], [data-testid="agent-input-box"]');
+      if (!targetEl || typeof targetEl.closest !== 'function') return true;
+      return !targetEl.closest('[data-testid="conversation-view"], [data-testid="agent-input-box"]');
+    }
+    if (
+      m.type === 'childList' &&
+      targetEl &&
+      typeof targetEl.closest === 'function' &&
+      targetEl.closest('.monaco-editor, .xterm') &&
+      !targetEl.closest('[data-testid="agent-input-box"]')
+    ) {
+      return true;
     }
     return false;
   }
@@ -5315,6 +5517,14 @@
     if (caretRaf) {
       if (typeof cancelAnimationFrame === 'function') cancelAnimationFrame(caretRaf);
       caretRaf = 0;
+    }
+    if (popoverDraftRaf) {
+      if (typeof cancelAnimationFrame === 'function') cancelAnimationFrame(popoverDraftRaf);
+      popoverDraftRaf = 0;
+    }
+    if (popoverDraftTimer) {
+      clearTimeout(popoverDraftTimer);
+      popoverDraftTimer = 0;
     }
     if (storeUnsub) {
       try {
@@ -5387,11 +5597,12 @@
     codeHash: CODE_HASH,
     refreshConfig(next) {
       if (next && typeof next === 'object') {
-        cfg = loadSettings({ ...initialConfig, ...next });
+        runtimeInitConfig = { ...runtimeInitConfig, ...next };
+        cfg = loadSettings(runtimeInitConfig);
       } else {
         try {
           const saved = JSON.parse(localStorage.getItem(STORAGE_SETTINGS_KEY) || '{}');
-          cfg = { ...initialConfig, ...cfg, ...saved };
+          cfg = { ...runtimeInitConfig, ...cfg, ...saved };
         } catch {}
       }
       applyRootAttrs();
@@ -5460,7 +5671,6 @@
       });
       document.querySelectorAll('[data-ag-cs-rim]').forEach((el) => {
         el.removeAttribute('data-ag-cs-rim');
-        el.style.removeProperty('--ag-cs-rim-pct');
         el.style.removeProperty('--ag-cs-rim-color');
       });
       document

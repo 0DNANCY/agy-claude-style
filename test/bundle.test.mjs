@@ -3437,3 +3437,562 @@ test('fallback to createAgentStateProviderForConvo when getCascadeTrajectory thr
     for (const id of timers) clearTimeout(id);
   }
 });
+
+test('hudBottomBar triggers quota fetch in context mode, low-context triggers /compact warning on target composer, copy reports telemetry, and 3-way loadSettings preserves local edits', async () => {
+  const timers = new Set();
+  const makeEl = (tag, opts = {}) => {
+    const attrs = new Map(Object.entries(opts.attrs || {}));
+    const classes = new Set((opts.className || '').split(/\s+/).filter(Boolean));
+    const listeners = new Map();
+    const children = [];
+    const matchesSimple = (n, sel) => {
+      if (!n || n.nodeType !== 1) return false;
+      let rest = sel.trim();
+      const tm = /^[a-zA-Z0-9_-]+/.exec(rest);
+      if (tm) {
+        if (n.tagName !== tm[0].toUpperCase()) return false;
+        rest = rest.slice(tm[0].length);
+      }
+      while (rest) {
+        if (rest[0] === '#') {
+          const m = /^#([a-zA-Z0-9_-]+)/.exec(rest);
+          if (!m || n.id !== m[1]) return false;
+          rest = rest.slice(m[0].length);
+        } else if (rest[0] === '.') {
+          const m = /^\.([a-zA-Z0-9_-]+)/.exec(rest);
+          if (!m || !n.classList.contains(m[1])) return false;
+          rest = rest.slice(m[0].length);
+        } else if (rest[0] === '[') {
+          const m = /^\[([^\]=]+)(?:="([^"]*)")?\]/.exec(rest);
+          if (!m) return false;
+          const ok = m[2] === undefined ? n.hasAttribute(m[1]) : n.getAttribute(m[1]) === m[2];
+          if (!ok) return false;
+          rest = rest.slice(m[0].length);
+        } else {
+          return false;
+        }
+      }
+      return true;
+    };
+    const matchesSel = (n, sel) =>
+      sel.split(',').some((part) => {
+        const tokens = part.trim().split(/\s+/).filter(Boolean);
+        if (!tokens.length || !matchesSimple(n, tokens[tokens.length - 1])) return false;
+        let cur = n.parentElement;
+        let idx = tokens.length - 2;
+        while (cur && idx >= 0) {
+          if (matchesSimple(cur, tokens[idx])) idx -= 1;
+          cur = cur.parentElement;
+        }
+        return idx < 0;
+      });
+    const el = {
+      nodeType: 1,
+      tagName: tag.toUpperCase(),
+      id: opts.id || '',
+      children,
+      parentElement: null,
+      parentNode: null,
+      isConnected: true,
+      clientWidth: 420,
+      offsetWidth: 420,
+      clientHeight: 32,
+      offsetHeight: 32,
+      _text: opts.text || '',
+      _html: '',
+      _props: {},
+      style: {
+        setProperty(k, v) { el._props[k] = String(v); },
+        getPropertyValue(k) { return el._props[k] || ''; },
+        removeProperty(k) { delete el._props[k]; },
+      },
+      classList: { contains: (c) => classes.has(c), add: (c) => classes.add(c), remove: (c) => classes.delete(c) },
+      get className() { return Array.from(classes).join(' '); },
+      set className(v) { classes.clear(); String(v).split(/\s+/).filter(Boolean).forEach((c) => classes.add(c)); },
+      get textContent() { return children.length ? children.map((c) => c.textContent).join('') : this._text; },
+      set textContent(v) { children.length = 0; this._text = String(v); },
+      set innerHTML(v) {
+        this._html = String(v);
+        children.length = 0;
+        const mBtn = /data-hud-compact-btn="1"/.test(this._html);
+        if (mBtn) {
+          this.appendChild(makeEl('button', { className: 'ag-cs-hud-compact-btn', attrs: { 'data-hud-compact-btn': '1' }, text: '/compact' }));
+        }
+        const acts = Array.from(this._html.matchAll(/data-ctx-act="([^"]+)"/g));
+        for (const m of acts) {
+          this.appendChild(makeEl('button', { className: 'ag-cs-ctx-act-btn', attrs: { 'data-ctx-act': m[1] } }));
+        }
+        const mSpan = /<span>([^<]*)<\/span>/.exec(this._html);
+        if (mSpan) this.appendChild(makeEl('span', { text: mSpan[1] }));
+      },
+      get innerHTML() { return this._html; },
+      get childElementCount() { return children.length; },
+      get firstChild() { return children[0] || null; },
+      get firstElementChild() { return children[0] || null; },
+      get lastElementChild() { return children[children.length - 1] || null; },
+      appendChild(ch) { ch.parentElement = ch.parentNode = el; children.push(ch); return ch; },
+      insertBefore(ch, ref) { ch.parentElement = ch.parentNode = el; const i = ref ? children.indexOf(ref) : -1; if (i >= 0) children.splice(i, 0, ch); else children.push(ch); return ch; },
+      removeChild(ch) { const i = children.indexOf(ch); if (i >= 0) children.splice(i, 1); ch.parentElement = ch.parentNode = null; return ch; },
+      remove() { if (el.parentElement) el.parentElement.removeChild(el); },
+      setAttribute(k, v) { attrs.set(k, String(v)); if (k === 'id') el.id = String(v); },
+      getAttribute(k) { return attrs.has(k) ? attrs.get(k) : null; },
+      hasAttribute(k) { return attrs.has(k); },
+      removeAttribute(k) { attrs.delete(k); },
+      toggleAttribute(k, f) { const on = f === undefined ? !attrs.has(k) : Boolean(f); if (on) attrs.set(k, ''); else attrs.delete(k); return on; },
+      addEventListener(ev, cb) { if (!listeners.has(ev)) listeners.set(ev, []); listeners.get(ev).push(cb); },
+      removeEventListener(ev, cb) { const arr = listeners.get(ev); if (arr) { const i = arr.indexOf(cb); if (i >= 0) arr.splice(i, 1); } },
+      dispatch(ev, payload = {}) { for (const fn of [...(listeners.get(ev) || [])]) fn({ type: ev, stopPropagation() {}, preventDefault() {}, ...payload }); },
+      focus() {},
+      animate() { return { cancel() {}, finished: Promise.resolve() }; },
+      getBoundingClientRect: () => ({ left: 10, top: 320, right: 430, bottom: 352, width: 420, height: 32 }),
+      closest(sel) { let c = el; while (c) { if (matchesSel(c, sel)) return c; c = c.parentElement; } return null; },
+      querySelector(sel) { return el.querySelectorAll(sel)[0] || null; },
+      querySelectorAll(sel) {
+        const res = [];
+        const walk = (n) => {
+          for (const ch of n.children || []) {
+            if (matchesSel(ch, sel)) res.push(ch);
+            walk(ch);
+          }
+        };
+        walk(el);
+        return res;
+      },
+    };
+    return el;
+  };
+
+  const html = makeEl('html');
+  const head = makeEl('head');
+  const body = makeEl('body', { className: 'theme-dark' });
+  html.appendChild(head);
+  html.appendChild(body);
+
+  // Two composer boxes: an unrelated earlier box (hidden/other) and our active card's box!
+  const otherBox = makeEl('div', { attrs: { 'data-testid': 'agent-input-box' } });
+  const otherEd = makeEl('div', { attrs: { contenteditable: 'true' }, text: 'untouched other composer' });
+  otherBox.appendChild(otherEd);
+  body.appendChild(otherBox);
+
+  const cascadeId = 'low-ctx-convo-1';
+  const convView = makeEl('div', { attrs: { 'data-testid': 'conversation-view', 'data-cascade-id': cascadeId } });
+  const activeBox = makeEl('div', { attrs: { 'data-testid': 'agent-input-box' } });
+  const card = makeEl('div', { className: 'surface-composer-card' });
+  const activeEd = makeEl('div', { attrs: { contenteditable: 'true' } });
+  const footer = makeEl('div', { className: 'agy-composer-footer' });
+  card.appendChild(activeEd);
+  card.appendChild(footer);
+  activeBox.appendChild(card);
+  convView.appendChild(activeBox);
+  body.appendChild(convView);
+
+  let quotaCalls = 0;
+  let copiedText = '';
+  const fakeTraj = {
+    trajectory: {
+      steps: [
+        { status: 3, metadata: { createdAt: '2026-11-17T12:00:00Z' }, step: { case: 'userInput', value: { query: 'Trim context window' } } },
+        { status: 3, metadata: { createdAt: '2026-11-17T12:00:05Z' }, step: { case: 'plannerResponse', value: { response: 'Working...' } } },
+      ],
+      generatorMetadata: [
+        {
+          stepIndices: [1],
+          metadata: {
+            value: {
+              modelDisplayName: 'Claude Sonnet 4.5',
+              usage: { inputTokens: '12000', cacheReadTokens: '160000', outputTokens: '4000', model: 1001 },
+              chatStartMetadata: {
+                contextWindowMetadata: { maxContextTokens: 200000, estimatedTokensUsed: 176000 }, // 12% free (<= 20%)
+              },
+            },
+          },
+        },
+      ],
+    },
+  };
+  const fakeRootStore = {
+    getState: () => ({
+      trajectorySummaries: { [cascadeId]: { summary: { stepCount: 2, status: 1 } } },
+      userStatus: {
+        cascadeModelConfigData: {
+          clientModelGroups: [
+            {
+              groupName: 'Claude Sonnet',
+              buckets: [{ id: 'b5h', window: '5h', remainingFraction: 0.65, resetTime: new Date(Date.now() + 3600000).toISOString() }],
+            },
+          ],
+        },
+      },
+    }),
+    subscribe: () => () => {},
+  };
+  const fakeSvc = {
+    async getCascadeTrajectory() { return fakeTraj; },
+    async retrieveUserQuotaSummary() {
+      quotaCalls++;
+      return {
+        groups: [
+          {
+            displayName: 'Claude Sonnet',
+            buckets: [
+              {
+                bucketId: 'b5h',
+                window: '5h',
+                remaining: { case: 'remainingFraction', value: 0.65 },
+                resetTime: new Date(Date.now() + 3600000).toISOString(),
+              },
+            ],
+          },
+        ],
+      };
+    },
+  };
+  activeBox.__reactFiber$test = {
+    memoizedProps: { cascadeId, store: fakeRootStore, getCascadeTrajectory: fakeSvc.getCascadeTrajectory },
+    dependencies: { firstContext: { memoizedValue: fakeSvc, next: null } },
+    return: null,
+  };
+
+  const doc = {
+    documentElement: html,
+    head,
+    body,
+    hidden: false,
+    readyState: 'complete',
+    createElement: (t) => makeEl(t),
+    getElementById: () => null,
+    querySelector: (s) => html.querySelector(s),
+    querySelectorAll: (s) => html.querySelectorAll(s),
+    addEventListener() {},
+    removeEventListener() {},
+  };
+  const storage = { _m: {}, getItem(k) { return this._m[k] || null; }, setItem(k, v) { this._m[k] = String(v); } };
+  const sandbox = {
+    window: null,
+    globalThis: null,
+    document: doc,
+    navigator: { language: 'zh-CN', clipboard: { writeText: async (t) => { copiedText = t; } } },
+    location: { pathname: `/c/${cascadeId}` },
+    localStorage: storage,
+    getComputedStyle: () => ({ getPropertyValue: () => '' }),
+    matchMedia: () => ({ matches: false }),
+    MutationObserver: class { observe() {} disconnect() {} },
+    ResizeObserver: class { observe() {} disconnect() {} },
+    requestAnimationFrame: (fn) => { const id = setTimeout(() => fn(Date.now()), 5); timers.add(id); return id; },
+    cancelAnimationFrame: (id) => { timers.delete(id); clearTimeout(id); },
+    setTimeout: (fn, ms) => { const id = setTimeout(fn, ms); timers.add(id); return id; },
+    clearTimeout: (id) => { timers.delete(id); clearTimeout(id); },
+    setInterval: () => 1,
+    clearInterval: () => {},
+    performance: { now: () => Date.now() },
+    InputEvent: class { constructor(t, o) { this.type = t; Object.assign(this, o); } },
+    Math, Date, JSON, Map, Set, Array, Object, String, Number, Boolean, Promise, Uint8Array, Float32Array, Intl,
+  };
+  sandbox.window = sandbox;
+  sandbox.globalThis = sandbox;
+
+  try {
+    const res = vm.runInNewContext(
+      cdp.buildInjectExpression({ ...cdp.DEFAULT_CONFIG, ringMode: 'context', hudBottomBar: true, hudTopBar: true }),
+      sandbox
+    );
+    assert.equal(res.status, 'ok');
+    await new Promise((r) => setTimeout(r, 120));
+
+    // 1. hudBottomBar must trigger quota fetch even when ringMode is 'context'
+    assert.ok(quotaCalls >= 1, 'Expected hudBottomBar to trigger quota fetch in context mode');
+    const botBar = card.querySelector('.ag-cs-hud-bottom-bar');
+    assert.ok(botBar && botBar.innerHTML.includes('65%'), `Expected bottom HUD bar to render 65% quota, got ${botBar?.innerHTML}`);
+
+    // 2. Low context (12% remaining <= 20%) flags ring, top bar & /compact button
+    const ringBtn = footer.querySelector('.ag-cs-context-ring');
+    const topBar = card.querySelector('.ag-cs-hud-top-bar');
+    assert.equal(ringBtn?.getAttribute('data-ctx-low'), 'warn');
+    assert.equal(topBar?.getAttribute('data-ctx-low'), 'warn');
+
+    // 3. Popover shows low-ctx banner & working Copy button
+    ringBtn.dispatch('click');
+    await new Promise((r) => setTimeout(r, 40));
+    const pop = body.querySelector('.ag-cs-ctx-popover');
+    assert.ok(pop);
+    assert.ok(pop.innerHTML.includes('ag-cs-ctx-warn-banner'));
+    assert.ok(!pop.innerHTML.includes('ag-cs-ctx-cost'));
+
+    assert.equal(pop.querySelector('button[data-ctx-act="export"]'), null);
+    const copyBtn = pop.querySelector('button[data-ctx-act="copy"]');
+    copyBtn.dispatch('click');
+    await new Promise((r) => setTimeout(r, 30));
+    assert.match(copiedText, /会话累计/);
+    assert.doesNotMatch(copiedText, /参考 API|费用/);
+
+    // 4. Scoped /compact fills activeEd ONLY and leaves otherEd untouched
+    const compactBtn = topBar.querySelector('[data-hud-compact-btn="1"]');
+    assert.ok(compactBtn);
+    compactBtn.dispatch('click');
+    assert.equal(activeEd.textContent, '/compact');
+    assert.equal(otherEd.textContent, 'untouched other composer');
+
+    // 5. 3-way loadSettings merge keeps local UI preference (hudCompact=true) when external config changes only palette
+    const savedMap = JSON.parse(storage.getItem('agClaudeStyle.settings.v1') || '{}');
+    savedMap.hudCompact = true;
+    storage.setItem('agClaudeStyle.settings.v1', JSON.stringify(savedMap));
+    sandbox.window.__agClaudeStyle.refreshConfig({
+      ...cdp.DEFAULT_CONFIG,
+      ringMode: 'context',
+      hudBottomBar: true,
+      hudTopBar: true,
+      palette: 'claude',
+    });
+    const stAfter = sandbox.window.__agClaudeStyle.getState();
+    assert.equal(stAfter.cfg.palette, 'claude');
+    assert.equal(stAfter.cfg.hudCompact, true);
+
+    vm.runInNewContext(cdp.REMOVE_EXPRESSION, sandbox);
+  } finally {
+    for (const id of timers) clearTimeout(id);
+  }
+});
+
+test('unmountRipple tolerates zero-size .agy-home (field=null) and copy honestly reflects failure and success', async () => {
+  const timers = new Set();
+  const matchesSel = (node, sel) => {
+    if (!node || !sel) return false;
+    return sel.split(',').some((p) => {
+      const s = p.trim();
+      if (!s) return false;
+      const parts = s.split(/\s+/);
+      const tail = parts[parts.length - 1];
+      const matchOne = (el, tok) => {
+        if (!el) return false;
+        const br = /\[([^\]=]+)(?:="([^"]*)")?\]/.exec(tok);
+        const tagPart = tok.split('.')[0].split('[')[0];
+        if (tagPart && el.tagName !== tagPart.toUpperCase()) return false;
+        const partsDot = tok.split('.');
+        for (let i = 1; i < partsDot.length; i++) {
+          const cls = partsDot[i].replace(/\[.*$/, '');
+          if (cls && !el.classList.contains(cls)) return false;
+        }
+        if (br) {
+          const ok = br[2] === undefined ? el.hasAttribute(br[1]) : el.getAttribute(br[1]) === br[2];
+          if (!ok) return false;
+        }
+        return true;
+      };
+      if (!matchOne(node, tail)) return false;
+      let cur = node.parentElement;
+      for (let i = parts.length - 2; i >= 0; i--) {
+        while (cur && !matchOne(cur, parts[i])) cur = cur.parentElement;
+        if (!cur) return false;
+        cur = cur.parentElement;
+      }
+      return true;
+    });
+  };
+
+  const makeEl = (tag, opts = {}) => {
+    const children = [];
+    const attrs = new Map();
+    const listeners = new Map();
+    const classes = new Set((opts.className || '').split(/\s+/).filter(Boolean));
+    const el = {
+      tagName: String(tag || 'div').toUpperCase(),
+      id: opts.id || '',
+      style: { setProperty() {}, removeProperty() {} },
+      dataset: {},
+      textContent: opts.text || '',
+      _html: '',
+      _href: '',
+      clientWidth: opts.clientWidth ?? 0,
+      clientHeight: opts.clientHeight ?? 0,
+      parentElement: null,
+      parentNode: null,
+      children,
+      get className() { return Array.from(classes).join(' '); },
+      set className(v) { classes.clear(); for (const x of String(v || '').split(/\s+/).filter(Boolean)) classes.add(x); },
+      classList: {
+        add: (...c) => c.forEach((x) => classes.add(x)),
+        remove: (...c) => c.forEach((x) => classes.delete(x)),
+        contains: (x) => classes.has(x),
+      },
+      get isConnected() {
+        let cur = el;
+        while (cur.parentElement) cur = cur.parentElement;
+        return cur.tagName === 'HTML';
+      },
+      set innerHTML(v) {
+        this._html = String(v);
+        children.length = 0;
+        for (const m of this._html.matchAll(/data-ctx-act="([^"]+)"/g)) {
+          this.appendChild(makeEl('button', { attrs: { 'data-ctx-act': m[1] } }));
+        }
+      },
+      get innerHTML() { return this._html; },
+      get href() { return this._href; },
+      set href(v) { this._href = String(v); },
+      appendChild(ch) { ch.parentElement = ch.parentNode = el; children.push(ch); return ch; },
+      insertBefore(ch, ref) { ch.parentElement = ch.parentNode = el; const i = ref ? children.indexOf(ref) : -1; if (i >= 0) children.splice(i, 0, ch); else children.push(ch); return ch; },
+      removeChild(ch) { const i = children.indexOf(ch); if (i >= 0) children.splice(i, 1); ch.parentElement = ch.parentNode = null; return ch; },
+      remove() { if (el.parentElement) el.parentElement.removeChild(el); },
+      setAttribute(k, v) { attrs.set(k, String(v)); if (k === 'id') el.id = String(v); },
+      getAttribute(k) { return attrs.has(k) ? attrs.get(k) : null; },
+      hasAttribute(k) { return attrs.has(k); },
+      removeAttribute(k) { attrs.delete(k); },
+      addEventListener(ev, cb) { if (!listeners.has(ev)) listeners.set(ev, []); listeners.get(ev).push(cb); },
+      removeEventListener(ev, cb) { const a = listeners.get(ev); if (a) { const i = a.indexOf(cb); if (i >= 0) a.splice(i, 1); } },
+      dispatch(ev, p = {}) { for (const fn of [...(listeners.get(ev) || [])]) fn({ type: ev, stopPropagation() {}, preventDefault() {}, ...p }); },
+      getBoundingClientRect: () => ({ left: 10, top: 320, right: 430, bottom: 352, width: 420, height: 32 }),
+      closest(sel) { let c = el; while (c) { if (matchesSel(c, sel)) return c; c = c.parentElement; } return null; },
+      querySelector(sel) { return el.querySelectorAll(sel)[0] || null; },
+      querySelectorAll(sel) {
+        const res = [];
+        const walk = (n) => {
+          for (const ch of n.children || []) {
+            if (matchesSel(ch, sel)) res.push(ch);
+            walk(ch);
+          }
+        };
+        walk(el);
+        return res;
+      },
+    };
+    if (opts.attrs) for (const [k, v] of Object.entries(opts.attrs)) el.setAttribute(k, v);
+    return el;
+  };
+
+  const html = makeEl('html');
+  const head = makeEl('head');
+  const body = makeEl('body', { className: 'theme-dark' });
+  html.appendChild(head);
+  html.appendChild(body);
+
+  // Hidden/collapsed zero-size home (.agy-home clientWidth=0, clientHeight=0) -> field remains null
+  const home = makeEl('div', { className: 'agy-home', clientWidth: 0, clientHeight: 0 });
+  body.appendChild(home);
+
+  const cascadeId = 'mixed-cost-convo-1';
+  const convView = makeEl('div', { attrs: { 'data-testid': 'conversation-view', 'data-cascade-id': cascadeId } });
+  const box = makeEl('div', { attrs: { 'data-testid': 'agent-input-box' } });
+  const card = makeEl('div', { className: 'surface-composer-card' });
+  const footer = makeEl('div', { className: 'agy-composer-footer' });
+  card.appendChild(footer);
+  box.appendChild(card);
+  convView.appendChild(box);
+  body.appendChild(convView);
+
+  let clipMode = 'reject';
+  const mixedTraj = {
+    trajectory: {
+      steps: [
+        { status: 3, metadata: { createdAt: '2026-11-17T12:00:00Z' }, step: { case: 'userInput', value: { query: 'Test mixed pricing' } } },
+        { status: 3, metadata: { createdAt: '2026-11-17T12:00:05Z' }, step: { case: 'plannerResponse', value: { response: 'One' } } },
+        { status: 3, metadata: { createdAt: '2026-11-17T12:00:10Z' }, step: { case: 'plannerResponse', value: { response: 'Two' } } },
+      ],
+      generatorMetadata: [
+        {
+          stepIndices: [1],
+          metadata: { value: { modelDisplayName: 'Claude Sonnet 4.5', usage: { inputTokens: '10000', outputTokens: '2000', model: 1001 } } },
+        },
+        {
+          stepIndices: [2],
+          metadata: { value: { modelDisplayName: 'claude-opus-99.9', usage: { inputTokens: '20000', outputTokens: '3000', model: 1999 } } },
+        },
+      ],
+    },
+  };
+  const fakeSvc = { async getCascadeTrajectory() { return mixedTraj; } };
+  box.__reactFiber$test = {
+    memoizedProps: { cascadeId, getCascadeTrajectory: fakeSvc.getCascadeTrajectory },
+    dependencies: { firstContext: { memoizedValue: fakeSvc, next: null } },
+    return: null,
+  };
+
+  const storage = { _m: {}, getItem(k) { return this._m[k] || null; }, setItem(k, v) { this._m[k] = String(v); } };
+  const doc = {
+    documentElement: html,
+    head,
+    body,
+    hidden: false,
+    readyState: 'complete',
+    createElement: (t) => makeEl(t),
+    getElementById: () => null,
+    querySelector: (s) => html.querySelector(s),
+    querySelectorAll: (s) => html.querySelectorAll(s),
+    addEventListener() {},
+    removeEventListener() {},
+  };
+  const sandbox = {
+    window: null,
+    globalThis: null,
+    document: doc,
+    navigator: {
+      language: 'zh-CN',
+      clipboard: {
+        writeText: () => (clipMode === 'reject' ? Promise.reject(new Error('Clipboard denied')) : Promise.resolve()),
+      },
+    },
+    location: { pathname: `/c/${cascadeId}` },
+    localStorage: storage,
+    getComputedStyle: () => ({ getPropertyValue: () => '' }),
+    matchMedia: () => ({ matches: false }),
+    MutationObserver: class { observe() {} disconnect() {} },
+    ResizeObserver: class { observe() {} disconnect() {} },
+    requestAnimationFrame: (fn) => { const id = setTimeout(() => fn(Date.now()), 5); timers.add(id); return id; },
+    cancelAnimationFrame: (id) => { timers.delete(id); clearTimeout(id); },
+    setTimeout: (fn, ms) => { const id = setTimeout(fn, ms); timers.add(id); return id; },
+    clearTimeout: (id) => { timers.delete(id); clearTimeout(id); },
+    setInterval: () => 1,
+    clearInterval: () => {},
+    performance: { now: () => Date.now() },
+    Math, Date, JSON, Map, Set, Array, Object, String, Number, Boolean, Promise, Uint8Array, Float32Array, Intl,
+  };
+  sandbox.window = sandbox;
+  sandbox.globalThis = sandbox;
+
+  try {
+    vm.runInNewContext(
+      cdp.buildInjectExpression({ ...cdp.DEFAULT_CONFIG, homeLayout: 'studio', homeRipple: true, ringMode: 'context' }),
+      sandbox
+    );
+    await new Promise((r) => setTimeout(r, 80));
+
+    // 1. Zero-size ripple mounted with field=null -> turning off homeRipple MUST NOT throw TypeError in unmountRipple()
+    assert.ok(home.querySelector('.ag-cs-ripple-host'), 'Expected zero-size ripple host attached');
+    assert.doesNotThrow(() => {
+      sandbox.window.__agClaudeStyle.refreshConfig({ ...cdp.DEFAULT_CONFIG, homeLayout: 'studio', homeRipple: false, ringMode: 'context' });
+    });
+    assert.equal(home.querySelector('.ag-cs-ripple-host'), null);
+
+    // Re-enable zero-size ripple, then REMOVE_EXPRESSION (destroy -> unmountRipple) must also not throw
+    sandbox.window.__agClaudeStyle.refreshConfig({ ...cdp.DEFAULT_CONFIG, homeLayout: 'studio', homeRipple: true, ringMode: 'context' });
+    assert.ok(home.querySelector('.ag-cs-ripple-host'));
+
+    // 2. Statistics remain available without pricing UI.
+    const ringBtn = footer.querySelector('.ag-cs-context-ring');
+    ringBtn.dispatch('click');
+    await new Promise((r) => setTimeout(r, 40));
+    const pop = body.querySelector('.ag-cs-ctx-popover');
+    assert.ok(pop);
+    assert.doesNotMatch(pop.innerHTML, /部分参考|Ref\. API|ag-cs-ctx-cost/);
+    assert.doesNotMatch(pop.innerHTML, /~\$/);
+
+    // Copy failure/success feedback remains, while the export action is absent.
+    assert.equal(pop.querySelector('button[data-ctx-act="export"]'), null);
+    const copyBtn = pop.querySelector('button[data-ctx-act="copy"]');
+    assert.ok(copyBtn);
+    copyBtn.dispatch('click');
+    await new Promise((r) => setTimeout(r, 30));
+    assert.equal(copyBtn.textContent, '✕ 失败');
+    assert.equal(copyBtn.getAttribute('data-action-state'), 'error');
+    clipMode = 'resolve';
+    copyBtn.dispatch('click');
+    await new Promise((r) => setTimeout(r, 30));
+    assert.equal(copyBtn.textContent, '✓ 已复制');
+    assert.equal(copyBtn.getAttribute('data-action-state'), 'ok');
+
+    assert.doesNotThrow(() => {
+      vm.runInNewContext(cdp.REMOVE_EXPRESSION, sandbox);
+    });
+  } finally {
+    for (const id of timers) clearTimeout(id);
+  }
+});

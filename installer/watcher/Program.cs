@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -12,17 +13,22 @@ namespace AgyClaudeStyle.Watcher
     internal class AttachedEntry
     {
         public CdpSession Session;
-        public string ScriptId;
+        public string BootstrapScriptId;
+        public string ConfigScriptId;
         public string Title;
     }
 
     internal static class Program
     {
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        private static extern int MessageBoxW(IntPtr hWnd, string text, string caption, uint type);
+
         private static readonly object LogLock = new object();
         private static string _baseDir;
         private static string _logFile;
         private static string _pidFile;
         private static bool _isWatch;
+        private static int _pollMs = 2000;
 
         [STAThread]
         private static int Main(string[] args)
@@ -32,7 +38,10 @@ namespace AgyClaudeStyle.Watcher
             int? overridePort = null;
             string outFile = null;
             bool exitOnHostCloseFlag = false;
+            bool relaunchFlag = false;
+            bool replaceFlag = false;
             int? parentPid = null;
+            int startupGraceSeconds = CdpHelper.DefaultStartupGraceSeconds;
 
             string envPpid = Environment.GetEnvironmentVariable("AG_PARENT_PID");
             if (!string.IsNullOrEmpty(envPpid))
@@ -41,31 +50,72 @@ namespace AgyClaudeStyle.Watcher
                 if (int.TryParse(envPpid.Trim(), out parsedPpid) && parsedPpid > 0) parentPid = parsedPpid;
             }
 
+            string envGrace = Environment.GetEnvironmentVariable("AG_STARTUP_GRACE_SEC");
+            if (!string.IsNullOrEmpty(envGrace))
+            {
+                int parsedGrace;
+                if (int.TryParse(envGrace.Trim(), out parsedGrace) && parsedGrace > 0) startupGraceSeconds = parsedGrace;
+            }
+
+            string envPoll = Environment.GetEnvironmentVariable("AG_WATCH_POLL_MS");
+            if (!string.IsNullOrEmpty(envPoll))
+            {
+                int parsedPoll;
+                if (int.TryParse(envPoll.Trim(), out parsedPoll) && parsedPoll > 0)
+                {
+                    _pollMs = Math.Max(100, Math.Min(10000, parsedPoll));
+                }
+            }
+
             for (int i = 0; i < args.Length; i++)
             {
                 string a = args[i];
                 if (a == "--watch") mode = "watch";
                 else if (a == "--once") mode = "once";
                 else if (a == "--remove") mode = "remove";
+                else if (a == "--launch") mode = "launch";
+                else if (a == "--relaunch") relaunchFlag = true;
+                else if (a == "--replace") replaceFlag = true;
                 else if (a == "--exit-on-host-close") exitOnHostCloseFlag = true;
                 else if (a == "--parent-pid" && i + 1 < args.Length)
                 {
                     int pp;
                     if (int.TryParse(args[++i], out pp) && pp > 0) parentPid = pp;
                 }
+                else if (a.StartsWith("--parent-pid=", StringComparison.Ordinal))
+                {
+                    int pp;
+                    if (int.TryParse(a.Substring("--parent-pid=".Length), out pp) && pp > 0) parentPid = pp;
+                }
                 else if (a == "--dir" && i + 1 < args.Length) customDir = args[++i];
+                else if (a.StartsWith("--dir=", StringComparison.Ordinal)) customDir = a.Substring("--dir=".Length);
                 else if (a == "--cdp-port" && i + 1 < args.Length)
                 {
                     int p;
                     if (int.TryParse(args[++i], out p) && p > 0) overridePort = p;
                 }
+                else if (a.StartsWith("--cdp-port=", StringComparison.Ordinal))
+                {
+                    int p;
+                    if (int.TryParse(a.Substring("--cdp-port=".Length), out p) && p > 0) overridePort = p;
+                }
                 else if (a == "--out" && i + 1 < args.Length) outFile = args[++i];
+                else if (a == "--startup-grace" && i + 1 < args.Length)
+                {
+                    int sg;
+                    if (int.TryParse(args[++i], out sg) && sg > 0) startupGraceSeconds = sg;
+                }
+                else if (a.StartsWith("--startup-grace=", StringComparison.Ordinal))
+                {
+                    int sg;
+                    if (int.TryParse(a.Substring("--startup-grace=".Length), out sg) && sg > 0) startupGraceSeconds = sg;
+                }
             }
 
             _baseDir = Path.GetFullPath(string.IsNullOrEmpty(customDir) ? AppDomain.CurrentDomain.BaseDirectory : customDir).TrimEnd('\\', '/');
             _logFile = Path.Combine(_baseDir, "watch.log");
             _pidFile = Path.Combine(_baseDir, ".watch.pid");
-            _isWatch = (mode == "watch");
+            _isWatch = (mode == "watch" || mode == "launch");
 
             try
             {
@@ -77,14 +127,33 @@ namespace AgyClaudeStyle.Watcher
                 {
                     return RunRemoveAsync(overridePort, outFile).GetAwaiter().GetResult();
                 }
-                return RunWatchAsync(overridePort, exitOnHostCloseFlag, parentPid).GetAwaiter().GetResult();
+                if (mode == "launch")
+                {
+                    return RunLaunchAndWatchAsync(overridePort, relaunchFlag, replaceFlag, parentPid, startupGraceSeconds, outFile).GetAwaiter().GetResult();
+                }
+                return RunWatchAsync(overridePort, exitOnHostCloseFlag, parentPid, exitOnHostCloseFlag, startupGraceSeconds, replaceFlag, false).GetAwaiter().GetResult();
             }
             catch (Exception ex)
             {
                 Log("[!] Fatal error: " + ex.Message);
                 WriteResult(outFile, false, ex.Message, null);
+                if (mode == "launch")
+                {
+                    ShowLaunchErrorUiIfAllowed(outFile, ex.Message);
+                }
                 return 1;
             }
+        }
+
+        private static void ShowLaunchErrorUiIfAllowed(string outFile, string message)
+        {
+            if (!string.IsNullOrEmpty(outFile)) return;
+            if (string.Equals(Environment.GetEnvironmentVariable("AGY_CS_NO_UI"), "1", StringComparison.Ordinal)) return;
+            try
+            {
+                MessageBoxW(IntPtr.Zero, message ?? "启动失败", "AGY Claude Style", 0x00000010u);
+            }
+            catch { }
         }
 
         private static void Log(string line)
@@ -199,12 +268,21 @@ namespace AgyClaudeStyle.Watcher
 
         private static async Task<int> RunRemoveAsync(int? overridePort, string outFile)
         {
-            PluginManifest manifest = PluginManifest.Load(_baseDir);
+            PluginManifest manifest = null;
+            try
+            {
+                if (File.Exists(Path.Combine(_baseDir, "manifest.json")))
+                {
+                    manifest = PluginManifest.Load(_baseDir);
+                }
+            }
+            catch { }
             StopRunningWatcherInDir(_baseDir);
 
             int? port = CdpHelper.ReadPort(overridePort);
             List<string> cleaned = new List<string>();
-            if (port.HasValue)
+            string removeExpr = manifest != null ? manifest.RemoveExpression : null;
+            if (port.HasValue && !string.IsNullOrEmpty(removeExpr))
             {
                 try
                 {
@@ -216,7 +294,7 @@ namespace AgyClaudeStyle.Watcher
                         {
                             using (CdpSession session = await CdpSession.ConnectAsync(page.WebSocketDebuggerUrl, 3000).ConfigureAwait(false))
                             {
-                                await session.EvaluateAsync(manifest.RemoveExpression, false).ConfigureAwait(false);
+                                await session.EvaluateAsync(removeExpr, false).ConfigureAwait(false);
                                 cleaned.Add(CdpHelper.ShortTitle(page));
                             }
                         }
@@ -231,16 +309,6 @@ namespace AgyClaudeStyle.Watcher
 
         private static void StopRunningWatcherInDir(string dir)
         {
-            string hash = GetDirHash(dir);
-            try
-            {
-                using (EventWaitHandle stopEvt = EventWaitHandle.OpenExisting("Local\\AGYClaudeStyleStop_" + hash))
-                {
-                    stopEvt.Set();
-                }
-            }
-            catch { }
-
             string pidFile = Path.Combine(dir, ".watch.pid");
             int? pid = null;
             try
@@ -253,15 +321,40 @@ namespace AgyClaudeStyle.Watcher
             }
             catch { }
 
-            if (pid.HasValue && pid.Value != Process.GetCurrentProcess().Id)
+            int selfPid = Process.GetCurrentProcess().Id;
+            if (pid.HasValue && pid.Value != selfPid)
             {
+                CdpHelper.WatcherPidClassification cls = CdpHelper.ClassifyWatcherPid(pid.Value, dir);
+                if (cls.Status == CdpHelper.WatcherPidStatus.Unknown)
+                {
+                    // Fail closed: cannot verify process ownership, refuse to signal/kill or delete .watch.pid.
+                    return;
+                }
+                if (cls.Status == CdpHelper.WatcherPidStatus.Dead || cls.Status == CdpHelper.WatcherPidStatus.Foreign)
+                {
+                    try { if (File.Exists(pidFile)) File.Delete(pidFile); } catch { }
+                    return;
+                }
+
+                string hash = GetDirHash(dir);
                 try
                 {
-                    Process proc = Process.GetProcessById(pid.Value);
-                    if (!proc.WaitForExit(1500))
+                    using (EventWaitHandle stopEvt = EventWaitHandle.OpenExisting("Local\\AGYClaudeStyleStop_" + hash))
                     {
-                        proc.Kill();
-                        proc.WaitForExit(1500);
+                        stopEvt.Set();
+                    }
+                }
+                catch { }
+
+                try
+                {
+                    using (Process proc = Process.GetProcessById(pid.Value))
+                    {
+                        if (!proc.WaitForExit(1500))
+                        {
+                            proc.Kill();
+                            proc.WaitForExit(1500);
+                        }
                     }
                 }
                 catch { }
@@ -269,73 +362,206 @@ namespace AgyClaudeStyle.Watcher
             try { if (File.Exists(pidFile)) File.Delete(pidFile); } catch { }
         }
 
-        private static bool GetConfigBool(Dictionary<string, object> cfg, string key)
+        private static bool GetConfigBool(Dictionary<string, object> cfg, string key, bool fallback)
         {
             object v;
             if (cfg != null && cfg.TryGetValue(key, out v) && v is bool)
             {
                 return (bool)v;
             }
-            return false;
+            return fallback;
         }
 
-        private static async Task<int> RunWatchAsync(int? overridePort, bool exitOnHostCloseFlag, int? parentPid)
+        private static async Task<int> RunLaunchAndWatchAsync(
+            int? overridePort,
+            bool relaunchFlag,
+            bool replaceExisting,
+            int? parentPid,
+            int startupGraceSeconds,
+            string outFile)
+        {
+            PluginManifest manifest = PluginManifest.Load(_baseDir);
+            Dictionary<string, object> initCfg = CdpHelper.ReadConfig(_baseDir, manifest);
+            bool allowRelaunch = relaunchFlag || GetConfigBool(initCfg, "autoRelaunchWithCdp", true);
+
+            EnsureAntigravityResult res = await CdpHelper.EnsureAntigravityWithCdpAsync(null, allowRelaunch, overridePort, 8000).ConfigureAwait(false);
+            if (!res.Ok)
+            {
+                Log("[!] " + res.Message);
+                WriteResult(outFile, false, res.Message, null);
+                ShowLaunchErrorUiIfAllowed(outFile, res.Message);
+                return 1;
+            }
+
+            string launchSummary = string.Format("[▶] 启动完成 ({0}): {1}", res.Action, res.Message);
+            return await RunWatchAsync(overridePort, true, parentPid, true, startupGraceSeconds, replaceExisting, true, launchSummary).ConfigureAwait(false);
+        }
+
+        private static async Task<int> RunWatchAsync(
+            int? overridePort,
+            bool exitOnHostCloseFlag,
+            int? parentPid,
+            bool startupGraceEnabled,
+            int startupGraceSeconds,
+            bool replaceExisting,
+            bool waitForLock,
+            string initialLog = null)
         {
             string dirHash = GetDirHash(_baseDir);
-            bool createdNew;
-            using (Mutex mutex = new Mutex(true, "Local\\AGYClaudeStyleWatcher_" + dirHash, out createdNew))
+            if (replaceExisting)
             {
-                if (!createdNew)
+                StopRunningWatcherInDir(_baseDir);
+            }
+
+            string mutexName = "Local\\AGYClaudeStyleWatcher_" + dirHash;
+            Mutex mutex = new Mutex(false, mutexName);
+            bool hasMutex = false;
+            try
+            {
+                try
+                {
+                    hasMutex = mutex.WaitOne(waitForLock ? 1500 : 0, false);
+                }
+                catch (AbandonedMutexException)
+                {
+                    hasMutex = true;
+                }
+
+                if (!hasMutex)
                 {
                     return 0;
                 }
 
                 int selfPid = Process.GetCurrentProcess().Id;
+                int? existingPid = ReadPidFile();
+                if (existingPid.HasValue && existingPid.Value != selfPid)
+                {
+                    CdpHelper.WatcherPidClassification cls = CdpHelper.ClassifyWatcherPid(existingPid.Value, _baseDir);
+                    if (cls.Status == CdpHelper.WatcherPidStatus.Unknown)
+                    {
+                        Log(string.Format("[!] 无法验证 .watch.pid 进程归属 (PID {0})，出于安全策略拒绝覆盖锁文件", existingPid.Value));
+                        return 1;
+                    }
+                    if (cls.Status == CdpHelper.WatcherPidStatus.Owned)
+                    {
+                        Log(string.Format("[*] 检测到同目录守护进程已在运行 (PID {0})，退出重复实例", existingPid.Value));
+                        return 0;
+                    }
+                }
+
                 File.WriteAllText(_pidFile, selfPid.ToString(), new UTF8Encoding(false));
                 try { File.WriteAllText(_logFile, "", new UTF8Encoding(false)); } catch { }
+                if (!string.IsNullOrEmpty(initialLog))
+                {
+                    Log(initialLog);
+                }
 
                 PluginManifest manifest = PluginManifest.Load(_baseDir);
                 Dictionary<string, object> initCfg = CdpHelper.ReadConfig(_baseDir, manifest);
-                bool cfgAutoRelaunch = GetConfigBool(initCfg, "autoRelaunchWithCdp");
-                bool cfgExitOnHostClose = GetConfigBool(initCfg, "exitOnHostClose");
-                Log(string.Format("[*] AGY Claude Style (agy-claude-style) 守护模式启动 (PID {0})，每 2 秒检查一次窗口", selfPid));
+                bool cfgAutoRelaunch = GetConfigBool(initCfg, "autoRelaunchWithCdp", true);
+                bool cfgExitOnHostClose = GetConfigBool(initCfg, "exitOnHostClose", false);
+                Log(string.Format("[*] AGY Claude Style (agy-claude-style) {0}启动 (PID {1})，每 {2}ms 检查一次窗口",
+                    exitOnHostCloseFlag ? "托管监听模式" : "守护模式", selfPid, _pollMs));
 
+                string currentCodeHash;
+                string currentCssHash;
+                CdpHelper.ReadBundleAndCssHashes(_baseDir, manifest, out currentCodeHash, out currentCssHash);
                 string currentExpr = CdpHelper.BuildInjectExpression(_baseDir, manifest);
+                string currentConfigExpr = CdpHelper.BuildConfigScriptExpression(_baseDir, manifest, currentCodeHash);
                 object exprLock = new object();
                 bool hadAttachedWindow = false;
                 ConcurrentDictionary<string, AttachedEntry> attached = new ConcurrentDictionary<string, AttachedEntry>(StringComparer.Ordinal);
                 ManualResetEventSlim exitEvent = new ManualResetEventSlim(false);
                 EventWaitHandle stopSignal = new EventWaitHandle(false, EventResetMode.ManualReset, "Local\\AGYClaudeStyleStop_" + dirHash);
 
-                ThreadPool.RegisterWaitForSingleObject(stopSignal, (state, timedOut) =>
+                RegisteredWaitHandle stopWaitReg = ThreadPool.RegisterWaitForSingleObject(stopSignal, (state, timedOut) =>
                 {
-                    exitEvent.Set();
+                    try { exitEvent.Set(); } catch { }
                 }, null, -1, true);
 
                 AppDomain.CurrentDomain.ProcessExit += (s, e) =>
                 {
-                    exitEvent.Set();
+                    try { exitEvent.Set(); } catch { }
                     ReleasePidFile(selfPid);
                 };
 
-                Func<AttachedEntry, string, Task<Dictionary<string, object>>> applyAsync = async (entry, exprToUse) =>
+                Func<AttachedEntry, string, string, bool, Task<Dictionary<string, object>>> applyAsync = async (entry, fullExprToUse, configExprToUse, refreshOnly) =>
                 {
-                    if (!string.IsNullOrEmpty(entry.ScriptId))
+                    if (refreshOnly && !string.IsNullOrEmpty(entry.BootstrapScriptId) && !string.IsNullOrEmpty(configExprToUse))
                     {
+                        if (!string.IsNullOrEmpty(entry.ConfigScriptId))
+                        {
+                            try
+                            {
+                                Dictionary<string, object> rmCfg = new Dictionary<string, object>(StringComparer.Ordinal);
+                                rmCfg["identifier"] = entry.ConfigScriptId;
+                                await entry.Session.SendAsync("Page.removeScriptToEvaluateOnNewDocument", rmCfg, 5000).ConfigureAwait(false);
+                            }
+                            catch { }
+                            entry.ConfigScriptId = null;
+                        }
+                        Dictionary<string, object> addCfgParams = new Dictionary<string, object>(StringComparer.Ordinal);
+                        addCfgParams["source"] = configExprToUse;
+                        Dictionary<string, object> addCfgRes = await entry.Session.SendAsync("Page.addScriptToEvaluateOnNewDocument", addCfgParams, 15000).ConfigureAwait(false);
+                        object cfgIdVal;
+                        if (addCfgRes.TryGetValue("identifier", out cfgIdVal)) entry.ConfigScriptId = cfgIdVal as string;
+
                         try
                         {
-                            Dictionary<string, object> rmParams = new Dictionary<string, object>(StringComparer.Ordinal);
-                            rmParams["identifier"] = entry.ScriptId;
-                            await entry.Session.SendAsync("Page.removeScriptToEvaluateOnNewDocument", rmParams, 5000).ConfigureAwait(false);
+                            object fastVal = await entry.Session.EvaluateAsync(configExprToUse, false).ConfigureAwait(false);
+                            Dictionary<string, object> fastDict = fastVal as Dictionary<string, object>;
+                            object stObj;
+                            if (fastDict != null && fastDict.TryGetValue("status", out stObj) && string.Equals(stObj as string, "refreshed", StringComparison.Ordinal))
+                            {
+                                return fastDict;
+                            }
                         }
                         catch { }
                     }
-                    Dictionary<string, object> addParams = new Dictionary<string, object>(StringComparer.Ordinal);
-                    addParams["source"] = exprToUse;
-                    Dictionary<string, object> addRes = await entry.Session.SendAsync("Page.addScriptToEvaluateOnNewDocument", addParams, 15000).ConfigureAwait(false);
-                    object idVal;
-                    if (addRes.TryGetValue("identifier", out idVal)) entry.ScriptId = idVal as string;
-                    object evalVal = await entry.Session.EvaluateAsync(exprToUse, false).ConfigureAwait(false);
+
+                    if (!string.IsNullOrEmpty(entry.ConfigScriptId))
+                    {
+                        try
+                        {
+                            Dictionary<string, object> rmCfg = new Dictionary<string, object>(StringComparer.Ordinal);
+                            rmCfg["identifier"] = entry.ConfigScriptId;
+                            await entry.Session.SendAsync("Page.removeScriptToEvaluateOnNewDocument", rmCfg, 5000).ConfigureAwait(false);
+                        }
+                        catch { }
+                        entry.ConfigScriptId = null;
+                    }
+                    if (!string.IsNullOrEmpty(entry.BootstrapScriptId))
+                    {
+                        try
+                        {
+                            Dictionary<string, object> rmBoot = new Dictionary<string, object>(StringComparer.Ordinal);
+                            rmBoot["identifier"] = entry.BootstrapScriptId;
+                            await entry.Session.SendAsync("Page.removeScriptToEvaluateOnNewDocument", rmBoot, 5000).ConfigureAwait(false);
+                        }
+                        catch { }
+                        entry.BootstrapScriptId = null;
+                    }
+                    Dictionary<string, object> addBootParams = new Dictionary<string, object>(StringComparer.Ordinal);
+                    addBootParams["source"] = fullExprToUse;
+                    Dictionary<string, object> addBootRes = await entry.Session.SendAsync("Page.addScriptToEvaluateOnNewDocument", addBootParams, 15000).ConfigureAwait(false);
+                    object bootIdVal;
+                    if (addBootRes.TryGetValue("identifier", out bootIdVal)) entry.BootstrapScriptId = bootIdVal as string;
+
+                    if (!string.IsNullOrEmpty(configExprToUse))
+                    {
+                        Dictionary<string, object> addCfgParams = new Dictionary<string, object>(StringComparer.Ordinal);
+                        addCfgParams["source"] = configExprToUse;
+                        Dictionary<string, object> addCfgRes = await entry.Session.SendAsync("Page.addScriptToEvaluateOnNewDocument", addCfgParams, 15000).ConfigureAwait(false);
+                        object cfgIdVal;
+                        if (addCfgRes.TryGetValue("identifier", out cfgIdVal)) entry.ConfigScriptId = cfgIdVal as string;
+                        try
+                        {
+                            await entry.Session.EvaluateAsync(configExprToUse, false).ConfigureAwait(false);
+                        }
+                        catch { }
+                    }
+
+                    object evalVal = await entry.Session.EvaluateAsync(fullExprToUse, false).ConfigureAwait(false);
                     return evalVal as Dictionary<string, object>;
                 };
 
@@ -348,7 +574,8 @@ namespace AgyClaudeStyle.Watcher
                         session = await CdpSession.ConnectAsync(page.WebSocketDebuggerUrl, 4000).ConfigureAwait(false);
                         AttachedEntry entry = new AttachedEntry();
                         entry.Session = session;
-                        entry.ScriptId = null;
+                        entry.BootstrapScriptId = null;
+                        entry.ConfigScriptId = null;
                         entry.Title = CdpHelper.ShortTitle(page);
                         attached[page.Id] = entry;
 
@@ -389,8 +616,13 @@ namespace AgyClaudeStyle.Watcher
                         await session.SendAsync("Runtime.addBinding", bindParams, 5000).ConfigureAwait(false);
 
                         string exprSnapshot;
-                        lock (exprLock) { exprSnapshot = currentExpr; }
-                        Dictionary<string, object> res = await applyAsync(entry, exprSnapshot).ConfigureAwait(false);
+                        string cfgExprSnapshot;
+                        lock (exprLock)
+                        {
+                            exprSnapshot = currentExpr;
+                            cfgExprSnapshot = currentConfigExpr;
+                        }
+                        Dictionary<string, object> res = await applyAsync(entry, exprSnapshot, cfgExprSnapshot, false).ConfigureAwait(false);
                         string status = (res != null && res.ContainsKey("status")) ? Convert.ToString(res["status"]) : "ok";
                         lock (exprLock) { hadAttachedWindow = true; }
                         Log(string.Format("[✓] 已注入 agy-claude-style: {0} ({1})", entry.Title, status));
@@ -443,12 +675,24 @@ namespace AgyClaudeStyle.Watcher
                                     {
                                         manifest = PluginManifest.Load(_baseDir);
                                         Dictionary<string, object> nextCfg = CdpHelper.ReadConfig(_baseDir, manifest);
-                                        string nextExpr = CdpHelper.BuildInjectExpression(_baseDir, manifest);
+                                        string nextCodeHash;
+                                        string nextCssHash;
+                                        CdpHelper.ReadBundleAndCssHashes(_baseDir, manifest, out nextCodeHash, out nextCssHash);
+                                        string nextConfigExpr = CdpHelper.BuildConfigScriptExpression(_baseDir, manifest, nextCodeHash);
+                                        bool refreshOnly;
+                                        string nextExpr;
                                         lock (exprLock)
                                         {
+                                            refreshOnly = !string.IsNullOrEmpty(currentCodeHash) &&
+                                                string.Equals(nextCodeHash, currentCodeHash, StringComparison.Ordinal) &&
+                                                string.Equals(nextCssHash, currentCssHash, StringComparison.Ordinal);
+                                            nextExpr = refreshOnly ? currentExpr : CdpHelper.BuildInjectExpression(_baseDir, manifest);
+                                            currentCodeHash = nextCodeHash;
+                                            currentCssHash = nextCssHash;
                                             currentExpr = nextExpr;
-                                            cfgAutoRelaunch = GetConfigBool(nextCfg, "autoRelaunchWithCdp");
-                                            cfgExitOnHostClose = GetConfigBool(nextCfg, "exitOnHostClose");
+                                            currentConfigExpr = nextConfigExpr;
+                                            cfgAutoRelaunch = GetConfigBool(nextCfg, "autoRelaunchWithCdp", true);
+                                            cfgExitOnHostClose = GetConfigBool(nextCfg, "exitOnHostClose", false);
                                         }
 
                                         int n = 0;
@@ -458,12 +702,12 @@ namespace AgyClaudeStyle.Watcher
                                             if (entry == null) continue;
                                             try
                                             {
-                                                await applyAsync(entry, nextExpr).ConfigureAwait(false);
+                                                await applyAsync(entry, nextExpr, nextConfigExpr, refreshOnly).ConfigureAwait(false);
                                                 n++;
                                             }
                                             catch { }
                                         }
-                                        Log(string.Format("[↻] {0} 已变更，已热更新 {1} 个窗口", changedName, n));
+                                        Log(string.Format("[↻] {0} 已变更，已热更新 {1} 个窗口{2}", changedName, n, refreshOnly ? "（轻量配置同步）" : ""));
                                     }
                                     catch (Exception ex)
                                     {
@@ -493,6 +737,7 @@ namespace AgyClaudeStyle.Watcher
                 DateTime lastRelaunchUtc = DateTime.MinValue;
                 string cdpFlagCheckedSig = "";
                 bool cdpFlagCheckedVal = false;
+                DateTime watchStartUtc = DateTime.UtcNow;
 
                 try
                 {
@@ -504,7 +749,7 @@ namespace AgyClaudeStyle.Watcher
                             break;
                         }
 
-                        int sleepMs = 2000;
+                        int sleepMs = _pollMs;
                         try
                         {
                             int? port = CdpHelper.ReadPort(overridePort);
@@ -589,6 +834,12 @@ namespace AgyClaudeStyle.Watcher
                                     Log("[*] Antigravity 宿主已关闭，守护进程自动退出");
                                     break;
                                 }
+                                if (exitOnClose && startupGraceEnabled && !hadWin && attached.IsEmpty && consecutivePortFailures >= 2 &&
+                                    runningPids.Count == 0 && (DateTime.UtcNow - watchStartUtc).TotalSeconds >= startupGraceSeconds)
+                                {
+                                    Log(string.Format("[*] 超过启动宽限 ({0}s) 仍未检测到 Antigravity 窗口，监听自动退出", startupGraceSeconds));
+                                    break;
+                                }
 
                                 if (runningPids.Count > 0)
                                 {
@@ -648,9 +899,9 @@ namespace AgyClaudeStyle.Watcher
                                     warnedNoCdpSig = "";
                                     cdpFlagCheckedSig = "";
                                     cdpFlagCheckedVal = false;
-                                    if (consecutivePortFailures >= 3)
+                                    if (consecutivePortFailures >= 3 && !(startupGraceEnabled && !hadWin))
                                     {
-                                        sleepMs = 5000;
+                                        sleepMs = Math.Max(_pollMs, 5000);
                                     }
                                 }
                             }
@@ -671,10 +922,19 @@ namespace AgyClaudeStyle.Watcher
                             try { kv.Value.Session.Close(); } catch { }
                         }
                     }
+                    try { stopWaitReg.Unregister(null); } catch { }
                     try { stopSignal.Dispose(); } catch { }
                     try { exitEvent.Dispose(); } catch { }
                     ReleasePidFile(selfPid);
                 }
+            }
+            finally
+            {
+                if (hasMutex)
+                {
+                    try { mutex.ReleaseMutex(); } catch { }
+                }
+                try { mutex.Dispose(); } catch { }
             }
             return 0;
         }

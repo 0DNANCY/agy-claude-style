@@ -6,6 +6,7 @@ using System.IO;
 using System.Management;
 using System.Net.Http;
 using System.Net.WebSockets;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -18,6 +19,14 @@ namespace AgyClaudeStyle
         public string Title;
         public string Url;
         public string WebSocketDebuggerUrl;
+    }
+
+    public class EnsureAntigravityResult
+    {
+        public bool Ok;
+        public string Action;
+        public int? Port;
+        public string Message;
     }
 
     public class PluginManifest
@@ -381,7 +390,18 @@ namespace AgyClaudeStyle
 
     public static class CdpHelper
     {
+        public const int DefaultStartupGraceSeconds = 90;
+        private const int SW_RESTORE = 9;
         private static readonly HttpClient SharedHttp = new HttpClient { Timeout = TimeSpan.FromMilliseconds(2000) };
+
+        [DllImport("user32.dll")]
+        private static extern bool IsIconic(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+
+        [DllImport("user32.dll")]
+        private static extern bool SetForegroundWindow(IntPtr hWnd);
 
         public static string GetPortFilePath()
         {
@@ -502,24 +522,24 @@ namespace AgyClaudeStyle
             string cfgPath = Path.Combine(baseDir, "config.json");
             string tmpPath = cfgPath + ".tmp";
             string content = MiniJson.Stringify(next, true) + "\n";
-            File.WriteAllText(tmpPath, content, new UTF8Encoding(false));
-            if (File.Exists(cfgPath))
+            try
             {
-                try
+                File.WriteAllText(tmpPath, content, new UTF8Encoding(false));
+                if (File.Exists(cfgPath))
                 {
                     File.Replace(tmpPath, cfgPath, null);
                 }
-                catch
+                else
                 {
-                    File.WriteAllText(cfgPath, content, new UTF8Encoding(false));
-                    try { File.Delete(tmpPath); } catch { }
+                    File.Move(tmpPath, cfgPath);
                 }
+                return true;
             }
-            else
+            catch
             {
-                File.Move(tmpPath, cfgPath);
+                try { if (File.Exists(tmpPath)) File.Delete(tmpPath); } catch { }
+                return false;
             }
-            return true;
         }
 
         public static string ComputeHash(string str)
@@ -559,6 +579,48 @@ namespace AgyClaudeStyle
                 sb.Append(File.ReadAllText(Path.Combine(baseDir, manifest.Parts[i]), Encoding.UTF8));
             }
             return sb.ToString();
+        }
+
+        public static void ReadBundleAndCssHashes(string baseDir, PluginManifest manifest, out string codeHash, out string cssHash)
+        {
+            string css = File.ReadAllText(Path.Combine(baseDir, "style.css"), Encoding.UTF8);
+            string bundle = ReadRuntimeBundle(baseDir, manifest);
+            codeHash = ComputeHash(bundle);
+            cssHash = ComputeHash(css);
+        }
+
+        public static string BuildConfigScriptExpression(string baseDir, PluginManifest manifest, string expectedCodeHash)
+        {
+            Dictionary<string, object> config = ReadConfig(baseDir, manifest);
+            string expected = expectedCodeHash ?? "";
+            Dictionary<string, object> payload = new Dictionary<string, object>(StringComparer.Ordinal);
+            foreach (KeyValuePair<string, object> kv in config)
+            {
+                payload[kv.Key] = kv.Value;
+            }
+            payload["binding"] = manifest.SettingBinding;
+            payload["codeHash"] = expected;
+
+            string payloadJson = MiniJson.Stringify(payload, false);
+            string hashJson = MiniJson.StringifyString(expected);
+            string verJson = MiniJson.StringifyString(manifest.Version);
+            return "(() => {\n" +
+                "    const nextCfg = " + payloadJson + ";\n" +
+                "    globalThis.__agCsOverrideConfig = nextCfg;\n" +
+                "    if (\n" +
+                "      window.__agClaudeStyle &&\n" +
+                "      typeof window.__agClaudeStyle.refreshConfig === 'function' &&\n" +
+                "      (!" + hashJson + " || window.__agClaudeStyle.codeHash === " + hashJson + ")\n" +
+                "    ) {\n" +
+                "      window.__agClaudeStyle.refreshConfig(nextCfg);\n" +
+                "      return {\n" +
+                "        version: " + verJson + ",\n" +
+                "        status: 'refreshed',\n" +
+                "        state: window.__agClaudeStyle.getState ? window.__agClaudeStyle.getState() : null,\n" +
+                "      };\n" +
+                "    }\n" +
+                "    return null;\n" +
+                "  })()";
         }
 
         public static string BuildInjectExpression(string baseDir, PluginManifest manifest)
@@ -605,7 +667,10 @@ namespace AgyClaudeStyle
             sb.Append("        else document.addEventListener('DOMContentLoaded', applyStyle, { once: true });\n");
             sb.Append("        ").Append(bundle).Append('\n');
             sb.Append("        if (typeof globalThis.__agCsUiMain === 'function') {\n");
-            sb.Append("          globalThis.__agCsUiMain(").Append(MiniJson.Stringify(initCfg, false)).Append(");\n");
+            sb.Append("          const baseCfg = ").Append(MiniJson.Stringify(initCfg, false)).Append(";\n");
+            sb.Append("          const ov = globalThis.__agCsOverrideConfig;\n");
+            sb.Append("          const nextCfg = (ov && typeof ov === 'object' && ov.codeHash === baseCfg.codeHash) ? Object.assign({}, baseCfg, ov, { binding: baseCfg.binding, codeHash: baseCfg.codeHash }) : baseCfg;\n");
+            sb.Append("          globalThis.__agCsUiMain(nextCfg);\n");
             sb.Append("        }\n");
             sb.Append("      } catch (e) {\n");
             sb.Append("        status = 'error: ' + (e && e.message ? e.message : String(e));\n");
@@ -642,6 +707,240 @@ namespace AgyClaudeStyle
         {
             string t = !string.IsNullOrEmpty(page.Title) ? page.Title : (page.Url ?? "");
             return t.Length > 60 ? t.Substring(0, 57) + "..." : t;
+        }
+
+        public enum WatcherPidStatus
+        {
+            Dead,
+            Owned,
+            Foreign,
+            Unknown
+        }
+
+        public class WatcherPidClassification
+        {
+            public WatcherPidStatus Status;
+            public int Pid;
+            public string ExecutablePath;
+            public string CommandLine;
+        }
+
+        public static List<string> SplitCommandArgs(string cmdLine)
+        {
+            List<string> args = new List<string>();
+            if (string.IsNullOrWhiteSpace(cmdLine)) return args;
+            StringBuilder cur = new StringBuilder();
+            char quote = '\0';
+            for (int i = 0; i < cmdLine.Length; i++)
+            {
+                char ch = cmdLine[i];
+                if (quote != '\0')
+                {
+                    if (ch == '\\' && quote == '"' && i + 1 < cmdLine.Length && (cmdLine[i + 1] == '"' || cmdLine[i + 1] == '\\'))
+                    {
+                        cur.Append(cmdLine[++i]);
+                    }
+                    else if (ch == quote)
+                    {
+                        quote = '\0';
+                    }
+                    else
+                    {
+                        cur.Append(ch);
+                    }
+                    continue;
+                }
+                if (ch == '"' || ch == '\'')
+                {
+                    quote = ch;
+                }
+                else if (char.IsWhiteSpace(ch))
+                {
+                    if (cur.Length > 0)
+                    {
+                        args.Add(cur.ToString());
+                        cur.Clear();
+                    }
+                }
+                else
+                {
+                    cur.Append(ch);
+                }
+            }
+            if (cur.Length > 0) args.Add(cur.ToString());
+            return args;
+        }
+
+        public static string NormalizeWindowsPath(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path)) return "";
+            try
+            {
+                string full = Path.GetFullPath(path).TrimEnd('\\', '/');
+                return full.ToLowerInvariant();
+            }
+            catch
+            {
+                return path.Trim().TrimEnd('\\', '/').ToLowerInvariant();
+            }
+        }
+
+        public static WatcherPidStatus EvaluateWatcherOwnership(string exePath, string cmdLine, string baseDir)
+        {
+            if (string.IsNullOrWhiteSpace(cmdLine) || string.IsNullOrWhiteSpace(baseDir)) return WatcherPidStatus.Unknown;
+            try
+            {
+                List<string> args = SplitCommandArgs(cmdLine);
+                if (args.Count == 0) return WatcherPidStatus.Unknown;
+
+                bool hasWatch = false;
+                for (int i = 0; i < args.Count; i++)
+                {
+                    if (string.Equals(args[i], "--once", StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(args[i], "--remove", StringComparison.OrdinalIgnoreCase))
+                    {
+                        return WatcherPidStatus.Foreign;
+                    }
+                    if (string.Equals(args[i], "--watch", StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(args[i], "--managed", StringComparison.OrdinalIgnoreCase))
+                    {
+                        hasWatch = true;
+                    }
+                }
+
+                string normDir = NormalizeWindowsPath(baseDir);
+                string exeName = !string.IsNullOrEmpty(exePath) ? Path.GetFileName(exePath) : Path.GetFileName(args[0]);
+
+                if (string.Equals(exeName, "agy-claude-style-watcher.exe", StringComparison.OrdinalIgnoreCase))
+                {
+                    for (int i = 1; i < args.Count; i++)
+                    {
+                        if (string.Equals(args[i], "--dir", StringComparison.OrdinalIgnoreCase))
+                        {
+                            if (i + 1 >= args.Count || string.IsNullOrEmpty(args[i + 1])) return WatcherPidStatus.Foreign;
+                            if (!Path.IsPathRooted(args[i + 1])) return WatcherPidStatus.Unknown;
+                            return string.Equals(NormalizeWindowsPath(args[i + 1]), normDir, StringComparison.OrdinalIgnoreCase)
+                                ? WatcherPidStatus.Owned
+                                : WatcherPidStatus.Foreign;
+                        }
+                        if (args[i].StartsWith("--dir=", StringComparison.OrdinalIgnoreCase))
+                        {
+                            string val = args[i].Substring(6);
+                            if (string.IsNullOrEmpty(val)) return WatcherPidStatus.Foreign;
+                            if (!Path.IsPathRooted(val)) return WatcherPidStatus.Unknown;
+                            return string.Equals(NormalizeWindowsPath(val), normDir, StringComparison.OrdinalIgnoreCase)
+                                ? WatcherPidStatus.Owned
+                                : WatcherPidStatus.Foreign;
+                        }
+                    }
+                    string resolvedExe = !string.IsNullOrEmpty(exePath) ? exePath : args[0];
+                    if (string.IsNullOrEmpty(resolvedExe) || !Path.IsPathRooted(resolvedExe)) return WatcherPidStatus.Unknown;
+                    return string.Equals(NormalizeWindowsPath(Path.GetDirectoryName(resolvedExe)), normDir, StringComparison.OrdinalIgnoreCase)
+                        ? WatcherPidStatus.Owned
+                        : WatcherPidStatus.Foreign;
+                }
+
+                if (!hasWatch) return WatcherPidStatus.Foreign;
+                string lowerExe = (exeName ?? "").ToLowerInvariant();
+                bool isNodeBin =
+                    lowerExe == "node.exe" ||
+                    lowerExe == "node" ||
+                    lowerExe == "nodejs.exe" ||
+                    lowerExe == "electron.exe" ||
+                    lowerExe == "antigravity.exe";
+                if (!isNodeBin) return WatcherPidStatus.Foreign;
+
+                if (args.Count < 2 || string.IsNullOrEmpty(args[1])) return WatcherPidStatus.Foreign;
+                string entryScript = args[1];
+                if (entryScript.StartsWith("-", StringComparison.Ordinal))
+                {
+                    string lt = entryScript.ToLowerInvariant();
+                    if (lt == "-e" || lt == "--eval" || lt == "-p" || lt == "--print" ||
+                        lt == "-i" || lt == "--interactive" || lt == "-c" || lt == "--check" ||
+                        lt == "-h" || lt == "--help" || lt == "-v" || lt == "--version")
+                    {
+                        return WatcherPidStatus.Foreign;
+                    }
+                    // Fail closed on unknown pre-script flags (e.g. --require / preload) without exhaustive Node CLI parsing.
+                    return WatcherPidStatus.Unknown;
+                }
+
+                if (!string.Equals(Path.GetFileName(entryScript), "inject.js", StringComparison.OrdinalIgnoreCase))
+                {
+                    return WatcherPidStatus.Foreign;
+                }
+                if (!Path.IsPathRooted(entryScript))
+                {
+                    return WatcherPidStatus.Unknown;
+                }
+                string expectedScript = NormalizeWindowsPath(Path.Combine(normDir, "inject.js"));
+                return string.Equals(NormalizeWindowsPath(entryScript), expectedScript, StringComparison.OrdinalIgnoreCase)
+                    ? WatcherPidStatus.Owned
+                    : WatcherPidStatus.Foreign;
+            }
+            catch
+            {
+                return WatcherPidStatus.Unknown;
+            }
+        }
+
+        public static bool MatchesWatcherForDir(string exePath, string cmdLine, string baseDir)
+        {
+            return EvaluateWatcherOwnership(exePath, cmdLine, baseDir) == WatcherPidStatus.Owned;
+        }
+
+        public static WatcherPidClassification ClassifyWatcherPid(int pid, string baseDir)
+        {
+            WatcherPidClassification res = new WatcherPidClassification();
+            res.Pid = pid;
+            res.Status = WatcherPidStatus.Unknown;
+
+            if (pid <= 0 || !IsProcessAlive(pid))
+            {
+                res.Status = WatcherPidStatus.Dead;
+                return res;
+            }
+
+            string exePath = null;
+            string cmdLine = null;
+            bool queried = false;
+            try
+            {
+                using (ManagementObjectSearcher searcher = new ManagementObjectSearcher(
+                    "SELECT ProcessId, ExecutablePath, CommandLine FROM Win32_Process WHERE ProcessId = " + pid))
+                {
+                    foreach (ManagementObject obj in searcher.Get())
+                    {
+                        try
+                        {
+                            queried = true;
+                            exePath = obj["ExecutablePath"] as string;
+                            cmdLine = obj["CommandLine"] as string;
+                            break;
+                        }
+                        finally
+                        {
+                            obj.Dispose();
+                        }
+                    }
+                }
+            }
+            catch
+            {
+                res.Status = IsProcessAlive(pid) ? WatcherPidStatus.Unknown : WatcherPidStatus.Dead;
+                return res;
+            }
+
+            if (!queried || string.IsNullOrWhiteSpace(cmdLine))
+            {
+                res.Status = IsProcessAlive(pid) ? WatcherPidStatus.Unknown : WatcherPidStatus.Dead;
+                return res;
+            }
+
+            res.ExecutablePath = exePath;
+            res.CommandLine = cmdLine;
+            res.Status = EvaluateWatcherOwnership(exePath, cmdLine, baseDir);
+            return res;
         }
 
         public static bool IsProcessAlive(int pid)
@@ -765,12 +1064,51 @@ namespace AgyClaudeStyle
             catch { }
         }
 
+        public static bool ActivateAntigravityWindow()
+        {
+            bool activated = false;
+            try
+            {
+                Process[] procs = Process.GetProcessesByName("Antigravity");
+                for (int i = 0; i < procs.Length; i++)
+                {
+                    try
+                    {
+                        if (!activated)
+                        {
+                            IntPtr hWnd = procs[i].MainWindowHandle;
+                            if (hWnd != IntPtr.Zero)
+                            {
+                                if (IsIconic(hWnd))
+                                {
+                                    ShowWindow(hWnd, SW_RESTORE);
+                                }
+                                SetForegroundWindow(hWnd);
+                                activated = true;
+                            }
+                        }
+                    }
+                    catch { }
+                    finally
+                    {
+                        try { procs[i].Dispose(); } catch { }
+                    }
+                }
+            }
+            catch { }
+            return activated;
+        }
+
         public static bool LaunchAntigravityWithCdp(string exePath, int port)
         {
             string target = !string.IsNullOrEmpty(exePath) ? exePath : FindAntigravityExePath();
             if (string.IsNullOrEmpty(target) || !File.Exists(target)) return false;
             try
             {
+                if (GetAntigravityProcessIds().Count == 0)
+                {
+                    RemoveStalePortFile();
+                }
                 ProcessStartInfo psi = new ProcessStartInfo();
                 psi.FileName = target;
                 psi.Arguments = "--remote-debugging-port=" + Math.Max(0, port);
@@ -823,6 +1161,88 @@ namespace AgyClaudeStyle
             }
             RemoveStalePortFile();
             return LaunchAntigravityWithCdp(target, port);
+        }
+
+        public static async Task<EnsureAntigravityResult> EnsureAntigravityWithCdpAsync(
+            string exePath,
+            bool allowRelaunch,
+            int? overridePort,
+            int waitMs)
+        {
+            EnsureAntigravityResult result = new EnsureAntigravityResult();
+            int? port = ReadPort(overridePort);
+            if (port.HasValue)
+            {
+                try
+                {
+                    List<CdpPageInfo> pages = await ListPagesAsync(port.Value).ConfigureAwait(false);
+                    if (pages != null && pages.Count > 0)
+                    {
+                        ActivateAntigravityWindow();
+                        result.Ok = true;
+                        result.Action = "already-cdp";
+                        result.Port = port.Value;
+                        result.Message = "Antigravity 已在 CDP 调试模式运行 (端口 " + port.Value + ")";
+                        return result;
+                    }
+                }
+                catch { }
+            }
+
+            List<int> pids = GetAntigravityProcessIds();
+            if (pids.Count > 0)
+            {
+                if (HasAntigravityCdpFlag())
+                {
+                    ActivateAntigravityWindow();
+                    result.Ok = true;
+                    result.Action = "waiting-cdp";
+                    result.Port = null;
+                    result.Message = "检测到 Antigravity 已携带 --remote-debugging-port 参数，正在等待调试端口就绪...";
+                    return result;
+                }
+                if (allowRelaunch)
+                {
+                    bool relaunched = RelaunchAntigravityWithCdp(exePath, 0, waitMs);
+                    if (relaunched)
+                    {
+                        result.Ok = true;
+                        result.Action = "relaunched";
+                        result.Port = null;
+                        result.Message = "已温和重启 Antigravity 并启用 --remote-debugging-port=0";
+                    }
+                    else
+                    {
+                        result.Ok = false;
+                        result.Action = "relaunch-failed";
+                        result.Port = null;
+                        result.Message = "未能自动重启正在运行的 Antigravity（可能存在未保存更改）。请先完全退出 Antigravity 后重试。";
+                    }
+                    return result;
+                }
+                result.Ok = false;
+                result.Action = "running-without-cdp";
+                result.Port = null;
+                result.Message = CdpUnavailableMessage(true, port);
+                return result;
+            }
+
+            bool launched = LaunchAntigravityWithCdp(exePath, 0);
+            if (launched)
+            {
+                result.Ok = true;
+                result.Action = "launched";
+                result.Port = null;
+                result.Message = "已以 --remote-debugging-port=0 启动 Antigravity";
+            }
+            else
+            {
+                result.Ok = false;
+                result.Action = "executable-not-found";
+                result.Port = null;
+                result.Message = "未找到 Antigravity.exe，请确认已安装 Antigravity Desktop 后重试。";
+            }
+            return result;
         }
 
         public static string CdpUnavailableMessage(bool running, int? port)

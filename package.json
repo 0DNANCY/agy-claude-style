@@ -7,6 +7,7 @@
     "test": "node --test test/*.test.mjs",
     "launch": "node inject.js --launch",
     "relaunch": "node inject.js --launch --relaunch",
+    "managed": "node inject.js --managed",
     "inject": "node inject.js",
     "watch": "node inject.js --watch",
     "remove": "node remove.js",
