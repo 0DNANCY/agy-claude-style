@@ -6,7 +6,7 @@ const path = require('path');
 const { execFileSync, spawn } = require('child_process');
 
 const STYLE_ID = 'ag-claude-style-css';
-const PLUGIN_VERSION = '1.3.0';
+const PLUGIN_VERSION = '2.0.0';
 const SETTING_BINDING = '__agClaudeStyleSetting';
 const STARTUP_GRACE_SECONDS = 90;
 const IS_MAC = process.platform === 'darwin';

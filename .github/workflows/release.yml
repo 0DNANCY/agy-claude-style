@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag (e.g. v1.3.0). Leave empty to use v<package.json version>.'
+        description: 'Release tag (e.g. v2.0.0). Leave empty to use v<package.json version>.'
         required: false
         type: string
       prerelease:
@@ -65,7 +65,7 @@ jobs:
           fi
 
           if [[ ! "$TAG" =~ ^v[0-9A-Za-z._-]+$ ]]; then
-            echo "::error::Invalid release tag '$TAG'. Expected a tag starting with 'v' (e.g. v1.3.0)."
+            echo "::error::Invalid release tag '$TAG'. Expected a tag starting with 'v' (e.g. v2.0.0)."
             exit 1
           fi
 
@@ -132,6 +132,7 @@ jobs:
 
       - name: Prepare Release notes
         env:
+          TAG: ${{ needs.prepare.outputs.tag }}
           WIN_FILE: ${{ needs.build-and-test.outputs.windows_file }}
           MAC_FILE: ${{ needs.build-and-test.outputs.macos_file }}
         run: |
@@ -139,10 +140,10 @@ jobs:
           cat > release-notes.md <<EOF
           ## 📦 开箱即用安装包 / Standalone Downloads
 
-          无需安装 Node.js 或任何运行时依赖，下载后直接运行即可自动配置后台守护与无损注入：
+          无需安装 Node.js 或任何运行时依赖，下载后直接运行即可完成配置与无损注入（默认采用 **托管启动模式**——随 Antigravity 启动并自动退出、平时 0 后台常驻；亦可按需切换为 **常驻守护模式** 开启开机自启）：
 
-          - **Windows (x64 / Windows 10 & 11)**: 下载 \`${WIN_FILE}\`，双击运行自动安装、开启开机自启并实时注入 Antigravity Desktop。
-          - **macOS (Apple Silicon + Intel Universal)**: 下载 \`${MAC_FILE}\`，打开后拖入「应用程序」或直接双击运行 \`AGY Claude Style.app\`（内置 LaunchAgent 登录自启与独立原生守护进程）。
+          - **Windows (x64 / Windows 10 & 11)**：下载 \`${WIN_FILE}\`，双击运行可自由选择「免后台常驻 · 托管启动（推荐）」或「开机自启 · 常驻守护」并安装，使用开始菜单 / 桌面快捷方式 \`Antigravity (AGY Claude Style)\` 一站式带 CDP 启动并注入。
+          - **macOS (Apple Silicon + Intel Universal)**：下载 \`${MAC_FILE}\`，打开后拖入「应用程序」并运行 \`AGY Claude Style.app\`，可自由选择「托管启动（推荐）」或「常驻守护（LaunchAgent）」；使用生成的 \`Antigravity (AGY Claude Style).app\` 或 \`launch-antigravity.command\` 启动即可。
             > **macOS 首次打开提示说明**：本构建采用 Ad-hoc 签名；若 macOS 提示“无法验证开发者”，请**右键点击 App → 打开**，或在终端执行 \`xattr -cr "/Applications/AGY Claude Style.app"\` 后再次打开。
 
           ### 🔐 SHA256 Checksums
@@ -150,6 +151,43 @@ jobs:
           EOF
           cat release-assets/SHA256SUMS.txt >> release-notes.md
           echo '```' >> release-notes.md
+
+          HAS_CHANGELOG=0
+          if [ -f CHANGELOG.md ] && command -v python3 >/dev/null 2>&1; then
+            if python3 - "$TAG" <<'PY' > changelog-section.md; then
+          import re
+          import sys
+
+          tag = sys.argv[1].strip()
+          with open('CHANGELOG.md', 'r', encoding='utf-8') as f:
+              text = f.read().replace('\r\n', '\n')
+
+          pattern = re.compile(r'^##\s+\[?' + re.escape(tag) + r'\]?(?:\s+-\s+.*|\s*)$', re.MULTILINE)
+          m = pattern.search(text)
+          if not m:
+              sys.exit(1)
+
+          start = m.end()
+          nxt = re.search(r'^##\s+', text[start:], re.MULTILINE)
+          body = text[start:start + nxt.start()] if nxt else text[start:]
+          body = re.sub(r'\n+---\s*$', '', body.strip())
+          if not body:
+              sys.exit(1)
+
+          print(body)
+          PY
+              {
+                echo ""
+                echo "---"
+                echo ""
+                echo "## 📝 更新日志 / What's Changed"
+                echo ""
+                cat changelog-section.md
+              } >> release-notes.md
+              HAS_CHANGELOG=1
+            fi
+          fi
+          echo "HAS_CHANGELOG=$HAS_CHANGELOG" >> "$GITHUB_ENV"
 
       - name: Create or update GitHub Release
         env:
@@ -171,8 +209,10 @@ jobs:
               --target "${{ github.sha }}"
               --title "$TAG"
               --notes-file release-notes.md
-              --generate-notes
             )
+            if [ "${HAS_CHANGELOG:-0}" != "1" ]; then
+              CREATE_ARGS+=(--generate-notes)
+            fi
             if [ "$IS_PRERELEASE" = "true" ]; then
               CREATE_ARGS+=(--prerelease)
             fi

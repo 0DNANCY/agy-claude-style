@@ -302,16 +302,16 @@ test('unified artifact naming and version parity stay consistent across package,
   assert.equal(csSetup.match(/SetValue\("DisplayVersion", version \?\? "([^"]+)"/)?.[1], pkg.version);
   assert.equal(swiftClient.match(/raw\["version"\]\?\.stringValue \?\? "([^"]+)"/)?.[1], pkg.version);
 
-  assert.equal(normalizeVersion('v1.3.0'), '1.3.0');
-  assert.equal(normalizeVersion('1.3.0'), '1.3.0');
+  assert.equal(normalizeVersion('v2.0.0'), '2.0.0');
+  assert.equal(normalizeVersion('2.0.0'), '2.0.0');
 
-  assert.deepEqual(getArtifactNames('v1.3.0'), {
-    version: '1.3.0',
-    windowsInstaller: 'AGY-Claude-Style-v1.3.0-Windows-x64.exe',
-    macosDmg: 'AGY-Claude-Style-v1.3.0-macOS-universal.dmg',
+  assert.deepEqual(getArtifactNames('v2.0.0'), {
+    version: '2.0.0',
+    windowsInstaller: 'AGY-Claude-Style-v2.0.0-Windows-x64.exe',
+    macosDmg: 'AGY-Claude-Style-v2.0.0-macOS-universal.dmg',
     macosApp: 'AGY Claude Style.app',
   });
-  assert.equal(createManifest('v1.3.0').version, '1.3.0');
+  assert.equal(createManifest('v2.0.0').version, '2.0.0');
 });
 
 test('Windows C# sources define managed launch contract and stay strictly C# 5 compatible', () => {
