@@ -1868,6 +1868,7 @@
       isThinking,
       hasError,
     };
+    result.estimatedCost = computeConversationCost(result);
 
     if (Array.isArray(opts.subagents) && opts.subagents.length > 0) {
       attachSubagentSummaries(result, opts.subagents);
@@ -2219,16 +2220,115 @@
     };
   }
 
+  // Reference USD pricing per 1M tokens [input, cacheRead, cacheWrite, output].
+  const MODEL_PRICING_RULES = [
+    { re: /opus[-_\s.]*4[-_\s.]*(?:5|6)/i, label: 'Claude Opus 4.5/4.6', input: 5, cacheRead: 0.5, cacheWrite: 6.25, output: 25 },
+    { re: /claude.*opus|opus/i, label: 'Claude Opus', input: 15, cacheRead: 1.5, cacheWrite: 18.75, output: 75 },
+    { re: /sonnet/i, label: 'Claude Sonnet', input: 3, cacheRead: 0.3, cacheWrite: 3.75, output: 15 },
+    { re: /haiku[-_\s.]*4/i, label: 'Claude Haiku 4', input: 1, cacheRead: 0.1, cacheWrite: 1.25, output: 5 },
+    { re: /haiku/i, label: 'Claude Haiku', input: 0.8, cacheRead: 0.08, cacheWrite: 1, output: 4 },
+    { re: /flash[-_\s.]*lite/i, label: 'Gemini Flash-Lite', input: 0.1, cacheRead: 0.025, cacheWrite: 0.1, output: 0.4 },
+    { re: /flash|hydrogen/i, label: 'Gemini Flash', input: 0.3, cacheRead: 0.075, cacheWrite: 0.3, output: 2.5 },
+    { re: /gemini|argon/i, label: 'Gemini Pro', input: 1.25, cacheRead: 0.3125, cacheWrite: 1.25, output: 10 },
+    { re: /(?:gpt-5|codex)/i, label: 'GPT-5 / Codex', input: 1.25, cacheRead: 0.125, cacheWrite: 1.25, output: 10 },
+    { re: /(?:gpt-4\.1-mini|gpt-4o-mini|o4-mini|o3-mini)/i, label: 'OpenAI Mini', input: 0.4, cacheRead: 0.1, cacheWrite: 0.4, output: 1.6 },
+    { re: /(?:gpt-4\.1|gpt-4o|o3)/i, label: 'OpenAI GPT-4 / o3', input: 2, cacheRead: 0.5, cacheWrite: 2, output: 8 },
+  ];
+
+  function estimateModelPricing(modelName) {
+    const raw = String(modelName || '').trim();
+    if (!raw) return null;
+    for (let i = 0; i < MODEL_PRICING_RULES.length; i++) {
+      if (MODEL_PRICING_RULES[i].re.test(raw)) return MODEL_PRICING_RULES[i];
+    }
+    return null;
+  }
+
+  function formatUsd(val) {
+    const n = Number(val || 0);
+    if (!Number.isFinite(n) || n <= 0) return '$0.00';
+    if (n < 0.01) return `$${n.toFixed(4)}`;
+    if (n < 10) return `$${n.toFixed(2)}`;
+    return `$${n.toFixed(1)}`;
+  }
+
+  function computeConversationCost(data) {
+    if (!data || typeof data !== 'object') {
+      return { hasCost: false, totalUsd: 0, cacheSavedUsd: 0, freshInputUsd: 0, cacheReadUsd: 0, cacheWriteUsd: 0, outputUsd: 0 };
+    }
+    let freshInputUsd = 0;
+    let cacheReadUsd = 0;
+    let cacheWriteUsd = 0;
+    let outputUsd = 0;
+    let withoutCacheUsd = 0;
+    let matchedCalls = 0;
+    const calls = Array.isArray(data.callList) ? data.callList : [];
+
+    const addSlice = (inp, cr, cw, out, rate) => {
+      if (!rate) return;
+      matchedCalls++;
+      const M = 1e6;
+      freshInputUsd += (inp / M) * rate.input;
+      cacheReadUsd += (cr / M) * rate.cacheRead;
+      cacheWriteUsd += (cw / M) * rate.cacheWrite;
+      outputUsd += (out / M) * rate.output;
+      withoutCacheUsd += ((inp + cr + cw) / M) * rate.input + (out / M) * rate.output;
+    };
+
+    if (calls.length > 0) {
+      for (const c of calls) {
+        const rate = estimateModelPricing(c.responseModel || c.modelDisplayName || data.lastModel);
+        if (!rate) continue;
+        addSlice(
+          Number(c.inputTokens || 0),
+          Number(c.cacheReadTokens || 0),
+          Number(c.cacheWriteTokens || 0),
+          Number(c.outputTokens || 0),
+          rate
+        );
+      }
+    } else if (data.totalTokens > 0) {
+      const rate = estimateModelPricing(data.lastModel || data.lastCall?.responseModel || data.lastCall?.modelDisplayName);
+      if (rate) {
+        addSlice(
+          Number(data.sumInput || 0),
+          Number(data.sumCacheRead || 0),
+          Number(data.sumCacheWrite || 0),
+          Number(data.sumOutput || 0),
+          rate
+        );
+      }
+    }
+
+    const totalUsd = freshInputUsd + cacheReadUsd + cacheWriteUsd + outputUsd;
+    const cacheSavedUsd = Math.max(0, withoutCacheUsd - totalUsd);
+    return {
+      hasCost: matchedCalls > 0 && totalUsd > 0,
+      totalUsd,
+      withoutCacheUsd,
+      cacheSavedUsd,
+      freshInputUsd,
+      cacheReadUsd,
+      cacheWriteUsd,
+      outputUsd,
+    };
+  }
+
   function buildTelemetryReport(data, draftEst, quotaData, activeQuota, langOrZh) {
     if (!data) return '{}';
     const l = langOrZh === undefined ? 'en' : resolveLang(langOrZh);
     const maxTok = data.maxContextTokens || 256000;
     const remTok = Math.max(0, maxTok - (data.contextUsed || 0));
     const remPct = maxTok > 0 ? (remTok / maxTok) * 100 : 100;
+    const costInfo = data.estimatedCost || computeConversationCost(data);
     if (l === 'en') {
       const speedLine =
         data.displaySpeed || data.avgSpeed
           ? `- Generation Speed: ${data.isLiveSpeed ? 'Live ~' : 'Latest '}${data.displaySpeed || 0} tok/s | Session Avg ${data.avgSpeed || 0} tok/s | Peak ${data.sustainedPeakSpeed || 0} tok/s | Avg TTFT ${fmtSec(data.avgTtft || 0)}`
+          : null;
+      const costLine =
+        costInfo && costInfo.hasCost
+          ? `- Est. API Cost: ~${formatUsd(costInfo.totalUsd)}${costInfo.cacheSavedUsd >= 0.005 ? ` (cache saved ~${formatUsd(costInfo.cacheSavedUsd)})` : ''}`
           : null;
       const quotaLine =
         activeQuota && activeQuota.effectiveRemainingPct != null
@@ -2241,6 +2341,7 @@
         `- Context Remaining: ${fmtInt(remTok)} / ${fmtInt(maxTok)} tokens (${fmtPct(remPct)} free, ${fmtPct(data.contextPct)} used)`,
         `- Context Breakdown: System ${fmtInt(data.sysTokens)} | Tools ${fmtInt(data.toolsTokens)} (${(data.toolsChildren || []).length}) | Chat ${fmtInt(data.chatMsgTokens ?? data.msgTokens)} | Tool Results ${fmtInt(data.toolResultsTokens || 0)} (${data.totalSteps} steps)`,
         `- Session Totals (${data.totalCalls} calls): Input ${fmtInt(data.sumInput)} | Cache Read ${fmtInt(data.sumCacheRead)} (${fmtPct(data.overallCacheHitPct)} hit) | Output ${fmtInt(data.sumOutput)} (Thinking ${fmtInt(data.sumThinking)}, Response ${fmtInt(data.sumResponse)})`,
+        ...(costLine ? [costLine] : []),
         ...(data.subagentCount > 0
           ? [`- Subagents: ${data.subagentCount} spawned (${data.subagentCalls} calls, ${fmtInt(data.subagentTokens)} total tokens)`]
           : []),
@@ -2253,16 +2354,20 @@
     }
     const labels = pickByLang(
       {
-        'zh-CN': { title: '# AGY Claude Style Token 监控报告', cid: '对话 ID', model: '模型', rem: '上下文剩余', free: '可用', used: '已用', brk: '上下文构成', sys: '系统', tools: '工具', chat: '对话', tr: '工具结果', steps: '步', tot: '会话累计', calls: '次调用', inp: '输入', cr: '缓存读取', hit: '命中率', out: '输出', thk: '思考', rsp: '回复', sub: '子智能体', subSpawn: '个', spd: '生成速度', live: '实时 ~', latest: '最新 ', avg: '均值', peak: '峰值', ttft: '首字均值 TTFT', quota: '模型配额', q5h: '5小时', qwk: '本周', qrem: '剩余', plan: '套餐 / 额度', cred: 'AI 额度', draft: '实时草稿', chars: '字符' },
-        'zh-TW': { title: '# AGY Claude Style Token 監控報告', cid: '對話 ID', model: '模型', rem: '上下文剩餘', free: '可用', used: '已用', brk: '上下文構成', sys: '系統', tools: '工具', chat: '對話', tr: '工具結果', steps: '步', tot: '工作階段累計', calls: '次呼叫', inp: '輸入', cr: '快取讀取', hit: '命中率', out: '輸出', thk: '思考', rsp: '回覆', sub: '子代理', subSpawn: '個', spd: '生成速度', live: '即時 ~', latest: '最新 ', avg: '平均', peak: '峰值', ttft: '首字平均 TTFT', quota: '模型配額', q5h: '5小時', qwk: '本週', qrem: '剩餘', plan: '方案 / 點數', cred: 'AI 點數', draft: '即時草稿', chars: '字元' },
-        yue: { title: '# AGY Claude Style Token 監控報告', cid: '對話 ID', model: '模型', rem: '剩低上下文', free: '可用', used: '用咗', brk: '上下文組成', sys: '系統', tools: '工具', chat: '對話', tr: '工具結果', steps: '步', tot: '對話累計', calls: '次呼叫', inp: '輸入', cr: '快取讀取', hit: '命中率', out: '輸出', thk: '思考', rsp: '回覆', sub: '子代理', subSpawn: '個', spd: '生成速度', live: '即時 ~', latest: '最新 ', avg: '平均', peak: '峰值', ttft: '首字平均 TTFT', quota: '模型配額', q5h: '5個鐘', qwk: '今個禮拜', qrem: '剩低', plan: '方案 / 額度', cred: 'AI 額度', draft: '即時草稿', chars: '字' },
-        ja: { title: '# AGY Claude Style Token レポート', cid: '会話 ID', model: 'モデル', rem: '残りコンテキスト', free: '空き', used: '使用', brk: 'コンテキスト内訳', sys: 'システム', tools: 'ツール', chat: '会話', tr: 'ツール結果', steps: 'ステップ', tot: 'セッション合計', calls: '回呼出', inp: '入力', cr: 'キャッシュ読込', hit: '命中率', out: '出力', thk: '思考', rsp: '応答', sub: 'サブエージェント', subSpawn: '件', spd: '生成速度', live: '現在 ~', latest: '直近 ', avg: '平均', peak: '最大', ttft: '平均 TTFT', quota: 'モデルクォータ', q5h: '5時間', qwk: '週間', qrem: '残り', plan: 'プラン / クレジット', cred: 'AI クレジット', draft: '入力中下書き', chars: '文字' },
+        'zh-CN': { title: '# AGY Claude Style Token 监控报告', cid: '对话 ID', model: '模型', rem: '上下文剩余', free: '可用', used: '已用', brk: '上下文构成', sys: '系统', tools: '工具', chat: '对话', tr: '工具结果', steps: '步', tot: '会话累计', calls: '次调用', inp: '输入', cr: '缓存读取', hit: '命中率', out: '输出', thk: '思考', rsp: '回复', cost: '估算 API 费用', saved: '缓存省约', sub: '子智能体', subSpawn: '个', spd: '生成速度', live: '实时 ~', latest: '最新 ', avg: '均值', peak: '峰值', ttft: '首字均值 TTFT', quota: '模型配额', q5h: '5小时', qwk: '本周', qrem: '剩余', plan: '套餐 / 额度', cred: 'AI 额度', draft: '实时草稿', chars: '字符' },
+        'zh-TW': { title: '# AGY Claude Style Token 監控報告', cid: '對話 ID', model: '模型', rem: '上下文剩餘', free: '可用', used: '已用', brk: '上下文構成', sys: '系統', tools: '工具', chat: '對話', tr: '工具結果', steps: '步', tot: '工作階段累計', calls: '次呼叫', inp: '輸入', cr: '快取讀取', hit: '命中率', out: '輸出', thk: '思考', rsp: '回覆', cost: '估算 API 費用', saved: '快取省約', sub: '子代理', subSpawn: '個', spd: '生成速度', live: '即時 ~', latest: '最新 ', avg: '平均', peak: '峰值', ttft: '首字平均 TTFT', quota: '模型配額', q5h: '5小時', qwk: '本週', qrem: '剩餘', plan: '方案 / 點數', cred: 'AI 點數', draft: '即時草稿', chars: '字元' },
+        yue: { title: '# AGY Claude Style Token 監控報告', cid: '對話 ID', model: '模型', rem: '剩低上下文', free: '可用', used: '用咗', brk: '上下文組成', sys: '系統', tools: '工具', chat: '對話', tr: '工具結果', steps: '步', tot: '對話累計', calls: '次呼叫', inp: '輸入', cr: '快取讀取', hit: '命中率', out: '輸出', thk: '思考', rsp: '回覆', cost: '估算 API 費用', saved: '快取慳咗', sub: '子代理', subSpawn: '個', spd: '生成速度', live: '即時 ~', latest: '最新 ', avg: '平均', peak: '峰值', ttft: '首字平均 TTFT', quota: '模型配額', q5h: '5個鐘', qwk: '今個禮拜', qrem: '剩低', plan: '方案 / 額度', cred: 'AI 額度', draft: '即時草稿', chars: '字' },
+        ja: { title: '# AGY Claude Style Token レポート', cid: '会話 ID', model: 'モデル', rem: '残りコンテキスト', free: '空き', used: '使用', brk: 'コンテキスト内訳', sys: 'システム', tools: 'ツール', chat: '会話', tr: 'ツール結果', steps: 'ステップ', tot: 'セッション合計', calls: '回呼出', inp: '入力', cr: 'キャッシュ読込', hit: '命中率', out: '出力', thk: '思考', rsp: '応答', cost: '推定 API コスト', saved: 'キャッシュ節約', sub: 'サブエージェント', subSpawn: '件', spd: '生成速度', live: '現在 ~', latest: '直近 ', avg: '平均', peak: '最大', ttft: '平均 TTFT', quota: 'モデルクォータ', q5h: '5時間', qwk: '週間', qrem: '残り', plan: 'プラン / クレジット', cred: 'AI クレジット', draft: '入力中下書き', chars: '文字' },
       },
       l,
     );
     const speedLine =
       data.displaySpeed || data.avgSpeed
         ? `- ${labels.spd}: ${data.isLiveSpeed ? labels.live : labels.latest}${data.displaySpeed || 0} tok/s | ${labels.avg} ${data.avgSpeed || 0} tok/s | ${labels.peak} ${data.sustainedPeakSpeed || 0} tok/s | ${labels.ttft} ${fmtSec(data.avgTtft || 0)}`
+        : null;
+    const costLine =
+      costInfo && costInfo.hasCost
+        ? `- ${labels.cost}: ~${formatUsd(costInfo.totalUsd)}${costInfo.cacheSavedUsd >= 0.005 ? ` (${labels.saved} ~${formatUsd(costInfo.cacheSavedUsd)})` : ''}`
         : null;
     const quotaLine =
       activeQuota && activeQuota.effectiveRemainingPct != null
@@ -2275,6 +2380,7 @@
       `- ${labels.rem}: ${fmtInt(remTok)} / ${fmtInt(maxTok)} tokens (${fmtPct(remPct)} ${labels.free}, ${fmtPct(data.contextPct)} ${labels.used})`,
       `- ${labels.brk}: ${labels.sys} ${fmtInt(data.sysTokens)} | ${labels.tools} ${fmtInt(data.toolsTokens)} (${(data.toolsChildren || []).length}) | ${labels.chat} ${fmtInt(data.chatMsgTokens ?? data.msgTokens)} | ${labels.tr} ${fmtInt(data.toolResultsTokens || 0)} (${data.totalSteps} ${labels.steps})`,
       `- ${labels.tot} (${data.totalCalls} ${labels.calls}): ${labels.inp} ${fmtInt(data.sumInput)} | ${labels.cr} ${fmtInt(data.sumCacheRead)} (${fmtPct(data.overallCacheHitPct)} ${labels.hit}) | ${labels.out} ${fmtInt(data.sumOutput)} (${labels.thk} ${fmtInt(data.sumThinking)}, ${labels.rsp} ${fmtInt(data.sumResponse)})`,
+      ...(costLine ? [costLine] : []),
       ...(data.subagentCount > 0
         ? [`- ${labels.sub}: ${data.subagentCount}${labels.subSpawn} (${data.subagentCalls} ${labels.calls}, ${fmtInt(data.subagentTokens)} tokens)`]
         : []),
@@ -2284,6 +2390,52 @@
       `- ${labels.draft}: ~${fmtInt(draftEst?.tokens || 0)} tokens (${fmtInt(draftEst?.chars || 0)} ${labels.chars})`,
     ];
     return lines.join('\n');
+  }
+
+  function buildConversationMarkdownExport(data, draftEst, quotaData, activeQuota, langOrZh) {
+    const baseReport = buildTelemetryReport(data, draftEst, quotaData, activeQuota, langOrZh);
+    if (!data) return baseReport;
+    const l = langOrZh === undefined ? 'en' : resolveLang(langOrZh);
+    const hdr = pickByLang(
+      {
+        'zh-CN': { turns: '## 分轮次消耗明细', tools: '## 工具输出排行', subs: '## 子智能体详情', prompt: '用户输入', model: '模型', out: '输出', delta: '上下文增量', speed: '速率', cache: '缓存' },
+        'zh-TW': { turns: '## 分輪次消耗明細', tools: '## 工具輸出排行', subs: '## 子代理詳情', prompt: '使用者輸入', model: '模型', out: '輸出', delta: '上下文增量', speed: '速率', cache: '快取' },
+        yue: { turns: '## 分輪次消耗明細', tools: '## 工具輸出排行', subs: '## 子代理詳情', prompt: '用戶輸入', model: '模型', out: '輸出', delta: '上下文增量', speed: '速率', cache: '快取' },
+        en: { turns: '## Per-Turn Telemetry Breakdown', tools: '## Tool Output Leaderboard', subs: '## Subagents', prompt: 'Prompt', model: 'Model', out: 'Output', delta: 'Ctx Delta', speed: 'Speed', cache: 'Cache' },
+        ja: { turns: '## ターン別テレメトリ明細', tools: '## ツール出力ランキング', subs: '## サブエージェント', prompt: 'プロンプト', model: 'モデル', out: '出力', delta: 'Ctx 増分', speed: '速度', cache: 'キャッシュ' },
+      },
+      l
+    );
+    const sections = [baseReport];
+    const turns = Array.isArray(data.turnDetails) ? data.turnDetails : [];
+    if (turns.length > 0) {
+      sections.push('', hdr.turns, '');
+      sections.push(`| Turn | ${hdr.model} | ${hdr.delta} | ${hdr.out} | ${hdr.speed} | ${hdr.cache} | ${hdr.prompt} |`);
+      sections.push('| --- | --- | --- | --- | --- | --- | --- |');
+      for (const t of turns) {
+        const prompt = String(t.userPreview || '').replace(/[|\r\n]+/g, ' ').trim();
+        const deltaStr = `${t.ctxDelta >= 0 ? '+' : ''}${fmtK(t.ctxDelta)}`;
+        sections.push(
+          `| #T${t.turn} | ${t.model || data.lastModel || '—'} | ${deltaStr} | ${fmtK(t.output || 0)} | ${t.speed ? `${t.speed} tok/s` : '—'} | ${t.cacheHitPct ?? 0}% | ${prompt || '—'} |`
+        );
+      }
+    }
+    const tools = Array.isArray(data.toolBreakdown) ? data.toolBreakdown : [];
+    if (tools.length > 0) {
+      sections.push('', hdr.tools, '');
+      for (const tool of tools.slice(0, 15)) {
+        sections.push(`- \`${tool.name}\`: ×${tool.count} (~${fmtK(tool.tokens)} tok)`);
+      }
+    }
+    const subs = Array.isArray(data.subagents) ? data.subagents : [];
+    if (subs.length > 0) {
+      sections.push('', hdr.subs, '');
+      for (let i = 0; i < subs.length; i++) {
+        const s = subs[i];
+        sections.push(`- #${i + 1} \`${s.shortId || s.id}\` (${s.model || data.lastModel || '—'}): ${fmtInt(s.totalTokens)} tok, ${s.calls || 0} calls`);
+      }
+    }
+    return sections.join('\n');
   }
 
   return {
@@ -2327,6 +2479,10 @@
     normalizeQuotaData,
     getActiveQuotaInfo,
     computeRingTelemetry,
+    estimateModelPricing,
+    computeConversationCost,
+    formatUsd,
     buildTelemetryReport,
+    buildConversationMarkdownExport,
   };
 });

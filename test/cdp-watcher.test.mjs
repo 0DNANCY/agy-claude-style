@@ -322,3 +322,28 @@ test('hasRemoteDebuggingFlag detects --remote-debugging-port on running processe
     try { withoutFlag.kill('SIGKILL'); } catch {}
   }
 });
+
+test('buildRefreshExpression produces lightweight config refresh payload matching codeHash', () => {
+  const full = cdp.buildInjectExpression(cdp.DEFAULT_CONFIG);
+  const hash = cdp.computeHash(cdp.readRuntimeBundle());
+  const refresh = cdp.buildRefreshExpression({ ...cdp.DEFAULT_CONFIG, palette: 'claude' }, hash);
+  assert.ok(refresh.length < 2048, `Expected compact refresh expression, got ${refresh.length} chars`);
+  assert.ok(refresh.includes('"palette":"claude"'));
+  assert.ok(refresh.includes(hash));
+  assert.ok(full.includes(hash));
+});
+
+test('writeFileAtomic and updateConfigSetting persist valid updates and reject unknown keys', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-cs-atomic-cfg-'));
+  const cfgPath = path.join(dir, 'config.json');
+  try {
+    assert.equal(cdp.updateConfigSetting('palette', 'claude', cfgPath), true);
+    assert.equal(cdp.readConfig(cfgPath).palette, 'claude');
+    assert.equal(cdp.updateConfigSetting('palette', 'invalid-theme', cfgPath), false);
+    assert.equal(cdp.updateConfigSetting('__proto__', 'hacked', cfgPath), false);
+    assert.equal(cdp.isLikelyWatcherProcess(-1), false);
+    assert.equal(cdp.isLikelyWatcherProcess(99999999), false);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

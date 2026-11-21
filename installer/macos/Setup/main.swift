@@ -450,7 +450,11 @@ enum InstallerCore {
                 if let pages = try? CdpHelper.listPages(port: port) {
                     cdpReachable = true
                     let logContent = (try? String(contentsOfFile: watchLogPath, encoding: .utf8)) ?? ""
-                    let watcherInjected = logContent.contains("[✓] 已注入 agy-claude-style:")
+                    let pidExists = FileManager.default.fileExists(atPath: (installDir as NSString).appendingPathComponent(".watch.pid"))
+                    let watcherInjected =
+                        logContent.contains("[✓]") ||
+                        logContent.contains("[↻]") ||
+                        (pidExists && attempt >= 2)
                     if !pages.isEmpty && watcherInjected {
                         var allReady = true
                         var titles: [String] = []

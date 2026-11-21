@@ -542,8 +542,8 @@ namespace AgyClaudeStyle.Installer
             result.ConfigSummary = string.Format(
                 "语言={0} | 配色={1} | 圆环={2} | 思考滑块={3}",
                 activeCfg.ContainsKey("language") ? activeCfg["language"] : "zh-CN",
-                activeCfg.ContainsKey("palette") ? activeCfg["palette"] : "claude",
-                activeCfg.ContainsKey("ringMode") ? activeCfg["ringMode"] : "quota",
+                activeCfg.ContainsKey("palette") ? activeCfg["palette"] : "obsidian",
+                activeCfg.ContainsKey("ringMode") ? activeCfg["ringMode"] : "context",
                 activeCfg.ContainsKey("effortSliderStyle") ? activeCfg["effortSliderStyle"] : "claude"
             );
 
@@ -605,7 +605,10 @@ namespace AgyClaudeStyle.Installer
                                 logContent = sr.ReadToEnd();
                             }
                         }
-                        bool watcherInjected = logContent.IndexOf("[✓] 已注入 agy-claude-style:", StringComparison.Ordinal) >= 0;
+                        bool watcherInjected =
+                            logContent.IndexOf("[✓]", StringComparison.Ordinal) >= 0 ||
+                            logContent.IndexOf("[↻]", StringComparison.Ordinal) >= 0 ||
+                            (File.Exists(Path.Combine(installDir, ".watch.pid")) && attempt >= 2);
                         if (pages != null && pages.Count > 0 && watcherInjected)
                         {
                             bool allReady = true;
@@ -803,12 +806,15 @@ namespace AgyClaudeStyle.Installer
         {
             string selfExe = Assembly.GetExecutingAssembly().Location;
             if (string.IsNullOrEmpty(selfExe)) return;
-            string cmd = string.Format(
-                "/c for /L %i in (1,1,10) do (ping -n 2 127.0.0.1 >nul & del /f /q \"{0}\" >nul 2>&1 & rmdir /s /q \"{1}\" >nul 2>&1 & if not exist \"{1}\" exit /b 0)",
-                selfExe,
-                installDir
+            string escapedExe = selfExe.Replace("'", "''");
+            string escapedDir = installDir.Replace("'", "''");
+            string psScript = string.Format(
+                "$e='{0}';$d='{1}';for($i=0;$i -lt 12;$i++){{Start-Sleep -Milliseconds 350;if(Test-Path -LiteralPath $e){{Remove-Item -LiteralPath $e -Force -ErrorAction SilentlyContinue}};if(Test-Path -LiteralPath $d){{Remove-Item -LiteralPath $d -Recurse -Force -ErrorAction SilentlyContinue}};if(-not (Test-Path -LiteralPath $d)){{exit 0}}}}",
+                escapedExe,
+                escapedDir
             );
-            ProcessStartInfo psi = new ProcessStartInfo("cmd.exe", cmd);
+            string encoded = Convert.ToBase64String(Encoding.Unicode.GetBytes(psScript));
+            ProcessStartInfo psi = new ProcessStartInfo("powershell.exe", "-NoProfile -NonInteractive -WindowStyle Hidden -EncodedCommand " + encoded);
             psi.WorkingDirectory = Path.GetTempPath();
             psi.CreateNoWindow = true;
             psi.UseShellExecute = false;

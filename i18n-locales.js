@@ -88,6 +88,10 @@
     copyBtnTitle: ['复制完整遥测报告', '複製完整遙測報告', '複製完整遙測報告', 'Copy telemetry report', 'テレメトリレポートをコピー'],
     copyBtnLabel: ['复制报告', '複製報告', '複製報告', 'Copy', 'コピー'],
     copiedBtnLabel: ['✓ 已复制', '✓ 已複製', '✓ 複製咗', '✓ Copied', '✓ コピー済み'],
+    exportBtnTitle: ['导出 Markdown 会话与遥测审计', '匯出 Markdown 對話與遙測稽核', '匯出 Markdown 對話同遙測報告', 'Export session Markdown & telemetry audit', 'Markdown 会話・統計レポートを書出'],
+    exportBtnLabel: ['导出 MD', '匯出 MD', '匯出 MD', 'Export', '書出'],
+    exportedBtnLabel: ['✓ 已导出', '✓ 已匯出', '✓ 匯出咗', '✓ Exported', '✓ 書出済み'],
+    cacheSavedShort: ['缓存省', '快取省', '慳咗', 'Saved', '節約'],
     refreshBtnTitle: ['立即刷新遥测与配额', '立即重新整理遙測與配額', '即刻重新整理數據同配額', 'Refresh telemetry', 'データを更新'],
     closeBtnTitle: ['关闭', '關閉', '關閉', 'Close', '閉じる'],
     remAvailLabel: ['剩余可用', '剩餘可用', '剩低可用', 'Remaining', '残り利用可能'],
@@ -324,6 +328,16 @@
         : lang === 'ja'
         ? `入力中の下書き (${n} 文字)`
         : `Live Draft (${n} chars)`;
+    out.lowCtxBanner = (pctRound) =>
+      lang === 'zh-CN'
+        ? `上下文余量仅剩 ${pctRound}%，点击填入 /compact 压缩对话`
+        : lang === 'zh-TW'
+        ? `上下文餘量僅剩 ${pctRound}%，點擊填入 /compact 壓縮對話`
+        : lang === 'yue'
+        ? `上下文剩低 ${pctRound}%，撳呢度填入 /compact 壓縮對話`
+        : lang === 'ja'
+        ? `コンテキスト残量 ${pctRound}% — クリックして /compact を入力`
+        : `Low context (${pctRound}% free) — click to fill /compact`;
     out.subagentsHeading = (cnt, calls, tokFmt) =>
       lang === 'zh-CN'
         ? `子代理消耗 (${cnt} 个 · ${calls} 次调用 · 累计 ${tokFmt})`

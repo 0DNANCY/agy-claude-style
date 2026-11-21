@@ -1,6 +1,6 @@
 // Stop the background watcher (if running) and remove AGY Claude Style (agy-claude-style) from all Antigravity windows.
 const fs = require('fs');
-const { PID_FILE, readPort, listPages, CdpSession, REMOVE_EXPRESSION } = require('./cdp');
+const { PID_FILE, readPort, listPages, isLikelyWatcherProcess, CdpSession, REMOVE_EXPRESSION } = require('./cdp');
 
 function stopWatcher() {
   let pid;
@@ -10,6 +10,12 @@ function stopWatcher() {
     return false;
   }
   if (!pid) return false;
+  if (!isLikelyWatcherProcess(pid)) {
+    try {
+      fs.unlinkSync(PID_FILE);
+    } catch {}
+    return false;
+  }
   try {
     process.kill(pid);
     console.log(`[✓] 已停止 agy-claude-style 后台守护进程 (PID ${pid})`);

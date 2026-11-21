@@ -246,15 +246,22 @@ async function waitFor(fn, timeoutMs = 6000, intervalMs = 100) {
 }
 
 test('installer manifest validators match inject.js and cdp.js defaults', () => {
-  const injectSrc = fs.readFileSync(path.join(ROOT_DIR, 'inject.js'), 'utf8');
-  const match = injectSrc.match(/const validators = \{([\s\S]*?)\};/);
-  assert.ok(match, 'validators object found in inject.js');
-  const keysInInject = Array.from(match[1].matchAll(/^\s*([a-zA-Z0-9_]+)\s*:/gm)).map((m) => m[1]);
-  assert.deepEqual(Object.keys(VALIDATORS).sort(), keysInInject.sort());
-
-  for (const k of keysInInject) {
+  const manifestKeys = Object.keys(VALIDATORS).sort();
+  assert.deepEqual(manifestKeys, Object.keys(cdp.CONFIG_VALIDATORS).sort());
+  for (const k of manifestKeys) {
     assert.ok(k in cdp.DEFAULT_CONFIG, `DEFAULT_CONFIG includes ${k}`);
+    const rule = cdp.CONFIG_VALIDATORS[k];
+    if (rule === 'boolean') {
+      assert.equal(cdp.validateConfigSetting(k, true), true);
+      assert.equal(cdp.validateConfigSetting(k, 'invalid'), false);
+    } else if (Array.isArray(rule)) {
+      assert.equal(cdp.validateConfigSetting(k, rule[0]), true);
+      assert.equal(cdp.validateConfigSetting(k, '__invalid_opt__'), false);
+    }
   }
+  assert.equal(cdp.validateConfigSetting('pollIntervalMs', 3000), true);
+  assert.equal(cdp.validateConfigSetting('pollIntervalMs', 50), false);
+  assert.equal(cdp.validateConfigSetting('__unknown_key__', true), false);
 });
 
 test('unified artifact naming and version parity stay consistent across package, runtime, and installers', () => {

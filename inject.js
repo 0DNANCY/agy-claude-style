@@ -7,22 +7,13 @@
 //                            (add --relaunch to restart a running instance without CDP)
 const fs = require('fs');
 const path = require('path');
+let cdpApi = require('./cdp');
 const {
   PORT_FILE,
   PID_FILE,
   CONFIG_FILE,
   SETTING_BINDING,
-  readConfig,
-  readPort,
-  listPages,
-  detectAntigravityProcess,
-  hasRemoteDebuggingFlag,
-  launchAntigravityWithCdp,
-  relaunchAntigravityWithCdp,
-  formatCdpUnavailableMessage,
-  CdpSession,
-  buildInjectExpression,
-} = require('./cdp');
+} = cdpApi;
 
 const WATCH = process.argv.includes('--watch');
 const LAUNCH = process.argv.includes('--launch');
@@ -67,58 +58,25 @@ function shortTitle(page) {
   return t.length > 60 ? t.slice(0, 57) + '...' : t;
 }
 
-function updateConfigSetting(key, value) {
-  const validators = {
-    language: (v) => v === 'zh-CN' || v === 'zh-TW' || v === 'yue' || v === 'en' || v === 'ja',
-    palette: (v) => v === 'obsidian' || v === 'claude' || v === 'host',
-    homeLayout: (v) => v === 'studio' || v === 'classic' || v === 'off',
-    homeRipple: (v) => typeof v === 'boolean',
-    composerRestyle: (v) => typeof v === 'boolean',
-    mascot: (v) => v === 'crab' || v === 'off',
-    logoInk: (v) => v === 'accent' || v === 'foreground',
-    inlineStats: (v) => typeof v === 'boolean',
-    ringMode: (v) => v === 'context' || v === 'quota',
-    turnBadges: (v) => typeof v === 'boolean',
-    hudTopBar: (v) => typeof v === 'boolean',
-    hudBottomBar: (v) => typeof v === 'boolean',
-    hudRimProgress: (v) => typeof v === 'boolean',
-    hudFooterChip: (v) => typeof v === 'boolean',
-    hudCompact: (v) => typeof v === 'boolean',
-    effortSliderStyle: (v) => v === 'claude' || v === 'chatgpt' || v === 'liangwufeng',
-    effortAccent: (v) => typeof v === 'boolean',
-    performanceBackdrop: (v) => v === 'off' || v === 'card' || v === 'page',
-    smoothCaret: (v) => typeof v === 'boolean',
-    sidebarRestyle: (v) => typeof v === 'boolean',
-    sidebarCompact: (v) => typeof v === 'boolean',
-    placeholderStyle: (v) => v === 'studio' || v === 'host',
-    autoRelaunchWithCdp: (v) => typeof v === 'boolean',
-    exitOnHostClose: (v) => typeof v === 'boolean',
-  };
-  if (!Object.prototype.hasOwnProperty.call(validators, key) || !validators[key](value)) return false;
-  const next = { ...readConfig(), [key]: value };
-  fs.writeFileSync(CONFIG_FILE, JSON.stringify(next, null, 2) + '\n');
-  return true;
-}
-
 async function injectOnce() {
-  const port = readPort();
+  const port = cdpApi.readPort();
   if (!port) {
-    const proc = detectAntigravityProcess();
-    throw new Error(formatCdpUnavailableMessage({ running: proc.running, port: null }));
+    const proc = cdpApi.detectAntigravityProcess();
+    throw new Error(cdpApi.formatCdpUnavailableMessage({ running: proc.running, port: null }));
   }
   let pages;
   try {
-    pages = await listPages(port);
+    pages = await cdpApi.listPages(port);
   } catch {
-    const proc = detectAntigravityProcess();
-    throw new Error(formatCdpUnavailableMessage({ running: proc.running, port }));
+    const proc = cdpApi.detectAntigravityProcess();
+    throw new Error(cdpApi.formatCdpUnavailableMessage({ running: proc.running, port }));
   }
   if (pages.length === 0) throw new Error('未找到 Antigravity 窗口页面');
 
   log(`[+] 调试端口 ${port}，发现 ${pages.length} 个窗口`);
-  const expr = buildInjectExpression();
+  const expr = cdpApi.buildInjectExpression();
   for (const page of pages) {
-    const session = await CdpSession.connect(page.webSocketDebuggerUrl);
+    const session = await cdpApi.CdpSession.connect(page.webSocketDebuggerUrl);
     try {
       const res = await session.evaluate(expr);
       log(`[✓] ${shortTitle(page)} (agy-claude-style ${res.version} · 状态: ${res.status})`);
@@ -129,17 +87,17 @@ async function injectOnce() {
 }
 
 async function launchWithCdp() {
-  const port = readPort();
+  const port = cdpApi.readPort();
   if (port) {
     try {
-      const pages = await listPages(port);
+      const pages = await cdpApi.listPages(port);
       if (pages.length > 0) {
         log(`[✓] Antigravity 已在调试端口 ${port} 运行 (${pages.length} 个窗口)`);
         return;
       }
     } catch {}
   }
-  const proc = detectAntigravityProcess();
+  const proc = cdpApi.detectAntigravityProcess();
   if (proc.running) {
     if (!RELAUNCH) {
       throw new Error(
@@ -148,14 +106,14 @@ async function launchWithCdp() {
       );
     }
     log('[*] 正在温和关闭当前 Antigravity 并以 --remote-debugging-port=0 重新启动...');
-    const res = await relaunchAntigravityWithCdp({ port: 0 });
+    const res = await cdpApi.relaunchAntigravityWithCdp({ port: 0 });
     if (!res.relaunched) {
       throw new Error(`自动重启失败 (${res.reason})，请手动完全退出 Antigravity 后重试`);
     }
     log('[✓] 已重新启动 Antigravity（CDP 远程调试端口已开启）');
     return;
   }
-  const ok = launchAntigravityWithCdp({ port: 0 });
+  const ok = cdpApi.launchAntigravityWithCdp({ port: 0 });
   if (!ok) {
     throw new Error('未找到 Antigravity 可执行程序，请手动以 --remote-debugging-port=0 启动');
   }
@@ -183,7 +141,7 @@ function releasePidFile() {
 function acquireLock() {
   try {
     const pid = parseInt(fs.readFileSync(PID_FILE, 'utf8'), 10);
-    if (pid && pid !== process.pid && isAlive(pid)) {
+    if (pid && pid !== process.pid && isAlive(pid) && cdpApi.isLikelyWatcherProcess(pid)) {
       if (REPLACE_EXISTING) {
         try {
           process.kill(pid, 'SIGTERM');
@@ -203,7 +161,7 @@ function acquireLock() {
       }
     }
   } catch {}
-  fs.writeFileSync(PID_FILE, String(process.pid));
+  cdpApi.writeFileAtomic(PID_FILE, String(process.pid));
   process.on('exit', releasePidFile);
 }
 
@@ -215,8 +173,11 @@ async function watch() {
   log(`[*] AGY Claude Style (agy-claude-style) 守护模式启动 (PID ${process.pid})，每 2 秒检查一次窗口`);
 
   const attached = new Map();
-  let currentConfig = readConfig();
-  let expr = buildInjectExpression(currentConfig);
+  let currentConfig = cdpApi.readConfig();
+  let currentCodeHash = cdpApi.computeHash(cdpApi.readRuntimeBundle());
+  let currentCssHash = cdpApi.computeHash(cdpApi.readCss());
+  let expr = cdpApi.buildInjectExpression(currentConfig);
+  let refreshExpr = cdpApi.buildRefreshExpression(currentConfig, currentCodeHash);
   let shuttingDown = false;
   let tickTimer = null;
   let reloadTimer = null;
@@ -282,7 +243,7 @@ async function watch() {
     } catch {}
   }
 
-  async function apply(entry) {
+  async function apply(entry, opts = {}) {
     if (entry.scriptId) {
       await entry.session
         .send('Page.removeScriptToEvaluateOnNewDocument', { identifier: entry.scriptId })
@@ -292,13 +253,17 @@ async function watch() {
       source: expr,
     });
     entry.scriptId = identifier;
+    if (opts.refreshOnly && refreshExpr) {
+      const fastRes = await entry.session.evaluate(refreshExpr).catch(() => null);
+      if (fastRes && fastRes.status === 'refreshed') return fastRes;
+    }
     return await entry.session.evaluate(expr);
   }
 
   async function attach(page) {
     attached.set(page.id, null);
     try {
-      const session = await CdpSession.connect(page.webSocketDebuggerUrl);
+      const session = await cdpApi.CdpSession.connect(page.webSocketDebuggerUrl);
       const entry = { session, scriptId: null };
       attached.set(page.id, entry);
       session.onClose = () => {
@@ -310,8 +275,8 @@ async function watch() {
         if (name !== SETTING_BINDING) return;
         try {
           const { key, value } = JSON.parse(payload);
-          if (updateConfigSetting(key, value)) {
-            currentConfig = readConfig();
+          if (cdpApi.updateConfigSetting(key, value)) {
+            currentConfig = cdpApi.readConfig();
             log(`[⚙] 设置已保存: ${key} = ${JSON.stringify(value)}`);
           }
         } catch {}
@@ -348,11 +313,11 @@ async function watch() {
     busy = true;
     let nextDelayMs = 2000;
     try {
-      const port = readPort();
+      const port = cdpApi.readPort();
       let pages = null;
       if (port) {
         try {
-          pages = await listPages(port);
+          pages = await cdpApi.listPages(port);
         } catch {
           pages = null;
         }
@@ -376,7 +341,7 @@ async function watch() {
           lastPort = null;
         }
 
-        const proc = process.env.AG_CDP_PORT ? { running: false, pids: [] } : detectAntigravityProcess();
+        const proc = process.env.AG_CDP_PORT ? { running: false, pids: [] } : cdpApi.detectAntigravityProcess();
         const shouldExitOnClose = EXIT_ON_HOST_CLOSE_FLAG || currentConfig.exitOnHostClose === true;
         if (shouldExitOnClose && hadAttachedWindow && attached.size === 0 && consecutivePortFailures >= 3 && !proc.running) {
           shutdown(0, 'Antigravity 宿主已关闭');
@@ -388,7 +353,7 @@ async function watch() {
           const pidSig = proc.pids.slice().sort((a, b) => a - b).join(',');
           if (noCdpRunningTicks >= 3) {
             if (cdpFlagCache.pidSig !== pidSig) {
-              cdpFlagCache = { pidSig, hasFlag: hasRemoteDebuggingFlag(proc.pids) };
+              cdpFlagCache = { pidSig, hasFlag: cdpApi.hasRemoteDebuggingFlag(proc.pids) };
             }
             if (cdpFlagCache.hasFlag) {
               if (warnedNoCdpSig !== `cdp:${pidSig}`) {
@@ -398,7 +363,7 @@ async function watch() {
             } else {
               if (warnedNoCdpSig !== pidSig) {
                 warnedNoCdpSig = pidSig;
-                log(`[!] ${formatCdpUnavailableMessage({ running: true, port })}`);
+                log(`[!] ${cdpApi.formatCdpUnavailableMessage({ running: true, port })}`);
                 if (!currentConfig.autoRelaunchWithCdp) {
                   log('[*] 提示：可在 config.json 中设置 "autoRelaunchWithCdp": true 以启用自动温和重启接管');
                 }
@@ -411,7 +376,7 @@ async function watch() {
                 relaunchedPidSig = pidSig;
                 lastRelaunchAt = Date.now();
                 log('[↻] autoRelaunchWithCdp 已启用：正在温和重启 Antigravity 并附加 --remote-debugging-port=0 ...');
-                const res = await relaunchAntigravityWithCdp({ port: 0 });
+                const res = await cdpApi.relaunchAntigravityWithCdp({ port: 0 });
                 if (res.relaunched) {
                   log('[✓] 已以 CDP 模式重启 Antigravity，等待窗口就绪...');
                   noCdpRunningTicks = 0;
@@ -443,11 +408,21 @@ async function watch() {
     if (!filename || !/\.(css|js|json)$/i.test(filename) || filename.startsWith('.')) return;
     clearTimeout(reloadTimer);
     reloadTimer = setTimeout(async () => {
+      let refreshOnly = false;
       try {
         delete require.cache[require.resolve('./cdp')];
-        const freshCdp = require('./cdp');
-        currentConfig = freshCdp.readConfig();
-        expr = freshCdp.buildInjectExpression(currentConfig);
+        cdpApi = require('./cdp');
+        currentConfig = cdpApi.readConfig();
+        const nextCodeHash = cdpApi.computeHash(cdpApi.readRuntimeBundle());
+        const nextCssHash = cdpApi.computeHash(cdpApi.readCss());
+        refreshOnly =
+          Boolean(currentCodeHash) &&
+          nextCodeHash === currentCodeHash &&
+          nextCssHash === currentCssHash;
+        currentCodeHash = nextCodeHash;
+        currentCssHash = nextCssHash;
+        expr = cdpApi.buildInjectExpression(currentConfig);
+        refreshExpr = cdpApi.buildRefreshExpression(currentConfig, currentCodeHash);
       } catch (err) {
         log(`[!] 读取文件失败: ${err.message}`);
         return;
@@ -456,11 +431,11 @@ async function watch() {
       for (const entry of attached.values()) {
         if (!entry) continue;
         try {
-          await apply(entry);
+          await apply(entry, { refreshOnly });
           n++;
         } catch {}
       }
-      log(`[↻] ${filename} 已变更，已热更新 ${n} 个窗口`);
+      log(`[↻] ${filename} 已变更，已热更新 ${n} 个窗口${refreshOnly ? '（轻量配置同步）' : ''}`);
     }, 180);
   });
 

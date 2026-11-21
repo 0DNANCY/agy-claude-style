@@ -49,12 +49,73 @@ const DEFAULT_CONFIG = {
   pollIntervalMs: 2500,
 };
 
-function readConfig() {
+// Shared declarative schema consumed by inject.js and installer build manifests.
+const CONFIG_VALIDATORS = {
+  language: ['zh-CN', 'zh-TW', 'yue', 'en', 'ja'],
+  palette: ['obsidian', 'claude', 'host'],
+  homeLayout: ['studio', 'classic', 'off'],
+  homeRipple: 'boolean',
+  composerRestyle: 'boolean',
+  mascot: ['crab', 'off'],
+  logoInk: ['accent', 'foreground'],
+  inlineStats: 'boolean',
+  ringMode: ['context', 'quota'],
+  turnBadges: 'boolean',
+  hudTopBar: 'boolean',
+  hudBottomBar: 'boolean',
+  hudRimProgress: 'boolean',
+  hudFooterChip: 'boolean',
+  hudCompact: 'boolean',
+  effortSliderStyle: ['claude', 'chatgpt', 'liangwufeng'],
+  effortAccent: 'boolean',
+  performanceBackdrop: ['off', 'card', 'page'],
+  smoothCaret: 'boolean',
+  sidebarRestyle: 'boolean',
+  sidebarCompact: 'boolean',
+  placeholderStyle: ['studio', 'host'],
+  autoRelaunchWithCdp: 'boolean',
+  exitOnHostClose: 'boolean',
+};
+
+function validateConfigSetting(key, value) {
+  if (key === 'pollIntervalMs') {
+    return Number.isInteger(value) && value >= 250 && value <= 60000;
+  }
+  if (!Object.prototype.hasOwnProperty.call(CONFIG_VALIDATORS, key)) return false;
+  const rule = CONFIG_VALIDATORS[key];
+  if (rule === 'boolean') return typeof value === 'boolean';
+  if (Array.isArray(rule)) return typeof value === 'string' && rule.includes(value);
+  return false;
+}
+
+function writeFileAtomic(filePath, content) {
+  const dir = path.dirname(filePath);
+  const tmpPath = path.join(dir, `.${path.basename(filePath)}.tmp.${process.pid}.${Date.now()}`);
   try {
-    return { ...DEFAULT_CONFIG, ...JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8')) };
+    fs.writeFileSync(tmpPath, content, 'utf8');
+    fs.renameSync(tmpPath, filePath);
+  } catch (err) {
+    try {
+      if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
+    } catch {}
+    // Fallback for filesystems where cross-rename may fail while target is held open
+    fs.writeFileSync(filePath, content, 'utf8');
+  }
+}
+
+function readConfig(configPath = CONFIG_FILE) {
+  try {
+    return { ...DEFAULT_CONFIG, ...JSON.parse(fs.readFileSync(configPath, 'utf8')) };
   } catch {
     return { ...DEFAULT_CONFIG };
   }
+}
+
+function updateConfigSetting(key, value, configPath = CONFIG_FILE) {
+  if (!validateConfigSetting(key, value)) return false;
+  const next = { ...readConfig(configPath), [key]: value };
+  writeFileAtomic(configPath, JSON.stringify(next, null, 2) + '\n');
+  return true;
 }
 
 function readPort() {
@@ -263,6 +324,26 @@ function buildInjectExpression(customConfig) {
       status,
       state: st,
     };
+  })()`;
+}
+
+function buildRefreshExpression(customConfig, expectedCodeHash) {
+  const config = customConfig || readConfig();
+  const payload = { ...config, binding: SETTING_BINDING, codeHash: expectedCodeHash || '' };
+  return `(() => {
+    if (
+      window.__agClaudeStyle &&
+      typeof window.__agClaudeStyle.refreshConfig === 'function' &&
+      (!${JSON.stringify(expectedCodeHash || '')} || window.__agClaudeStyle.codeHash === ${JSON.stringify(expectedCodeHash || '')})
+    ) {
+      window.__agClaudeStyle.refreshConfig(${JSON.stringify(payload)});
+      return {
+        version: ${JSON.stringify(PLUGIN_VERSION)},
+        status: 'refreshed',
+        state: window.__agClaudeStyle.getState ? window.__agClaudeStyle.getState() : null,
+      };
+    }
+    return null;
   })()`;
 }
 
@@ -510,6 +591,58 @@ function hasRemoteDebuggingFlag(pids = []) {
   }
 }
 
+function inspectProcessCommand(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return null;
+  try {
+    if (IS_MAC) {
+      const out = execFileSync('/bin/ps', ['-p', String(pid), '-o', 'args='], {
+        encoding: 'utf8',
+        timeout: 1500,
+        stdio: ['ignore', 'pipe', 'ignore'],
+      }).trim();
+      return out || null;
+    }
+    if (IS_WIN) {
+      const out = execFileSync(
+        'powershell.exe',
+        [
+          '-NoProfile',
+          '-NonInteractive',
+          '-Command',
+          `(Get-CimInstance Win32_Process -Filter "ProcessId=${pid}").CommandLine`,
+        ],
+        {
+          encoding: 'utf8',
+          timeout: 2000,
+          windowsHide: true,
+          stdio: ['ignore', 'pipe', 'ignore'],
+        }
+      ).trim();
+      return out || null;
+    }
+    const raw = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8');
+    const cmd = raw.split('\0').filter(Boolean).join(' ').trim();
+    return cmd || null;
+  } catch {
+    return null;
+  }
+}
+
+function isLikelyWatcherProcess(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+  } catch {
+    return false;
+  }
+  const cmd = inspectProcessCommand(pid);
+  // If OS cmdline lookup succeeds and points to an unrelated process, guard against PID-reuse kills.
+  if (typeof cmd === 'string' && cmd.length > 0) {
+    return /\binject\.js\b/i.test(cmd);
+  }
+  return true;
+}
+
 function removeStalePortFile() {
   try {
     if (fs.existsSync(PORT_FILE)) fs.unlinkSync(PORT_FILE);
@@ -553,11 +686,24 @@ async function relaunchAntigravityWithCdp(opts = {}) {
       ? opts.terminate
       : (pids) => {
           if (IS_WIN) {
-            execFileSync('taskkill', ['/IM', 'Antigravity.exe'], {
-              timeout: 4000,
-              windowsHide: true,
-              stdio: 'ignore',
-            });
+            const validWinPids = Array.isArray(pids) ? pids.filter((p) => Number.isInteger(p) && p > 0 && p !== process.pid) : [];
+            if (validWinPids.length > 0) {
+              for (const pid of validWinPids) {
+                try {
+                  execFileSync('taskkill', ['/PID', String(pid), '/T'], {
+                    timeout: 4000,
+                    windowsHide: true,
+                    stdio: 'ignore',
+                  });
+                } catch {}
+              }
+            } else {
+              execFileSync('taskkill', ['/IM', 'Antigravity.exe'], {
+                timeout: 4000,
+                windowsHide: true,
+                stdio: 'ignore',
+              });
+            }
           } else {
             for (const pid of pids) {
               if (pid > 0 && pid !== process.pid) {
@@ -625,13 +771,19 @@ module.exports = {
   PID_FILE,
   CONFIG_FILE,
   DEFAULT_CONFIG,
+  CONFIG_VALIDATORS,
+  validateConfigSetting,
+  writeFileAtomic,
   readConfig,
+  updateConfigSetting,
   readPort,
   listPages,
   detectAntigravityProcess,
   findAntigravityExecutable,
   resolveRunningAntigravityPath,
   hasRemoteDebuggingFlag,
+  inspectProcessCommand,
+  isLikelyWatcherProcess,
   removeStalePortFile,
   launchAntigravityWithCdp,
   relaunchAntigravityWithCdp,
@@ -639,6 +791,8 @@ module.exports = {
   CdpSession,
   readCss,
   readRuntimeBundle,
+  computeHash,
   buildInjectExpression,
+  buildRefreshExpression,
   REMOVE_EXPRESSION,
 };

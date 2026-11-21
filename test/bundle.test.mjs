@@ -3437,3 +3437,318 @@ test('fallback to createAgentStateProviderForConvo when getCascadeTrajectory thr
     for (const id of timers) clearTimeout(id);
   }
 });
+
+test('hudBottomBar triggers quota fetch in context mode, low-context triggers /compact warning on target composer, export copies Markdown, and 3-way loadSettings preserves local edits', async () => {
+  const timers = new Set();
+  const makeEl = (tag, opts = {}) => {
+    const attrs = new Map(Object.entries(opts.attrs || {}));
+    const classes = new Set((opts.className || '').split(/\s+/).filter(Boolean));
+    const listeners = new Map();
+    const children = [];
+    const matchesSimple = (n, sel) => {
+      if (!n || n.nodeType !== 1) return false;
+      let rest = sel.trim();
+      const tm = /^[a-zA-Z0-9_-]+/.exec(rest);
+      if (tm) {
+        if (n.tagName !== tm[0].toUpperCase()) return false;
+        rest = rest.slice(tm[0].length);
+      }
+      while (rest) {
+        if (rest[0] === '#') {
+          const m = /^#([a-zA-Z0-9_-]+)/.exec(rest);
+          if (!m || n.id !== m[1]) return false;
+          rest = rest.slice(m[0].length);
+        } else if (rest[0] === '.') {
+          const m = /^\.([a-zA-Z0-9_-]+)/.exec(rest);
+          if (!m || !n.classList.contains(m[1])) return false;
+          rest = rest.slice(m[0].length);
+        } else if (rest[0] === '[') {
+          const m = /^\[([^\]=]+)(?:="([^"]*)")?\]/.exec(rest);
+          if (!m) return false;
+          const ok = m[2] === undefined ? n.hasAttribute(m[1]) : n.getAttribute(m[1]) === m[2];
+          if (!ok) return false;
+          rest = rest.slice(m[0].length);
+        } else {
+          return false;
+        }
+      }
+      return true;
+    };
+    const matchesSel = (n, sel) =>
+      sel.split(',').some((part) => {
+        const tokens = part.trim().split(/\s+/).filter(Boolean);
+        if (!tokens.length || !matchesSimple(n, tokens[tokens.length - 1])) return false;
+        let cur = n.parentElement;
+        let idx = tokens.length - 2;
+        while (cur && idx >= 0) {
+          if (matchesSimple(cur, tokens[idx])) idx -= 1;
+          cur = cur.parentElement;
+        }
+        return idx < 0;
+      });
+    const el = {
+      nodeType: 1,
+      tagName: tag.toUpperCase(),
+      id: opts.id || '',
+      children,
+      parentElement: null,
+      parentNode: null,
+      isConnected: true,
+      clientWidth: 420,
+      offsetWidth: 420,
+      clientHeight: 32,
+      offsetHeight: 32,
+      _text: opts.text || '',
+      _html: '',
+      _props: {},
+      style: {
+        setProperty(k, v) { el._props[k] = String(v); },
+        getPropertyValue(k) { return el._props[k] || ''; },
+        removeProperty(k) { delete el._props[k]; },
+      },
+      classList: { contains: (c) => classes.has(c), add: (c) => classes.add(c), remove: (c) => classes.delete(c) },
+      get className() { return Array.from(classes).join(' '); },
+      set className(v) { classes.clear(); String(v).split(/\s+/).filter(Boolean).forEach((c) => classes.add(c)); },
+      get textContent() { return children.length ? children.map((c) => c.textContent).join('') : this._text; },
+      set textContent(v) { children.length = 0; this._text = String(v); },
+      set innerHTML(v) {
+        this._html = String(v);
+        children.length = 0;
+        const mBtn = /data-hud-compact-btn="1"/.test(this._html);
+        if (mBtn) {
+          this.appendChild(makeEl('button', { className: 'ag-cs-hud-compact-btn', attrs: { 'data-hud-compact-btn': '1' }, text: '/compact' }));
+        }
+        const acts = Array.from(this._html.matchAll(/data-ctx-act="([^"]+)"/g));
+        for (const m of acts) {
+          this.appendChild(makeEl('button', { className: 'ag-cs-ctx-act-btn', attrs: { 'data-ctx-act': m[1] } }));
+        }
+        const mSpan = /<span>([^<]*)<\/span>/.exec(this._html);
+        if (mSpan) this.appendChild(makeEl('span', { text: mSpan[1] }));
+      },
+      get innerHTML() { return this._html; },
+      get childElementCount() { return children.length; },
+      get firstChild() { return children[0] || null; },
+      get firstElementChild() { return children[0] || null; },
+      get lastElementChild() { return children[children.length - 1] || null; },
+      appendChild(ch) { ch.parentElement = ch.parentNode = el; children.push(ch); return ch; },
+      insertBefore(ch, ref) { ch.parentElement = ch.parentNode = el; const i = ref ? children.indexOf(ref) : -1; if (i >= 0) children.splice(i, 0, ch); else children.push(ch); return ch; },
+      removeChild(ch) { const i = children.indexOf(ch); if (i >= 0) children.splice(i, 1); ch.parentElement = ch.parentNode = null; return ch; },
+      remove() { if (el.parentElement) el.parentElement.removeChild(el); },
+      setAttribute(k, v) { attrs.set(k, String(v)); if (k === 'id') el.id = String(v); },
+      getAttribute(k) { return attrs.has(k) ? attrs.get(k) : null; },
+      hasAttribute(k) { return attrs.has(k); },
+      removeAttribute(k) { attrs.delete(k); },
+      toggleAttribute(k, f) { const on = f === undefined ? !attrs.has(k) : Boolean(f); if (on) attrs.set(k, ''); else attrs.delete(k); return on; },
+      addEventListener(ev, cb) { if (!listeners.has(ev)) listeners.set(ev, []); listeners.get(ev).push(cb); },
+      removeEventListener(ev, cb) { const arr = listeners.get(ev); if (arr) { const i = arr.indexOf(cb); if (i >= 0) arr.splice(i, 1); } },
+      dispatch(ev, payload = {}) { for (const fn of [...(listeners.get(ev) || [])]) fn({ type: ev, stopPropagation() {}, preventDefault() {}, ...payload }); },
+      focus() {},
+      animate() { return { cancel() {}, finished: Promise.resolve() }; },
+      getBoundingClientRect: () => ({ left: 10, top: 320, right: 430, bottom: 352, width: 420, height: 32 }),
+      closest(sel) { let c = el; while (c) { if (matchesSel(c, sel)) return c; c = c.parentElement; } return null; },
+      querySelector(sel) { return el.querySelectorAll(sel)[0] || null; },
+      querySelectorAll(sel) {
+        const res = [];
+        const walk = (n) => {
+          for (const ch of n.children || []) {
+            if (matchesSel(ch, sel)) res.push(ch);
+            walk(ch);
+          }
+        };
+        walk(el);
+        return res;
+      },
+    };
+    return el;
+  };
+
+  const html = makeEl('html');
+  const head = makeEl('head');
+  const body = makeEl('body', { className: 'theme-dark' });
+  html.appendChild(head);
+  html.appendChild(body);
+
+  // Two composer boxes: an unrelated earlier box (hidden/other) and our active card's box!
+  const otherBox = makeEl('div', { attrs: { 'data-testid': 'agent-input-box' } });
+  const otherEd = makeEl('div', { attrs: { contenteditable: 'true' }, text: 'untouched other composer' });
+  otherBox.appendChild(otherEd);
+  body.appendChild(otherBox);
+
+  const cascadeId = 'low-ctx-convo-1';
+  const convView = makeEl('div', { attrs: { 'data-testid': 'conversation-view', 'data-cascade-id': cascadeId } });
+  const activeBox = makeEl('div', { attrs: { 'data-testid': 'agent-input-box' } });
+  const card = makeEl('div', { className: 'surface-composer-card' });
+  const activeEd = makeEl('div', { attrs: { contenteditable: 'true' } });
+  const footer = makeEl('div', { className: 'agy-composer-footer' });
+  card.appendChild(activeEd);
+  card.appendChild(footer);
+  activeBox.appendChild(card);
+  convView.appendChild(activeBox);
+  body.appendChild(convView);
+
+  let quotaCalls = 0;
+  let copiedText = '';
+  const fakeTraj = {
+    trajectory: {
+      steps: [
+        { status: 3, metadata: { createdAt: '2026-11-17T12:00:00Z' }, step: { case: 'userInput', value: { query: 'Trim context window' } } },
+        { status: 3, metadata: { createdAt: '2026-11-17T12:00:05Z' }, step: { case: 'plannerResponse', value: { response: 'Working...' } } },
+      ],
+      generatorMetadata: [
+        {
+          stepIndices: [1],
+          metadata: {
+            value: {
+              modelDisplayName: 'Claude Sonnet 4.5',
+              usage: { inputTokens: '12000', cacheReadTokens: '160000', outputTokens: '4000', model: 1001 },
+              chatStartMetadata: {
+                contextWindowMetadata: { maxContextTokens: 200000, estimatedTokensUsed: 176000 }, // 12% free (<= 20%)
+              },
+            },
+          },
+        },
+      ],
+    },
+  };
+  const fakeRootStore = {
+    getState: () => ({
+      trajectorySummaries: { [cascadeId]: { summary: { stepCount: 2, status: 1 } } },
+      userStatus: {
+        cascadeModelConfigData: {
+          clientModelGroups: [
+            {
+              groupName: 'Claude Sonnet',
+              buckets: [{ id: 'b5h', window: '5h', remainingFraction: 0.65, resetTime: new Date(Date.now() + 3600000).toISOString() }],
+            },
+          ],
+        },
+      },
+    }),
+    subscribe: () => () => {},
+  };
+  const fakeSvc = {
+    async getCascadeTrajectory() { return fakeTraj; },
+    async retrieveUserQuotaSummary() {
+      quotaCalls++;
+      return {
+        groups: [
+          {
+            displayName: 'Claude Sonnet',
+            buckets: [
+              {
+                bucketId: 'b5h',
+                window: '5h',
+                remaining: { case: 'remainingFraction', value: 0.65 },
+                resetTime: new Date(Date.now() + 3600000).toISOString(),
+              },
+            ],
+          },
+        ],
+      };
+    },
+  };
+  activeBox.__reactFiber$test = {
+    memoizedProps: { cascadeId, store: fakeRootStore, getCascadeTrajectory: fakeSvc.getCascadeTrajectory },
+    dependencies: { firstContext: { memoizedValue: fakeSvc, next: null } },
+    return: null,
+  };
+
+  const doc = {
+    documentElement: html,
+    head,
+    body,
+    hidden: false,
+    readyState: 'complete',
+    createElement: (t) => makeEl(t),
+    getElementById: () => null,
+    querySelector: (s) => html.querySelector(s),
+    querySelectorAll: (s) => html.querySelectorAll(s),
+    addEventListener() {},
+    removeEventListener() {},
+  };
+  const storage = { _m: {}, getItem(k) { return this._m[k] || null; }, setItem(k, v) { this._m[k] = String(v); } };
+  const sandbox = {
+    window: null,
+    globalThis: null,
+    document: doc,
+    navigator: { language: 'zh-CN', clipboard: { writeText: async (t) => { copiedText = t; } } },
+    location: { pathname: `/c/${cascadeId}` },
+    localStorage: storage,
+    getComputedStyle: () => ({ getPropertyValue: () => '' }),
+    matchMedia: () => ({ matches: false }),
+    MutationObserver: class { observe() {} disconnect() {} },
+    ResizeObserver: class { observe() {} disconnect() {} },
+    requestAnimationFrame: (fn) => { const id = setTimeout(() => fn(Date.now()), 5); timers.add(id); return id; },
+    cancelAnimationFrame: (id) => { timers.delete(id); clearTimeout(id); },
+    setTimeout: (fn, ms) => { const id = setTimeout(fn, ms); timers.add(id); return id; },
+    clearTimeout: (id) => { timers.delete(id); clearTimeout(id); },
+    setInterval: () => 1,
+    clearInterval: () => {},
+    performance: { now: () => Date.now() },
+    InputEvent: class { constructor(t, o) { this.type = t; Object.assign(this, o); } },
+    Math, Date, JSON, Map, Set, Array, Object, String, Number, Boolean, Promise, Uint8Array, Float32Array, Intl,
+  };
+  sandbox.window = sandbox;
+  sandbox.globalThis = sandbox;
+
+  try {
+    const res = vm.runInNewContext(
+      cdp.buildInjectExpression({ ...cdp.DEFAULT_CONFIG, ringMode: 'context', hudBottomBar: true, hudTopBar: true }),
+      sandbox
+    );
+    assert.equal(res.status, 'ok');
+    await new Promise((r) => setTimeout(r, 120));
+
+    // 1. hudBottomBar must trigger quota fetch even when ringMode is 'context'
+    assert.ok(quotaCalls >= 1, 'Expected hudBottomBar to trigger quota fetch in context mode');
+    const botBar = card.querySelector('.ag-cs-hud-bottom-bar');
+    assert.ok(botBar && botBar.innerHTML.includes('65%'), `Expected bottom HUD bar to render 65% quota, got ${botBar?.innerHTML}`);
+
+    // 2. Low context (12% remaining <= 20%) flags ring, top bar & /compact button
+    const ringBtn = footer.querySelector('.ag-cs-context-ring');
+    const topBar = card.querySelector('.ag-cs-hud-top-bar');
+    assert.equal(ringBtn?.getAttribute('data-ctx-low'), 'warn');
+    assert.equal(topBar?.getAttribute('data-ctx-low'), 'warn');
+
+    // 3. Popover shows cost estimate badge, low-ctx banner & working Export button
+    ringBtn.dispatch('click');
+    await new Promise((r) => setTimeout(r, 40));
+    const pop = body.querySelector('.ag-cs-ctx-popover');
+    assert.ok(pop);
+    assert.ok(pop.innerHTML.includes('ag-cs-ctx-warn-banner'));
+    assert.ok(pop.innerHTML.includes('ag-cs-ctx-cost'));
+
+    const exportBtn = pop.querySelector('button[data-ctx-act="export"]');
+    assert.ok(exportBtn);
+    exportBtn.dispatch('click');
+    await new Promise((r) => setTimeout(r, 30));
+    assert.match(copiedText, /## 分轮次消耗明细/);
+    assert.match(copiedText, /Trim context window/);
+
+    // 4. Scoped /compact fills activeEd ONLY and leaves otherEd untouched
+    const compactBtn = topBar.querySelector('[data-hud-compact-btn="1"]');
+    assert.ok(compactBtn);
+    compactBtn.dispatch('click');
+    assert.equal(activeEd.textContent, '/compact');
+    assert.equal(otherEd.textContent, 'untouched other composer');
+
+    // 5. 3-way loadSettings merge keeps local UI preference (hudCompact=true) when external config changes only palette
+    const savedMap = JSON.parse(storage.getItem('agClaudeStyle.settings.v1') || '{}');
+    savedMap.hudCompact = true;
+    storage.setItem('agClaudeStyle.settings.v1', JSON.stringify(savedMap));
+    sandbox.window.__agClaudeStyle.refreshConfig({
+      ...cdp.DEFAULT_CONFIG,
+      ringMode: 'context',
+      hudBottomBar: true,
+      hudTopBar: true,
+      palette: 'claude',
+    });
+    const stAfter = sandbox.window.__agClaudeStyle.getState();
+    assert.equal(stAfter.cfg.palette, 'claude');
+    assert.equal(stAfter.cfg.hudCompact, true);
+
+    vm.runInNewContext(cdp.REMOVE_EXPRESSION, sandbox);
+  } finally {
+    for (const id of timers) clearTimeout(id);
+  }
+});
