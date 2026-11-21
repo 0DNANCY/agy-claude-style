@@ -1,41 +1,55 @@
 // Inject AGY Claude Style (agy-claude-style) into every open Antigravity window over CDP.
 //
-//   node inject.js           one-shot: inject now and exit
-//   node inject.js --watch   daemon mode: auto-inject into new/reloaded windows
-//                            and hot-reload style.css / *.js / config.json
-//   node inject.js --launch  launch Antigravity with --remote-debugging-port=0
-//                            (add --relaunch to restart a running instance without CDP)
+//   node inject.js            one-shot: inject now and exit
+//   node inject.js --watch    daemon mode: auto-inject into new/reloaded windows
+//                             and hot-reload style.css / *.js / config.json
+//   node inject.js --launch   launch Antigravity with --remote-debugging-port=0
+//                             (add --relaunch to restart a running instance without CDP)
+//   node inject.js --managed  managed mode (equivalent to --launch --watch --exit-on-host-close):
+//                             launch/attach Antigravity with CDP, watch windows, and exit when host closes
+//   Options: --exit-on-host-close, --startup-grace <sec> (default 90s), --poll-ms <ms>, --replace
 const fs = require('fs');
 const path = require('path');
 const {
-  PORT_FILE,
   PID_FILE,
   CONFIG_FILE,
   SETTING_BINDING,
+  STARTUP_GRACE_SECONDS,
   readConfig,
   readPort,
   listPages,
   detectAntigravityProcess,
   hasRemoteDebuggingFlag,
-  launchAntigravityWithCdp,
   relaunchAntigravityWithCdp,
+  ensureAntigravityWithCdp,
   formatCdpUnavailableMessage,
   CdpSession,
   buildInjectExpression,
 } = require('./cdp');
 
-const WATCH = process.argv.includes('--watch');
-const LAUNCH = process.argv.includes('--launch');
+const MANAGED = process.argv.includes('--managed');
+const LAUNCH = MANAGED || process.argv.includes('--launch');
+const WATCH = MANAGED || process.argv.includes('--watch');
 const RELAUNCH = process.argv.includes('--relaunch');
 const REPLACE_EXISTING = process.argv.includes('--replace');
-const EXIT_ON_HOST_CLOSE_FLAG = process.argv.includes('--exit-on-host-close');
+const SKIP_IF_RUNNING = process.argv.includes('--skip-if-running');
+const EXIT_ON_HOST_CLOSE_FLAG = MANAGED || process.argv.includes('--exit-on-host-close');
 const LOG_FILE = path.join(__dirname, 'watch.log');
 
 function parseIntArg(flag, envName) {
-  const idx = process.argv.indexOf(flag);
-  if (idx >= 0 && idx + 1 < process.argv.length) {
-    const n = parseInt(process.argv[idx + 1], 10);
-    if (Number.isInteger(n) && n > 0) return n;
+  const prefix = `${flag}=`;
+  for (let i = 0; i < process.argv.length; i++) {
+    const arg = process.argv[i];
+    let raw = null;
+    if (arg === flag && i + 1 < process.argv.length) {
+      raw = process.argv[i + 1];
+    } else if (arg.startsWith(prefix)) {
+      raw = arg.slice(prefix.length);
+    }
+    if (raw !== null) {
+      const n = parseInt(raw, 10);
+      if (Number.isInteger(n) && n > 0) return n;
+    }
   }
   if (envName && process.env[envName]) {
     const n = parseInt(process.env[envName], 10);
@@ -45,6 +59,12 @@ function parseIntArg(flag, envName) {
 }
 
 const PARENT_PID = parseIntArg('--parent-pid', 'AG_PARENT_PID');
+const STARTUP_GRACE_SECONDS_VAL =
+  parseIntArg('--startup-grace', 'AG_STARTUP_GRACE_SEC') || STARTUP_GRACE_SECONDS;
+const POLL_INTERVAL_MS = Math.max(
+  100,
+  Math.min(10000, parseIntArg('--poll-ms', 'AG_WATCH_POLL_MS') || 2000)
+);
 
 function log(...args) {
   const line = args.map((a) => (typeof a === 'string' ? a : JSON.stringify(a))).join(' ');
@@ -128,38 +148,40 @@ async function injectOnce() {
   }
 }
 
-async function launchWithCdp() {
-  const port = readPort();
-  if (port) {
-    try {
-      const pages = await listPages(port);
-      if (pages.length > 0) {
-        log(`[✓] Antigravity 已在调试端口 ${port} 运行 (${pages.length} 个窗口)`);
-        return;
-      }
-    } catch {}
+async function launchWithCdp({ autoRelaunchFromConfig = false } = {}) {
+  const autoRelaunchWithCdp =
+    WATCH || autoRelaunchFromConfig ? readConfig().autoRelaunchWithCdp === true : false;
+  const res = await ensureAntigravityWithCdp({
+    port: 0,
+    relaunch: RELAUNCH,
+    autoRelaunchWithCdp,
+  });
+  if (res.action === 'already-cdp') {
+    log(`[✓] Antigravity 已在调试端口 ${res.port} 运行 (${res.pagesCount} 个窗口)`);
+    return;
   }
-  const proc = detectAntigravityProcess();
-  if (proc.running) {
-    if (!RELAUNCH) {
-      throw new Error(
-        `Antigravity 正在运行但未开启 CDP 端口（PID: ${proc.pids.join(', ')}）。` +
-          `请先完全退出 Antigravity，或运行 node inject.js --launch --relaunch 自动重启。`
-      );
-    }
-    log('[*] 正在温和关闭当前 Antigravity 并以 --remote-debugging-port=0 重新启动...');
-    const res = await relaunchAntigravityWithCdp({ port: 0 });
-    if (!res.relaunched) {
-      throw new Error(`自动重启失败 (${res.reason})，请手动完全退出 Antigravity 后重试`);
-    }
+  if (res.action === 'waiting-cdp') {
+    log(`[*] Antigravity 已携带调试参数启动 (PID: ${res.pids.join(', ')})，等待调试端口就绪...`);
+    return;
+  }
+  if (res.action === 'relaunched') {
     log('[✓] 已重新启动 Antigravity（CDP 远程调试端口已开启）');
     return;
   }
-  const ok = launchAntigravityWithCdp({ port: 0 });
-  if (!ok) {
-    throw new Error('未找到 Antigravity 可执行程序，请手动以 --remote-debugging-port=0 启动');
+  if (res.action === 'launched') {
+    log('[✓] 已以 --remote-debugging-port=0 启动 Antigravity');
+    return;
   }
-  log('[✓] 已以 --remote-debugging-port=0 启动 Antigravity');
+  if (res.action === 'running-without-cdp') {
+    throw new Error(
+      `Antigravity 正在运行但未开启 CDP 端口（PID: ${res.pids.join(', ')}）。` +
+        `请先完全退出 Antigravity，或运行 node inject.js --launch --relaunch 自动重启。`
+    );
+  }
+  if (res.action === 'relaunch-failed') {
+    throw new Error(`自动重启失败 (${res.reason})，请手动完全退出 Antigravity 后重试`);
+  }
+  throw new Error('未找到 Antigravity 可执行程序，请手动以 --remote-debugging-port=0 启动');
 }
 
 function isAlive(pid) {
@@ -180,7 +202,11 @@ function releasePidFile() {
   } catch {}
 }
 
-function acquireLock() {
+function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+function acquireLock({ allowGracefulDuplicateExit = false } = {}) {
   try {
     const pid = parseInt(fs.readFileSync(PID_FILE, 'utf8'), 10);
     if (pid && pid !== process.pid && isAlive(pid)) {
@@ -190,12 +216,21 @@ function acquireLock() {
         } catch {}
         const deadline = Date.now() + 2000;
         while (Date.now() < deadline && isAlive(pid)) {
-          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+          sleepSync(50);
         }
         if (isAlive(pid)) {
           try {
             process.kill(pid, 'SIGKILL');
           } catch {}
+        }
+      } else if (allowGracefulDuplicateExit) {
+        const deadline = Date.now() + 1500;
+        while (Date.now() < deadline && isAlive(pid)) {
+          sleepSync(100);
+        }
+        if (isAlive(pid)) {
+          log(`[*] 监听进程已在运行 (PID ${pid})，跳过重复启动`);
+          return false;
         }
       } else {
         console.error(`[!] 守护进程已在运行 (PID ${pid})。如需重启请先运行 remove.sh / remove.bat 或附加 --replace`);
@@ -205,14 +240,25 @@ function acquireLock() {
   } catch {}
   fs.writeFileSync(PID_FILE, String(process.pid));
   process.on('exit', releasePidFile);
+  return true;
 }
 
-async function watch() {
-  acquireLock();
+async function watch({
+  forceExitOnHostClose = false,
+  startupGraceEnabled = false,
+  allowGracefulDuplicateExit = false,
+} = {}) {
+  if (!acquireLock({ allowGracefulDuplicateExit })) return;
   try {
     fs.writeFileSync(LOG_FILE, '');
   } catch {}
-  log(`[*] AGY Claude Style (agy-claude-style) 守护模式启动 (PID ${process.pid})，每 2 秒检查一次窗口`);
+  log(
+    `[*] AGY Claude Style (agy-claude-style) 守护模式启动 (PID ${process.pid})，每 ${POLL_INTERVAL_MS / 1000} 秒检查一次窗口`
+  );
+
+  const watchStartedAt = Date.now();
+  const startupGraceMs = STARTUP_GRACE_SECONDS_VAL * 1000;
+  const effectiveExitOnCloseFlag = EXIT_ON_HOST_CLOSE_FLAG || forceExitOnHostClose;
 
   const attached = new Map();
   let currentConfig = readConfig();
@@ -346,7 +392,7 @@ async function watch() {
       return;
     }
     busy = true;
-    let nextDelayMs = 2000;
+    let nextDelayMs = POLL_INTERVAL_MS;
     try {
       const port = readPort();
       let pages = null;
@@ -377,9 +423,21 @@ async function watch() {
         }
 
         const proc = process.env.AG_CDP_PORT ? { running: false, pids: [] } : detectAntigravityProcess();
-        const shouldExitOnClose = EXIT_ON_HOST_CLOSE_FLAG || currentConfig.exitOnHostClose === true;
+        const shouldExitOnClose = effectiveExitOnCloseFlag || currentConfig.exitOnHostClose === true;
         if (shouldExitOnClose && hadAttachedWindow && attached.size === 0 && consecutivePortFailures >= 3 && !proc.running) {
           shutdown(0, 'Antigravity 宿主已关闭');
+          return;
+        }
+        if (
+          shouldExitOnClose &&
+          startupGraceEnabled &&
+          !hadAttachedWindow &&
+          attached.size === 0 &&
+          consecutivePortFailures >= 2 &&
+          !proc.running &&
+          Date.now() - watchStartedAt >= startupGraceMs
+        ) {
+          shutdown(0, `启动超过 ${STARTUP_GRACE_SECONDS_VAL} 秒仍未检测到 Antigravity CDP 端口`);
           return;
         }
 
@@ -426,8 +484,8 @@ async function watch() {
           noCdpRunningTicks = 0;
           warnedNoCdpSig = '';
           cdpFlagCache = { pidSig: '', hasFlag: false };
-          if (consecutivePortFailures >= 3) {
-            nextDelayMs = 5000;
+          if (consecutivePortFailures >= 3 && !(startupGraceEnabled && !hadAttachedWindow)) {
+            nextDelayMs = Math.max(5000, POLL_INTERVAL_MS);
           }
         }
       }
@@ -476,8 +534,28 @@ async function watch() {
   await tick();
 }
 
-const mainPromise = LAUNCH ? launchWithCdp() : WATCH ? watch() : injectOnce();
-mainPromise.catch((err) => {
+async function main() {
+  if (LAUNCH && WATCH) {
+    await launchWithCdp({ autoRelaunchFromConfig: true });
+    await watch({
+      forceExitOnHostClose: true,
+      startupGraceEnabled: true,
+      allowGracefulDuplicateExit: true,
+    });
+  } else if (LAUNCH) {
+    await launchWithCdp({ autoRelaunchFromConfig: false });
+  } else if (WATCH) {
+    await watch({
+      forceExitOnHostClose: false,
+      startupGraceEnabled: EXIT_ON_HOST_CLOSE_FLAG,
+      allowGracefulDuplicateExit: SKIP_IF_RUNNING,
+    });
+  } else {
+    await injectOnce();
+  }
+}
+
+main().catch((err) => {
   console.error(`[✗] ${err.message}`);
   process.exit(1);
 });

@@ -8,6 +8,7 @@ const { execFileSync, spawn } = require('child_process');
 const STYLE_ID = 'ag-claude-style-css';
 const PLUGIN_VERSION = '1.3.0';
 const SETTING_BINDING = '__agClaudeStyleSetting';
+const STARTUP_GRACE_SECONDS = 90;
 const IS_MAC = process.platform === 'darwin';
 const IS_WIN = process.platform === 'win32';
 
@@ -516,27 +517,114 @@ function removeStalePortFile() {
   } catch {}
 }
 
+function activateAntigravityWindow(opts = {}) {
+  if (IS_MAC) {
+    try {
+      const appTarget = opts.appPath || findAntigravityExecutable() || 'Antigravity';
+      const child = spawn('/usr/bin/open', ['-a', appTarget], {
+        detached: true,
+        stdio: 'ignore',
+      });
+      child.unref();
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  return false;
+}
+
 function launchAntigravityWithCdp(opts = {}) {
   const cdpPort = Number.isInteger(opts.port) && opts.port >= 0 ? opts.port : 0;
   const flag = `--remote-debugging-port=${cdpPort}`;
+  const detectFn = typeof opts.detectProcess === 'function' ? opts.detectProcess : detectAntigravityProcess;
+  const removePortFileFn =
+    typeof opts.removePortFile === 'function' ? opts.removePortFile : removeStalePortFile;
+  const spawnFn = typeof opts.spawn === 'function' ? opts.spawn : spawn;
+  if (!opts.skipPortCleanup && !detectFn().running) {
+    removePortFileFn();
+  }
   if (IS_MAC) {
     const appTarget = opts.appPath || findAntigravityExecutable() || 'Antigravity';
-    const child = spawn('/usr/bin/open', ['-a', appTarget, '--args', flag], {
+    const child = spawnFn('/usr/bin/open', ['-a', appTarget, '--args', flag], {
       detached: true,
       stdio: 'ignore',
     });
-    child.unref();
+    if (child && typeof child.unref === 'function') child.unref();
     return true;
   }
   const exePath = opts.appPath || findAntigravityExecutable();
   if (!exePath) return false;
-  const child = spawn(exePath, [flag], {
+  const child = spawnFn(exePath, [flag], {
     detached: true,
     stdio: 'ignore',
     windowsHide: false,
   });
-  child.unref();
+  if (child && typeof child.unref === 'function') child.unref();
   return true;
+}
+
+async function ensureAntigravityWithCdp(opts = {}) {
+  const readPortFn = typeof opts.readPort === 'function' ? opts.readPort : readPort;
+  const listPagesFn = typeof opts.listPages === 'function' ? opts.listPages : listPages;
+  const detectProcessFn =
+    typeof opts.detectProcess === 'function' ? opts.detectProcess : detectAntigravityProcess;
+  const hasCdpFlagFn =
+    typeof opts.hasRemoteDebuggingFlag === 'function'
+      ? opts.hasRemoteDebuggingFlag
+      : hasRemoteDebuggingFlag;
+  const launchFn = typeof opts.launch === 'function' ? opts.launch : launchAntigravityWithCdp;
+  const relaunchFn =
+    typeof opts.relaunch === 'function'
+      ? opts.relaunch
+      : typeof opts.relaunchFn === 'function'
+      ? opts.relaunchFn
+      : relaunchAntigravityWithCdp;
+  const activateFn =
+    typeof opts.activate === 'function' ? opts.activate : activateAntigravityWindow;
+  const shouldRelaunch = opts.relaunch === true || Boolean(opts.autoRelaunchWithCdp);
+
+  const port = readPortFn();
+  if (port) {
+    try {
+      const pages = await listPagesFn(port);
+      if (Array.isArray(pages) && pages.length > 0) {
+        try {
+          await activateFn({ appPath: opts.appPath });
+        } catch {}
+        return { ok: true, action: 'already-cdp', port, pagesCount: pages.length };
+      }
+    } catch {}
+  }
+
+  const proc = detectProcessFn() || { running: false, pids: [] };
+  const pids = Array.isArray(proc.pids) ? proc.pids : [];
+  if (proc.running) {
+    if (hasCdpFlagFn(pids)) {
+      try {
+        await activateFn({ appPath: opts.appPath });
+      } catch {}
+      return { ok: true, action: 'waiting-cdp', pids };
+    }
+    if (shouldRelaunch) {
+      const res = await relaunchFn({
+        port: opts.port ?? 0,
+        waitMs: opts.waitMs,
+        appPath: opts.appPath,
+      });
+      if (res && res.relaunched) {
+        return { ok: true, action: 'relaunched' };
+      }
+      return { ok: false, action: 'relaunch-failed', reason: res?.reason || 'unknown' };
+    }
+    return { ok: false, action: 'running-without-cdp', pids };
+  }
+
+  const launched = launchFn({ port: opts.port ?? 0, appPath: opts.appPath });
+  if (launched) {
+    return { ok: true, action: 'launched' };
+  }
+  return { ok: false, action: 'executable-not-found' };
 }
 
 async function relaunchAntigravityWithCdp(opts = {}) {
@@ -620,6 +708,7 @@ module.exports = {
   STYLE_ID,
   PLUGIN_VERSION,
   SETTING_BINDING,
+  STARTUP_GRACE_SECONDS,
   RUNTIME_PARTS,
   PORT_FILE,
   PID_FILE,
@@ -633,8 +722,10 @@ module.exports = {
   resolveRunningAntigravityPath,
   hasRemoteDebuggingFlag,
   removeStalePortFile,
+  activateAntigravityWindow,
   launchAntigravityWithCdp,
   relaunchAntigravityWithCdp,
+  ensureAntigravityWithCdp,
   formatCdpUnavailableMessage,
   CdpSession,
   readCss,
