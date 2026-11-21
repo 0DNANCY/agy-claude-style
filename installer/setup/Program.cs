@@ -26,6 +26,10 @@ namespace AgyClaudeStyle.Installer
         public string InstallDir;
         public int? CdpPort;
         public string OutFile;
+        public string RunMode;
+        public bool ModeExplicit;
+        public bool DesktopShortcut = true;
+        public bool NoDesktopShortcut;
     }
 
     internal class AntigravityDetectResult
@@ -39,6 +43,11 @@ namespace AgyClaudeStyle.Installer
     {
         public bool Ok;
         public string Mode;
+        public string RunMode;
+        public bool WatcherStarted;
+        public string LauncherShortcutPath;
+        public string DesktopShortcutPath;
+        public bool StartupShortcutActive;
         public string Headline;
         public string Detail;
         public string InstallDir;
@@ -59,6 +68,74 @@ namespace AgyClaudeStyle.Installer
         private const string LauncherLnkName = "Antigravity (AGY Claude Style).lnk";
         private const string WatcherExeName = "agy-claude-style-watcher.exe";
         private const string SelfInstalledExeName = "agy-claude-style-installer.exe";
+        private const string InstallModeFileName = ".install-mode";
+
+        public static string GetTestSystemRoot()
+        {
+            string root = Environment.GetEnvironmentVariable("AGY_CS_TEST_SYSTEM_ROOT");
+            if (string.IsNullOrEmpty(root)) return null;
+            string trimmed = root.Trim();
+            return string.IsNullOrEmpty(trimmed) ? null : Path.GetFullPath(trimmed);
+        }
+
+        public static string NormalizeRunMode(string value)
+        {
+            if (string.Equals(value, "daemon", StringComparison.OrdinalIgnoreCase)) return "daemon";
+            if (string.Equals(value, "managed", StringComparison.OrdinalIgnoreCase)) return "managed";
+            return null;
+        }
+
+        public static string ReadInstalledMode(string installDir)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(installDir)) return null;
+                string modePath = Path.Combine(installDir, InstallModeFileName);
+                if (!File.Exists(modePath)) return null;
+                return NormalizeRunMode(File.ReadAllText(modePath, Encoding.UTF8).Trim());
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        public static void WriteInstalledMode(string installDir, string mode)
+        {
+            string normalized = NormalizeRunMode(mode) ?? "managed";
+            Directory.CreateDirectory(installDir);
+            File.WriteAllText(Path.Combine(installDir, InstallModeFileName), normalized + "\n", new UTF8Encoding(false));
+        }
+
+        public static string ResolveRunMode(InstallerOptions opts, string installDir)
+        {
+            if (opts != null && opts.ModeExplicit)
+            {
+                string explicitMode = NormalizeRunMode(opts.RunMode);
+                if (!string.IsNullOrEmpty(explicitMode)) return explicitMode;
+            }
+            if (opts != null && opts.NoAutostart) return "managed";
+            string installed = ReadInstalledMode(installDir);
+            if (!string.IsNullOrEmpty(installed)) return installed;
+            if (File.Exists(GetStartupShortcutPath())) return "daemon";
+            return "managed";
+        }
+
+        public static bool IsWatcherRunningInDir(string dir)
+        {
+            try
+            {
+                string pidFile = Path.Combine(dir, ".watch.pid");
+                if (!File.Exists(pidFile)) return false;
+                int pid;
+                if (int.TryParse(File.ReadAllText(pidFile, Encoding.UTF8).Trim(), out pid) && pid > 0)
+                {
+                    return CdpHelper.IsProcessAlive(pid);
+                }
+            }
+            catch { }
+            return false;
+        }
 
         public static string GetDefaultInstallDir()
         {
@@ -77,17 +154,40 @@ namespace AgyClaudeStyle.Installer
 
         public static string GetStartupShortcutPath()
         {
-            return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Startup), StartupLnkName);
+            string testRoot = GetTestSystemRoot();
+            string dir = !string.IsNullOrEmpty(testRoot)
+                ? Path.Combine(testRoot, "Startup")
+                : Environment.GetFolderPath(Environment.SpecialFolder.Startup);
+            return Path.Combine(dir, StartupLnkName);
         }
 
         public static string GetStartMenuLauncherShortcutPath()
         {
-            return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Programs), LauncherLnkName);
+            string testRoot = GetTestSystemRoot();
+            string dir = !string.IsNullOrEmpty(testRoot)
+                ? Path.Combine(testRoot, "StartMenu")
+                : Environment.GetFolderPath(Environment.SpecialFolder.Programs);
+            return Path.Combine(dir, LauncherLnkName);
         }
 
-        public static void CreateAntigravityCdpShortcut(string lnkPath, string antigravityExe)
+        public static string GetDesktopLauncherShortcutPath()
         {
-            if (string.IsNullOrEmpty(lnkPath) || string.IsNullOrEmpty(antigravityExe) || !File.Exists(antigravityExe)) return;
+            string testRoot = GetTestSystemRoot();
+            string dir = !string.IsNullOrEmpty(testRoot)
+                ? Path.Combine(testRoot, "Desktop")
+                : Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
+            return Path.Combine(dir, LauncherLnkName);
+        }
+
+        public static void CreateManagedLauncherShortcut(string lnkPath, string installDir, string antigravityExe)
+        {
+            if (string.IsNullOrEmpty(lnkPath) || string.IsNullOrEmpty(installDir)) return;
+            string cleanDir = installDir.TrimEnd('\\', '/');
+            string watcherExe = Path.Combine(cleanDir, WatcherExeName);
+            if (!File.Exists(watcherExe)) return;
+            string iconTarget = (!string.IsNullOrEmpty(antigravityExe) && File.Exists(antigravityExe))
+                ? antigravityExe
+                : watcherExe;
             try
             {
                 string parent = Path.GetDirectoryName(lnkPath);
@@ -96,11 +196,11 @@ namespace AgyClaudeStyle.Installer
                 object shell = Activator.CreateInstance(shellType);
                 object lnk = shellType.InvokeMember("CreateShortcut", BindingFlags.InvokeMethod, null, shell, new object[] { lnkPath });
                 Type lnkType = lnk.GetType();
-                lnkType.InvokeMember("TargetPath", BindingFlags.SetProperty, null, lnk, new object[] { antigravityExe });
-                lnkType.InvokeMember("Arguments", BindingFlags.SetProperty, null, lnk, new object[] { "--remote-debugging-port=0" });
-                lnkType.InvokeMember("WorkingDirectory", BindingFlags.SetProperty, null, lnk, new object[] { Path.GetDirectoryName(antigravityExe) });
-                lnkType.InvokeMember("IconLocation", BindingFlags.SetProperty, null, lnk, new object[] { antigravityExe + ",0" });
-                lnkType.InvokeMember("Description", BindingFlags.SetProperty, null, lnk, new object[] { "Launch Antigravity Desktop with CDP enabled for AGY Claude Style" });
+                lnkType.InvokeMember("TargetPath", BindingFlags.SetProperty, null, lnk, new object[] { watcherExe });
+                lnkType.InvokeMember("Arguments", BindingFlags.SetProperty, null, lnk, new object[] { "--launch --relaunch --exit-on-host-close --dir \"" + cleanDir + "\"" });
+                lnkType.InvokeMember("WorkingDirectory", BindingFlags.SetProperty, null, lnk, new object[] { cleanDir });
+                lnkType.InvokeMember("IconLocation", BindingFlags.SetProperty, null, lnk, new object[] { iconTarget + ",0" });
+                lnkType.InvokeMember("Description", BindingFlags.SetProperty, null, lnk, new object[] { "Launch Antigravity Desktop with AGY Claude Style (Managed Mode)" });
                 lnkType.InvokeMember("Save", BindingFlags.InvokeMethod, null, lnk, null);
             }
             catch { }
@@ -299,11 +399,13 @@ namespace AgyClaudeStyle.Installer
                     {
                         try
                         {
-                            Process p = Process.GetProcessById(pid);
-                            if (!p.WaitForExit(2000))
+                            using (Process p = Process.GetProcessById(pid))
                             {
-                                p.Kill();
-                                p.WaitForExit(2000);
+                                if (!p.WaitForExit(2000))
+                                {
+                                    p.Kill();
+                                    p.WaitForExit(2000);
+                                }
                             }
                             if (log != null) log("已停止运行中的守护进程 (PID " + pid + ")");
                         }
@@ -431,21 +533,26 @@ namespace AgyClaudeStyle.Installer
 
         public static void CreateStartupShortcut(string installDir)
         {
+            string cleanDir = installDir.TrimEnd('\\', '/');
             string lnkPath = GetStartupShortcutPath();
-            string targetExe = Path.Combine(installDir, WatcherExeName);
+            string parent = Path.GetDirectoryName(lnkPath);
+            if (!string.IsNullOrEmpty(parent)) Directory.CreateDirectory(parent);
+            string targetExe = Path.Combine(cleanDir, WatcherExeName);
             Type shellType = Type.GetTypeFromProgID("WScript.Shell");
             object shell = Activator.CreateInstance(shellType);
             object lnk = shellType.InvokeMember("CreateShortcut", BindingFlags.InvokeMethod, null, shell, new object[] { lnkPath });
             Type lnkType = lnk.GetType();
             lnkType.InvokeMember("TargetPath", BindingFlags.SetProperty, null, lnk, new object[] { targetExe });
-            lnkType.InvokeMember("Arguments", BindingFlags.SetProperty, null, lnk, new object[] { "--watch" });
-            lnkType.InvokeMember("WorkingDirectory", BindingFlags.SetProperty, null, lnk, new object[] { installDir.TrimEnd('\\', '/') });
+            lnkType.InvokeMember("Arguments", BindingFlags.SetProperty, null, lnk, new object[] { "--watch --dir \"" + cleanDir + "\"" });
+            lnkType.InvokeMember("WorkingDirectory", BindingFlags.SetProperty, null, lnk, new object[] { cleanDir });
+            lnkType.InvokeMember("IconLocation", BindingFlags.SetProperty, null, lnk, new object[] { targetExe + ",0" });
             lnkType.InvokeMember("Description", BindingFlags.SetProperty, null, lnk, new object[] { "AGY Claude Style (agy-claude-style) watcher" });
             lnkType.InvokeMember("Save", BindingFlags.InvokeMethod, null, lnk, null);
         }
 
         public static void RegisterUninstallEntry(string installDir, string version)
         {
+            if (!string.IsNullOrEmpty(GetTestSystemRoot())) return;
             using (RegistryKey key = Registry.CurrentUser.CreateSubKey(UninstallRegSubKey))
             {
                 if (key == null) return;
@@ -467,13 +574,16 @@ namespace AgyClaudeStyle.Installer
             result.Mode = "install";
             string installDir = Path.GetFullPath(string.IsNullOrEmpty(opts.InstallDir) ? GetDefaultInstallDir() : opts.InstallDir).TrimEnd('\\', '/');
             result.InstallDir = installDir;
+            string runMode = ResolveRunMode(opts, installDir);
+            result.RunMode = runMode;
 
             Action<int, string> report = (pct, msg) =>
             {
                 if (progress != null) progress(pct, msg);
             };
 
-            report(10, "正在检测本机 Antigravity Desktop 环境...");
+            report(8, "当前安装模式: " + (runMode == "daemon" ? "开机自启 · 后台常驻监听 (daemon)" : "免后台常驻 · 随 Antigravity 启动并自动退出 (managed)"));
+            report(12, "正在检测本机 Antigravity Desktop 环境...");
             AntigravityDetectResult ag = DetectAntigravityDesktop();
             result.AntigravityExe = ag.ExePath;
             result.AntigravityVersion = ag.Version;
@@ -483,7 +593,7 @@ namespace AgyClaudeStyle.Installer
             }
             else
             {
-                report(18, "未在默认目录检测到 Antigravity.exe，仍将安装并启用 CDP 自动监听");
+                report(18, "未在默认目录检测到 Antigravity.exe，仍将安装并启用无损 CDP 注入");
             }
 
             report(28, "正在停止旧版守护进程（如存在）...");
@@ -523,7 +633,7 @@ namespace AgyClaudeStyle.Installer
                 }
             }
             result.PreservedExistingConfig = preservedConfig;
-            report(62, preservedConfig ? "已保留本机现有 config.json 用户配置" : "已写入内置默认配置 config.json");
+            report(60, preservedConfig ? "已保留本机现有 config.json 用户配置" : "已写入内置默认配置 config.json");
 
             try
             {
@@ -537,116 +647,185 @@ namespace AgyClaudeStyle.Installer
             }
             catch { }
 
+            WriteInstalledMode(installDir, runMode);
+
             PluginManifest manifest = PluginManifest.Load(installDir);
             Dictionary<string, object> activeCfg = CdpHelper.ReadConfig(installDir, manifest);
             result.ConfigSummary = string.Format(
                 "语言={0} | 配色={1} | 圆环={2} | 思考滑块={3}",
                 activeCfg.ContainsKey("language") ? activeCfg["language"] : "zh-CN",
-                activeCfg.ContainsKey("palette") ? activeCfg["palette"] : "claude",
-                activeCfg.ContainsKey("ringMode") ? activeCfg["ringMode"] : "quota",
+                activeCfg.ContainsKey("palette") ? activeCfg["palette"] : "obsidian",
+                activeCfg.ContainsKey("ringMode") ? activeCfg["ringMode"] : "context",
                 activeCfg.ContainsKey("effortSliderStyle") ? activeCfg["effortSliderStyle"] : "claude"
             );
 
-            if (!string.IsNullOrEmpty(ag.ExePath))
-            {
-                CreateAntigravityCdpShortcut(Path.Combine(installDir, LauncherLnkName), ag.ExePath);
-            }
+            string localLauncherLnk = Path.Combine(installDir, LauncherLnkName);
+            CreateManagedLauncherShortcut(localLauncherLnk, installDir, ag.ExePath);
+            result.LauncherShortcutPath = File.Exists(localLauncherLnk) ? localLauncherLnk : null;
 
             if (!opts.NoAutostart)
             {
-                report(72, "正在配置 Windows 开机自动修补与卸载入口...");
-                CreateStartupShortcut(installDir);
-                if (!string.IsNullOrEmpty(ag.ExePath))
+                report(70, "正在配置启动快捷方式与卸载入口...");
+                string startMenuLnk = GetStartMenuLauncherShortcutPath();
+                CreateManagedLauncherShortcut(startMenuLnk, installDir, ag.ExePath);
+                if (opts.DesktopShortcut && !opts.NoDesktopShortcut)
                 {
-                    CreateAntigravityCdpShortcut(GetStartMenuLauncherShortcutPath(), ag.ExePath);
+                    string desktopLnk = GetDesktopLauncherShortcutPath();
+                    CreateManagedLauncherShortcut(desktopLnk, installDir, ag.ExePath);
+                    if (File.Exists(desktopLnk)) result.DesktopShortcutPath = desktopLnk;
                 }
                 RegisterUninstallEntry(installDir, manifest.Version);
+
+                if (runMode == "daemon")
+                {
+                    CreateStartupShortcut(installDir);
+                    report(76, "已注册 Windows 开机自启快捷方式 (daemon)");
+                }
+                else
+                {
+                    string startupLnk = GetStartupShortcutPath();
+                    if (File.Exists(startupLnk))
+                    {
+                        try
+                        {
+                            File.Delete(startupLnk);
+                            report(76, "已清理旧版开机自启快捷方式（当前为免后台常驻模式）");
+                        }
+                        catch { }
+                    }
+                    else
+                    {
+                        report(76, "免后台常驻模式：不注册开机自启，平时 0 进程常驻");
+                    }
+                }
             }
             else
             {
-                report(72, "已按参数跳过开机自启注册");
+                report(72, "已按参数跳过系统快捷方式与开机自启注册");
             }
+            result.StartupShortcutActive = File.Exists(GetStartupShortcutPath());
 
-            report(82, "正在启动后台静默守护进程...");
-            string watcherExe = Path.Combine(installDir, WatcherExeName);
-            string watcherArgs = "--watch --dir \"" + installDir + "\"";
-            if (opts.CdpPort.HasValue && opts.CdpPort.Value > 0)
-            {
-                watcherArgs += " --cdp-port " + opts.CdpPort.Value;
-            }
-            ProcessStartInfo psi = new ProcessStartInfo();
-            psi.FileName = watcherExe;
-            psi.Arguments = watcherArgs;
-            psi.WorkingDirectory = installDir;
-            psi.UseShellExecute = false;
-            psi.CreateNoWindow = true;
-            psi.WindowStyle = ProcessWindowStyle.Hidden;
-            Process.Start(psi);
-
-            report(90, "正在检查 Antigravity Desktop 实时注入状态...");
+            bool isExplicitPort = opts.CdpPort.HasValue || !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("AG_CDP_PORT"));
+            bool effectiveAgRunning = isExplicitPort ? false : ag.IsRunning;
             int? port = CdpHelper.ReadPort(opts.CdpPort);
             bool cdpReachable = false;
-            string watchLogPath = Path.Combine(installDir, "watch.log");
             if (port.HasValue)
             {
-                List<CdpPageInfo> pages = null;
-                for (int attempt = 0; attempt < 15; attempt++)
+                try
                 {
-                    try
+                    List<CdpPageInfo> probePages = CdpHelper.ListPagesAsync(port.Value).GetAwaiter().GetResult();
+                    cdpReachable = (probePages != null);
+                }
+                catch
+                {
+                    cdpReachable = false;
+                }
+            }
+
+            bool hasCdpFlag = !cdpReachable && effectiveAgRunning && CdpHelper.HasAntigravityCdpFlag();
+            bool shouldStartWatcher = (runMode == "daemon") || cdpReachable || hasCdpFlag;
+
+            if (shouldStartWatcher)
+            {
+                report(82, runMode == "daemon" ? "正在启动后台常驻守护进程..." : "检测到 Antigravity 已开启 CDP，正在按需附加托管监听...");
+                string watcherExe = Path.Combine(installDir, WatcherExeName);
+                string watcherArgs = (runMode == "daemon" ? "--watch --dir \"" : "--watch --exit-on-host-close --dir \"") + installDir + "\"";
+                if (opts.CdpPort.HasValue && opts.CdpPort.Value > 0)
+                {
+                    watcherArgs += " --cdp-port " + opts.CdpPort.Value;
+                }
+                ProcessStartInfo psi = new ProcessStartInfo();
+                psi.FileName = watcherExe;
+                psi.Arguments = watcherArgs;
+                psi.WorkingDirectory = installDir;
+                psi.UseShellExecute = false;
+                psi.CreateNoWindow = true;
+                psi.WindowStyle = ProcessWindowStyle.Hidden;
+                Process.Start(psi);
+                result.WatcherStarted = true;
+
+                string pidWaitPath = Path.Combine(installDir, ".watch.pid");
+                for (int w = 0; w < 20 && !File.Exists(pidWaitPath); w++)
+                {
+                    Thread.Sleep(50);
+                }
+
+                report(90, "正在检查 Antigravity Desktop 实时注入状态...");
+                string watchLogPath = Path.Combine(installDir, "watch.log");
+                if (port.HasValue && (cdpReachable || !isExplicitPort))
+                {
+                    List<CdpPageInfo> pages = null;
+                    for (int attempt = 0; attempt < 15; attempt++)
                     {
-                        pages = CdpHelper.ListPagesAsync(port.Value).GetAwaiter().GetResult();
-                        cdpReachable = true;
-                        string logContent = "";
-                        if (File.Exists(watchLogPath))
+                        try
                         {
-                            using (FileStream fs = new FileStream(watchLogPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
-                            using (StreamReader sr = new StreamReader(fs, Encoding.UTF8))
+                            pages = CdpHelper.ListPagesAsync(port.Value).GetAwaiter().GetResult();
+                            cdpReachable = true;
+                            string logContent = "";
+                            if (File.Exists(watchLogPath))
                             {
-                                logContent = sr.ReadToEnd();
-                            }
-                        }
-                        bool watcherInjected = logContent.IndexOf("[✓] 已注入 agy-claude-style:", StringComparison.Ordinal) >= 0;
-                        if (pages != null && pages.Count > 0 && watcherInjected)
-                        {
-                            bool allReady = true;
-                            List<string> titles = new List<string>();
-                            for (int p = 0; p < pages.Count; p++)
-                            {
-                                titles.Add(CdpHelper.ShortTitle(pages[p]));
-                                using (CdpSession s = CdpSession.ConnectAsync(pages[p].WebSocketDebuggerUrl, 2000).GetAwaiter().GetResult())
+                                using (FileStream fs = new FileStream(watchLogPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                                using (StreamReader sr = new StreamReader(fs, Encoding.UTF8))
                                 {
-                                    object okVal = s.EvaluateAsync("Boolean(window.__agClaudeStyle)", false).GetAwaiter().GetResult();
-                                    if (!(okVal is bool) || !((bool)okVal))
-                                    {
-                                        allReady = false;
-                                    }
+                                    logContent = sr.ReadToEnd();
                                 }
                             }
-                            if (allReady)
+                            bool watcherInjected = logContent.IndexOf("[✓] 已注入 agy-claude-style:", StringComparison.Ordinal) >= 0;
+                            if (pages != null && pages.Count > 0 && watcherInjected)
                             {
-                                result.InjectedPages = titles;
+                                bool allReady = true;
+                                List<string> titles = new List<string>();
+                                for (int p = 0; p < pages.Count; p++)
+                                {
+                                    titles.Add(CdpHelper.ShortTitle(pages[p]));
+                                    using (CdpSession s = CdpSession.ConnectAsync(pages[p].WebSocketDebuggerUrl, 2000).GetAwaiter().GetResult())
+                                    {
+                                        object okVal = s.EvaluateAsync("Boolean(window.__agClaudeStyle)", false).GetAwaiter().GetResult();
+                                        if (!(okVal is bool) || !((bool)okVal))
+                                        {
+                                            allReady = false;
+                                        }
+                                    }
+                                }
+                                if (allReady)
+                                {
+                                    result.InjectedPages = titles;
+                                    break;
+                                }
+                            }
+                        }
+                        catch
+                        {
+                            pages = null;
+                            if (!effectiveAgRunning && attempt >= 1)
+                            {
                                 break;
                             }
                         }
+                        Thread.Sleep(350);
                     }
-                    catch
-                    {
-                        pages = null;
-                        if (!ag.IsRunning && !opts.CdpPort.HasValue && attempt >= 1)
-                        {
-                            break;
-                        }
-                    }
-                    Thread.Sleep(350);
                 }
             }
+            else
+            {
+                result.WatcherStarted = false;
+                report(88, "免后台常驻模式：当前未检测到运行中的 CDP 会话，不常驻后台进程");
+            }
             result.CdpPort = cdpReachable ? port : null;
+
+            bool autoRelaunchEnabled = true;
+            if (activeCfg.ContainsKey("autoRelaunchWithCdp") && activeCfg["autoRelaunchWithCdp"] is bool)
+            {
+                autoRelaunchEnabled = (bool)activeCfg["autoRelaunchWithCdp"];
+            }
 
             result.Ok = true;
             if (result.InjectedPages.Count > 0)
             {
                 result.Headline = string.Format("修补成功！已实时注入 {0} 个 Antigravity 窗口", result.InjectedPages.Count);
-                result.Detail = "后台无损守护已运行并已配置开机自启。后续打开新窗口或更新 Antigravity 后也会自动注入。";
+                result.Detail = runMode == "managed"
+                    ? "当前为「免后台常驻」托管模式：已按需附加监听，Antigravity 关闭后自动退出。后续请通过桌面或开始菜单「Antigravity (AGY Claude Style)」快捷方式启动。"
+                    : "当前为「开机自启 · 常驻守护」模式：后台无损守护已运行并已配置开机自启，后续打开新窗口或更新 Antigravity 后也会自动注入。";
                 for (int i = 0; i < result.InjectedPages.Count; i++)
                 {
                     report(98, "已注入窗口: " + result.InjectedPages[i]);
@@ -654,25 +833,42 @@ namespace AgyClaudeStyle.Installer
             }
             else if (cdpReachable && port.HasValue)
             {
-                result.Headline = "已安装并启动守护！等待 Antigravity 窗口就绪";
-                result.Detail = "已配置开机自启并启动后台守护。检测到调试端口 " + port.Value + "，窗口就绪后将自动完成注入。";
+                result.Headline = runMode == "managed"
+                    ? "已安装并按需附加托管监听！等待窗口就绪"
+                    : "已安装并启动常驻守护！等待 Antigravity 窗口就绪";
+                result.Detail = runMode == "managed"
+                    ? "当前为「免后台常驻」模式：检测到调试端口 " + port.Value + "，窗口就绪后将自动注入并在 Antigravity 关闭后退出。"
+                    : "当前为「开机自启 · 常驻守护」模式：已配置开机自启，检测到调试端口 " + port.Value + "，窗口就绪后将自动完成注入。";
             }
-            else if (ag.IsRunning)
+            else if (effectiveAgRunning)
             {
-                bool autoRelaunchEnabled = activeCfg.ContainsKey("autoRelaunchWithCdp") &&
-                    activeCfg["autoRelaunchWithCdp"] is bool &&
-                    (bool)activeCfg["autoRelaunchWithCdp"];
                 result.AntigravityRunningWithoutCdp = true;
-                result.Headline = "已安装并启动守护！但当前 Antigravity 未开启 CDP 端口";
-                result.Detail = autoRelaunchEnabled
-                    ? "Antigravity 2.33.0+ 默认关闭远程调试端口。后台守护已启用自动接管，将在数秒内尝试温和重启；也可点击下方「以 CDP 模式重启」立即生效。"
-                    : "Antigravity 2.33.0+ 默认关闭远程调试端口。请点击下方「以 CDP 模式重启」，或通过带 --remote-debugging-port=0 参数的快捷方式启动。";
+                if (runMode == "managed")
+                {
+                    result.Headline = "安装完成（免后台常驻模式）！当前 Antigravity 未开启 CDP";
+                    result.Detail = "平时后台 0 进程常驻。请点击下方「以 CDP 模式重启」立即生效，或关闭后使用桌面/开始菜单「Antigravity (AGY Claude Style)」启动。";
+                }
+                else
+                {
+                    result.Headline = "已安装并启动常驻守护！但当前 Antigravity 未开启 CDP 端口";
+                    result.Detail = autoRelaunchEnabled
+                        ? "当前为「开机自启 · 常驻守护」模式。后台守护已启用自动接管，将在数秒内尝试温和重启；也可点击下方「以 CDP 模式重启」立即生效。"
+                        : "当前为「开机自启 · 常驻守护」模式。请点击下方「以 CDP 模式重启」，或通过「Antigravity (AGY Claude Style)」快捷方式启动。";
+                }
                 report(95, "[!] 检测到 Antigravity 正在运行但未开启 CDP（2.33.0+ 需带参 --remote-debugging-port=0 启动）");
             }
             else
             {
-                result.Headline = "安装成功！后台自动修补已就绪";
-                result.Detail = "守护进程已在后台待命。如使用 Antigravity 2.33.0+，请点击下方「以 CDP 模式启动」或使用「Antigravity (AGY Claude Style)」快捷方式启动。";
+                if (runMode == "managed")
+                {
+                    result.Headline = "安装成功！（免后台常驻 · 托管模式已就绪）";
+                    result.Detail = "后台 0 进程常驻。请通过桌面或开始菜单「Antigravity (AGY Claude Style)」快捷方式（或下方按钮）启动 Antigravity，关闭后监听自动退出。";
+                }
+                else
+                {
+                    result.Headline = "安装成功！开机自启与后台常驻守护已就绪";
+                    result.Detail = "当前为「开机自启 · 常驻守护」模式：守护进程已在后台待命并已写入 Startup 自启。也可使用「Antigravity (AGY Claude Style)」快捷方式启动。";
+                }
             }
             report(100, result.Headline);
             return result;
@@ -684,6 +880,7 @@ namespace AgyClaudeStyle.Installer
             result.Mode = "uninstall";
             string installDir = Path.GetFullPath(string.IsNullOrEmpty(opts.InstallDir) ? GetDefaultInstallDir() : opts.InstallDir).TrimEnd('\\', '/');
             result.InstallDir = installDir;
+            result.RunMode = ReadInstalledMode(installDir) ?? "managed";
 
             Action<int, string> report = (pct, msg) =>
             {
@@ -747,7 +944,7 @@ namespace AgyClaudeStyle.Installer
 
             if (!opts.NoAutostart)
             {
-                report(70, "正在移除开机自启与卸载注册表项...");
+                report(70, "正在移除快捷方式、开机自启与卸载注册表项...");
                 try
                 {
                     string lnk = GetStartupShortcutPath();
@@ -762,10 +959,20 @@ namespace AgyClaudeStyle.Installer
                 catch { }
                 try
                 {
-                    Registry.CurrentUser.DeleteSubKeyTree(UninstallRegSubKey, false);
+                    string desktopLnk = GetDesktopLauncherShortcutPath();
+                    if (File.Exists(desktopLnk)) File.Delete(desktopLnk);
                 }
                 catch { }
+                if (string.IsNullOrEmpty(GetTestSystemRoot()))
+                {
+                    try
+                    {
+                        Registry.CurrentUser.DeleteSubKeyTree(UninstallRegSubKey, false);
+                    }
+                    catch { }
+                }
             }
+            result.StartupShortcutActive = File.Exists(GetStartupShortcutPath());
 
             report(85, "正在清理安装目录: " + installDir);
             string selfExe = Assembly.GetExecutingAssembly().Location;
@@ -822,11 +1029,15 @@ namespace AgyClaudeStyle.Installer
         private readonly InstallerOptions _opts;
         private readonly Label _titleLabel;
         private readonly Label _subtitleLabel;
+        private readonly RadioButton _managedRadio;
+        private readonly RadioButton _daemonRadio;
+        private readonly CheckBox _desktopShortcutCheck;
         private readonly Label _statusHeadline;
         private readonly Label _statusDetail;
         private readonly Label _metaLabel;
         private readonly ProgressBar _progressBar;
         private readonly TextBox _logBox;
+        private readonly Button _actionBtn;
         private readonly Button _uninstallBtn;
         private readonly Button _openDirBtn;
         private readonly Button _launchAgBtn;
@@ -841,67 +1052,130 @@ namespace AgyClaudeStyle.Installer
         public InstallerForm(InstallerOptions opts)
         {
             _opts = opts;
-            _activeInstallDir = string.IsNullOrEmpty(opts.InstallDir) ? InstallerCore.GetDefaultInstallDir() : opts.InstallDir;
+            _activeInstallDir = Path.GetFullPath(string.IsNullOrEmpty(opts.InstallDir) ? InstallerCore.GetDefaultInstallDir() : opts.InstallDir).TrimEnd('\\', '/');
+            bool isInstalled = Directory.Exists(_activeInstallDir) && File.Exists(Path.Combine(_activeInstallDir, "agy-claude-style-watcher.exe"));
+            string initialMode = InstallerCore.ResolveRunMode(opts, _activeInstallDir);
 
-            Text = "AGY Claude Style 安装与修补工具";
+            Text = "AGY Claude Style 安装与模式管理";
             StartPosition = FormStartPosition.CenterScreen;
             FormBorderStyle = FormBorderStyle.FixedDialog;
             MaximizeBox = false;
             AutoScaleMode = AutoScaleMode.Font;
             Font = new Font("Microsoft YaHei UI", 9.5f, FontStyle.Regular);
-            ClientSize = new Size(588, 464);
+            ClientSize = new Size(620, 560);
             BackColor = Color.FromArgb(248, 246, 243);
             try { Icon = Icon.ExtractAssociatedIcon(Assembly.GetExecutingAssembly().Location); } catch { }
 
             Panel header = new Panel();
             header.Dock = DockStyle.Top;
-            header.Height = 80;
+            header.Height = 76;
             header.BackColor = Color.FromArgb(26, 25, 24);
-            header.Padding = new Padding(20, 14, 20, 12);
+            header.Padding = new Padding(20, 12, 20, 10);
 
             _titleLabel = new Label();
-            _titleLabel.Text = "AGY Claude Style · 自动修补安装器";
+            _titleLabel.Text = "AGY Claude Style · 无损界面增强安装器";
             _titleLabel.ForeColor = Color.FromArgb(250, 248, 245);
             _titleLabel.Font = new Font("Microsoft YaHei UI", 13.5f, FontStyle.Bold);
             _titleLabel.AutoSize = true;
-            _titleLabel.Location = new Point(20, 14);
+            _titleLabel.Location = new Point(20, 12);
 
             _subtitleLabel = new Label();
-            _subtitleLabel.Text = "Antigravity Desktop 无损实时界面增强、思考滑块与 Token HUD";
+            _subtitleLabel.Text = "Antigravity Desktop 实时样式增强、思考滑块与 Token HUD";
             _subtitleLabel.ForeColor = Color.FromArgb(217, 119, 87);
             _subtitleLabel.Font = new Font("Microsoft YaHei UI", 9f, FontStyle.Regular);
             _subtitleLabel.AutoSize = true;
-            _subtitleLabel.Location = new Point(21, 46);
+            _subtitleLabel.Location = new Point(21, 44);
 
             header.Controls.Add(_titleLabel);
             header.Controls.Add(_subtitleLabel);
             Controls.Add(header);
 
+            Panel modePanel = new Panel();
+            modePanel.Location = new Point(20, 88);
+            modePanel.Size = new Size(580, 114);
+            modePanel.BackColor = Color.White;
+            modePanel.BorderStyle = BorderStyle.FixedSingle;
+
+            Label modeTitle = new Label();
+            modeTitle.Text = "运行模式选择";
+            modeTitle.ForeColor = Color.FromArgb(28, 25, 23);
+            modeTitle.Font = new Font("Microsoft YaHei UI", 9.5f, FontStyle.Bold);
+            modeTitle.Location = new Point(14, 10);
+            modeTitle.Size = new Size(550, 20);
+
+            _managedRadio = new RadioButton();
+            _managedRadio.Text = "免后台常驻 · 随 Antigravity 启动并自动退出（推荐）";
+            _managedRadio.ForeColor = Color.FromArgb(41, 37, 36);
+            _managedRadio.Location = new Point(14, 34);
+            _managedRadio.Size = new Size(550, 22);
+            _managedRadio.Checked = (initialMode == "managed");
+
+            _daemonRadio = new RadioButton();
+            _daemonRadio.Text = "开机自启 · 后台常驻监听";
+            _daemonRadio.ForeColor = Color.FromArgb(41, 37, 36);
+            _daemonRadio.Location = new Point(14, 60);
+            _daemonRadio.Size = new Size(550, 22);
+            _daemonRadio.Checked = (initialMode == "daemon");
+
+            _desktopShortcutCheck = new CheckBox();
+            _desktopShortcutCheck.Text = "在桌面创建「Antigravity (AGY Claude Style)」启动快捷方式";
+            _desktopShortcutCheck.ForeColor = Color.FromArgb(87, 83, 78);
+            _desktopShortcutCheck.Location = new Point(14, 86);
+            _desktopShortcutCheck.Size = new Size(550, 22);
+            _desktopShortcutCheck.Checked = opts.DesktopShortcut && !opts.NoDesktopShortcut;
+
+            EventHandler onOptionChanged = (s, e) =>
+            {
+                if (!_busy) _actionBtn.Enabled = true;
+            };
+            _managedRadio.CheckedChanged += onOptionChanged;
+            _daemonRadio.CheckedChanged += onOptionChanged;
+            _desktopShortcutCheck.CheckedChanged += onOptionChanged;
+
+            modePanel.Controls.Add(modeTitle);
+            modePanel.Controls.Add(_managedRadio);
+            modePanel.Controls.Add(_daemonRadio);
+            modePanel.Controls.Add(_desktopShortcutCheck);
+            Controls.Add(modePanel);
+
             Panel card = new Panel();
-            card.Location = new Point(20, 96);
-            card.Size = new Size(548, 118);
+            card.Location = new Point(20, 212);
+            card.Size = new Size(580, 112);
             card.BackColor = Color.White;
             card.BorderStyle = BorderStyle.FixedSingle;
 
             _statusHeadline = new Label();
-            _statusHeadline.Text = opts.Uninstall ? "准备卸载并恢复原版界面..." : "正在自动修补本机 Antigravity Desktop...";
+            if (opts.Uninstall)
+            {
+                _statusHeadline.Text = "准备卸载并恢复原版界面...";
+            }
+            else if (isInstalled)
+            {
+                _statusHeadline.Text = string.Format("当前已安装（{0}）", initialMode == "daemon" ? "开机自启 · 常驻守护" : "免后台常驻 · 托管模式");
+            }
+            else
+            {
+                _statusHeadline.Text = "请选择运行模式后点击「开始安装」";
+            }
             _statusHeadline.ForeColor = Color.FromArgb(28, 25, 23);
             _statusHeadline.Font = new Font("Microsoft YaHei UI", 11f, FontStyle.Bold);
-            _statusHeadline.Location = new Point(14, 12);
-            _statusHeadline.Size = new Size(520, 26);
+            _statusHeadline.Location = new Point(14, 10);
+            _statusHeadline.Size = new Size(552, 26);
 
             _statusDetail = new Label();
-            _statusDetail.Text = "正在检测环境并配置独立守护进程，请稍候...";
+            _statusDetail.Text = opts.Uninstall
+                ? "确认后将停止守护、清理快捷方式并恢复原版界面。"
+                : "托管模式不注册开机自启，平时 0 进程常驻；常驻模式适合习惯直接点击原版图标的用户。";
             _statusDetail.ForeColor = Color.FromArgb(87, 83, 78);
-            _statusDetail.Location = new Point(14, 42);
-            _statusDetail.Size = new Size(520, 40);
+            _statusDetail.Location = new Point(14, 40);
+            _statusDetail.Size = new Size(552, 42);
 
             _metaLabel = new Label();
             _metaLabel.Text = "安装路径: " + _activeInstallDir;
             _metaLabel.ForeColor = Color.FromArgb(120, 113, 108);
             _metaLabel.Font = new Font("Microsoft YaHei UI", 8.2f, FontStyle.Regular);
-            _metaLabel.Location = new Point(14, 88);
-            _metaLabel.Size = new Size(520, 20);
+            _metaLabel.Location = new Point(14, 86);
+            _metaLabel.Size = new Size(552, 20);
 
             card.Controls.Add(_statusHeadline);
             card.Controls.Add(_statusDetail);
@@ -909,16 +1183,16 @@ namespace AgyClaudeStyle.Installer
             Controls.Add(card);
 
             _progressBar = new ProgressBar();
-            _progressBar.Location = new Point(20, 224);
-            _progressBar.Size = new Size(548, 14);
+            _progressBar.Location = new Point(20, 334);
+            _progressBar.Size = new Size(580, 14);
             _progressBar.Minimum = 0;
             _progressBar.Maximum = 100;
-            _progressBar.Value = 5;
+            _progressBar.Value = 0;
             Controls.Add(_progressBar);
 
             _logBox = new TextBox();
-            _logBox.Location = new Point(20, 248);
-            _logBox.Size = new Size(548, 148);
+            _logBox.Location = new Point(20, 358);
+            _logBox.Size = new Size(580, 134);
             _logBox.Multiline = true;
             _logBox.ReadOnly = true;
             _logBox.ScrollBars = ScrollBars.Vertical;
@@ -927,19 +1201,31 @@ namespace AgyClaudeStyle.Installer
             _logBox.Font = new Font("Consolas", 8.8f, FontStyle.Regular);
             Controls.Add(_logBox);
 
+            _actionBtn = new Button();
+            _actionBtn.Text = isInstalled ? "应用模式 / 升级" : "开始安装";
+            _actionBtn.Location = new Point(20, 506);
+            _actionBtn.Size = new Size(124, 36);
+            _actionBtn.Enabled = !opts.Uninstall;
+            _actionBtn.FlatStyle = FlatStyle.System;
+            _actionBtn.Click += async (s, e) =>
+            {
+                SyncOptionsFromUi();
+                await ExecuteInstallAsync();
+            };
+
             _uninstallBtn = new Button();
-            _uninstallBtn.Text = "卸载并恢复原版";
-            _uninstallBtn.Location = new Point(20, 412);
-            _uninstallBtn.Size = new Size(134, 34);
-            _uninstallBtn.Enabled = false;
+            _uninstallBtn.Text = "卸载并恢复";
+            _uninstallBtn.Location = new Point(152, 506);
+            _uninstallBtn.Size = new Size(98, 36);
+            _uninstallBtn.Enabled = isInstalled && !opts.Uninstall;
             _uninstallBtn.FlatStyle = FlatStyle.System;
             _uninstallBtn.Click += async (s, e) => await HandleUninstallClickAsync();
 
             _openDirBtn = new Button();
-            _openDirBtn.Text = "打开配置目录";
-            _openDirBtn.Location = new Point(162, 412);
-            _openDirBtn.Size = new Size(116, 34);
-            _openDirBtn.Enabled = false;
+            _openDirBtn.Text = "配置目录";
+            _openDirBtn.Location = new Point(258, 506);
+            _openDirBtn.Size = new Size(92, 36);
+            _openDirBtn.Enabled = Directory.Exists(_activeInstallDir);
             _openDirBtn.FlatStyle = FlatStyle.System;
             _openDirBtn.Click += (s, e) =>
             {
@@ -952,70 +1238,21 @@ namespace AgyClaudeStyle.Installer
 
             _launchAgBtn = new Button();
             _launchAgBtn.Text = "启动 Antigravity";
-            _launchAgBtn.Location = new Point(286, 412);
-            _launchAgBtn.Size = new Size(134, 34);
+            _launchAgBtn.Location = new Point(358, 506);
+            _launchAgBtn.Size = new Size(140, 36);
             _launchAgBtn.Visible = false;
             _launchAgBtn.FlatStyle = FlatStyle.System;
-            _launchAgBtn.Click += async (s, e) =>
-            {
-                if (string.IsNullOrEmpty(_antigravityExe) || !File.Exists(_antigravityExe)) return;
-                if (_needsCdpRelaunch)
-                {
-                    _launchAgBtn.Enabled = false;
-                    AppendLog("[↻] 正在检查 CDP 状态并准备以 --remote-debugging-port=0 重启 Antigravity...");
-                    int? activeCdpPort = await Task.Run(() =>
-                    {
-                        int? p = CdpHelper.ReadPort(null);
-                        if (!p.HasValue) return (int?)null;
-                        try
-                        {
-                            List<CdpPageInfo> existingPages = CdpHelper.ListPagesAsync(p.Value).GetAwaiter().GetResult();
-                            return existingPages != null ? p : (int?)null;
-                        }
-                        catch
-                        {
-                            return (int?)null;
-                        }
-                    });
-                    if (activeCdpPort.HasValue)
-                    {
-                        _needsCdpRelaunch = false;
-                        _statusHeadline.Text = "Antigravity 已处于 CDP 调试模式";
-                        _statusHeadline.ForeColor = Color.FromArgb(21, 128, 61);
-                        _statusDetail.Text = "后台守护进程已检测到调试端口 " + activeCdpPort.Value + "，将自动完成无损注入。";
-                        AppendLog("[✓] 检测到 Antigravity 已开启 CDP 端口 " + activeCdpPort.Value + "，无需重复重启");
-                        return;
-                    }
-                    bool ok = await Task.Run(() => CdpHelper.RelaunchAntigravityWithCdp(_antigravityExe, 0, 8000));
-                    if (ok)
-                    {
-                        _needsCdpRelaunch = false;
-                        _statusHeadline.Text = "已以 CDP 模式重启 Antigravity";
-                        _statusHeadline.ForeColor = Color.FromArgb(21, 128, 61);
-                        _statusDetail.Text = "后台守护进程将在 2 秒内自动完成无损注入。";
-                        AppendLog("[✓] 已以 --remote-debugging-port=0 重启 Antigravity");
-                    }
-                    else
-                    {
-                        _launchAgBtn.Enabled = true;
-                        AppendLog("[!] 未能自动关闭 Antigravity，请先完全退出后再次点击");
-                    }
-                }
-                else
-                {
-                    bool ok = CdpHelper.LaunchAntigravityWithCdp(_antigravityExe, 0);
-                    AppendLog(ok ? "[✓] 已以 --remote-debugging-port=0 启动 Antigravity" : "[!] 启动 Antigravity 失败");
-                }
-            };
+            _launchAgBtn.Click += (s, e) => LaunchManagedAntigravity();
 
             _closeBtn = new Button();
-            _closeBtn.Text = "完成并关闭";
-            _closeBtn.Location = new Point(456, 412);
-            _closeBtn.Size = new Size(112, 34);
-            _closeBtn.Enabled = false;
+            _closeBtn.Text = "关闭";
+            _closeBtn.Location = new Point(506, 506);
+            _closeBtn.Size = new Size(94, 36);
+            _closeBtn.Enabled = true;
             _closeBtn.FlatStyle = FlatStyle.System;
             _closeBtn.Click += (s, e) => Close();
 
+            Controls.Add(_actionBtn);
             Controls.Add(_uninstallBtn);
             Controls.Add(_openDirBtn);
             Controls.Add(_launchAgBtn);
@@ -1034,6 +1271,46 @@ namespace AgyClaudeStyle.Installer
                     InstallerCore.ScheduleSelfDeleteIfNeeded(_activeInstallDir);
                 }
             };
+        }
+
+        private void SyncOptionsFromUi()
+        {
+            _opts.RunMode = _daemonRadio.Checked ? "daemon" : "managed";
+            _opts.ModeExplicit = true;
+            _opts.DesktopShortcut = _desktopShortcutCheck.Checked;
+            _opts.NoDesktopShortcut = !_desktopShortcutCheck.Checked;
+        }
+
+        private void LaunchManagedAntigravity()
+        {
+            string cleanDir = Path.GetFullPath(_activeInstallDir).TrimEnd('\\', '/');
+            string watcherExe = Path.Combine(cleanDir, "agy-claude-style-watcher.exe");
+            if (!File.Exists(watcherExe))
+            {
+                AppendLog("[!] 未找到托管启动器: " + watcherExe);
+                return;
+            }
+            string launchArgs = "--launch" + (_needsCdpRelaunch ? " --relaunch" : "") + " --exit-on-host-close --dir \"" + cleanDir + "\"";
+            try
+            {
+                ProcessStartInfo psi = new ProcessStartInfo();
+                psi.FileName = watcherExe;
+                psi.Arguments = launchArgs;
+                psi.WorkingDirectory = cleanDir;
+                psi.UseShellExecute = false;
+                psi.CreateNoWindow = true;
+                psi.WindowStyle = ProcessWindowStyle.Hidden;
+                Process.Start(psi);
+                _needsCdpRelaunch = false;
+                _statusHeadline.Text = "已通过托管启动器拉起 Antigravity";
+                _statusHeadline.ForeColor = Color.FromArgb(21, 128, 61);
+                _statusDetail.Text = "已附带 --remote-debugging-port=0 启动并拉起按需监听，关闭 Antigravity 后将自动退出。";
+                AppendLog("[✓] 已启动托管启动器: " + watcherExe + " " + launchArgs);
+            }
+            catch (Exception ex)
+            {
+                AppendLog("[!] 启动 Antigravity 失败: " + ex.Message);
+            }
         }
 
         private void AppendLog(string msg)
@@ -1076,17 +1353,43 @@ namespace AgyClaudeStyle.Installer
                     return;
                 }
                 await ExecuteUninstallAsync();
+                return;
             }
-            else
+
+            bool isInstalled = Directory.Exists(_activeInstallDir) && File.Exists(Path.Combine(_activeInstallDir, "agy-claude-style-watcher.exe"));
+            if (isInstalled)
             {
-                await ExecuteInstallAsync();
+                try
+                {
+                    AntigravityDetectResult ag = await Task.Run(() => InstallerCore.DetectAntigravityDesktop());
+                    int? port = CdpHelper.ReadPort(_opts.CdpPort);
+                    bool cdpReachable = false;
+                    if (port.HasValue)
+                    {
+                        try
+                        {
+                            List<CdpPageInfo> pages = await CdpHelper.ListPagesAsync(port.Value);
+                            cdpReachable = (pages != null && pages.Count > 0);
+                        }
+                        catch { }
+                    }
+                    if (!_busy)
+                    {
+                        _antigravityExe = ag.ExePath;
+                        _needsCdpRelaunch = ag.IsRunning && !cdpReachable;
+                        _launchAgBtn.Text = _needsCdpRelaunch ? "以 CDP 模式重启" : "以 CDP 模式启动";
+                        _launchAgBtn.Visible = !string.IsNullOrEmpty(_antigravityExe) && !cdpReachable;
+                        _launchAgBtn.Enabled = _launchAgBtn.Visible;
+                    }
+                }
+                catch { }
             }
         }
 
         private async Task ExecuteInstallAsync()
         {
             _busy = true;
-            SetButtonsEnabled(false);
+            SetControlsEnabled(false);
             try
             {
                 OperationResult res = await Task.Run(() => InstallerCore.RunInstall(_opts, UpdateProgress));
@@ -1097,11 +1400,13 @@ namespace AgyClaudeStyle.Installer
                 _statusHeadline.ForeColor = res.AntigravityRunningWithoutCdp ? Color.FromArgb(180, 83, 9) : Color.FromArgb(21, 128, 61);
                 _statusDetail.Text = res.Detail;
                 _metaLabel.Text = "配置: " + res.ConfigSummary;
+                _actionBtn.Text = "应用模式 / 升级";
                 _openDirBtn.Enabled = Directory.Exists(_activeInstallDir);
                 _uninstallBtn.Enabled = true;
                 _launchAgBtn.Text = res.AntigravityRunningWithoutCdp ? "以 CDP 模式重启" : "以 CDP 模式启动";
                 _launchAgBtn.Visible = (!string.IsNullOrEmpty(_antigravityExe) && res.InjectedPages.Count == 0);
                 _launchAgBtn.Enabled = _launchAgBtn.Visible;
+                _closeBtn.Text = "完成并关闭";
             }
             catch (Exception ex)
             {
@@ -1113,6 +1418,10 @@ namespace AgyClaudeStyle.Installer
             finally
             {
                 _busy = false;
+                _managedRadio.Enabled = true;
+                _daemonRadio.Enabled = true;
+                _desktopShortcutCheck.Enabled = true;
+                _actionBtn.Enabled = true;
                 _closeBtn.Enabled = true;
             }
         }
@@ -1133,7 +1442,7 @@ namespace AgyClaudeStyle.Installer
         private async Task ExecuteUninstallAsync()
         {
             _busy = true;
-            SetButtonsEnabled(false);
+            SetControlsEnabled(false);
             try
             {
                 OperationResult res = await Task.Run(() => InstallerCore.RunUninstall(_opts, UpdateProgress));
@@ -1142,6 +1451,7 @@ namespace AgyClaudeStyle.Installer
                 _statusHeadline.ForeColor = Color.FromArgb(3, 105, 161);
                 _statusDetail.Text = res.Detail;
                 _metaLabel.Text = "已清理目录: " + res.InstallDir;
+                _actionBtn.Text = "开始安装";
                 _openDirBtn.Enabled = false;
                 _uninstallBtn.Enabled = false;
                 _launchAgBtn.Visible = false;
@@ -1156,12 +1466,20 @@ namespace AgyClaudeStyle.Installer
             finally
             {
                 _busy = false;
+                _managedRadio.Enabled = true;
+                _daemonRadio.Enabled = true;
+                _desktopShortcutCheck.Enabled = true;
+                _actionBtn.Enabled = true;
                 _closeBtn.Enabled = true;
             }
         }
 
-        private void SetButtonsEnabled(bool enabled)
+        private void SetControlsEnabled(bool enabled)
         {
+            _managedRadio.Enabled = enabled;
+            _daemonRadio.Enabled = enabled;
+            _desktopShortcutCheck.Enabled = enabled;
+            _actionBtn.Enabled = enabled;
             _uninstallBtn.Enabled = enabled;
             _openDirBtn.Enabled = enabled;
             _launchAgBtn.Enabled = enabled;
@@ -1186,10 +1504,18 @@ namespace AgyClaudeStyle.Installer
                 string dir = Path.GetFullPath(string.IsNullOrEmpty(opts.InstallDir) ? InstallerCore.GetDefaultInstallDir() : opts.InstallDir).TrimEnd('\\', '/');
                 AntigravityDetectResult ag = InstallerCore.DetectAntigravityDesktop();
                 int? port = CdpHelper.ReadPort(opts.CdpPort);
+                string installedMode = InstallerCore.ReadInstalledMode(dir);
+                string runMode = InstallerCore.ResolveRunMode(opts, dir);
                 Dictionary<string, object> st = new Dictionary<string, object>(StringComparer.Ordinal);
                 st["installed"] = Directory.Exists(dir) && File.Exists(Path.Combine(dir, "agy-claude-style-watcher.exe"));
                 st["installDir"] = dir;
+                st["installedMode"] = installedMode;
+                st["runMode"] = runMode;
+                st["watcherStarted"] = InstallerCore.IsWatcherRunningInDir(dir);
                 st["startupShortcut"] = File.Exists(InstallerCore.GetStartupShortcutPath());
+                st["startMenuShortcut"] = File.Exists(InstallerCore.GetStartMenuLauncherShortcutPath());
+                st["desktopShortcut"] = File.Exists(InstallerCore.GetDesktopLauncherShortcutPath());
+                st["launcherShortcut"] = File.Exists(Path.Combine(dir, "Antigravity (AGY Claude Style).lnk"));
                 st["antigravityExe"] = ag.ExePath;
                 st["antigravityVersion"] = ag.Version;
                 st["antigravityRunning"] = ag.IsRunning;
@@ -1253,6 +1579,44 @@ namespace AgyClaudeStyle.Installer
                 else if (a == "--status") opts.StatusOnly = true;
                 else if (a == "--no-autostart") opts.NoAutostart = true;
                 else if (a == "--no-kill-legacy") opts.NoKillLegacy = true;
+                else if (a == "--managed")
+                {
+                    opts.RunMode = "managed";
+                    opts.ModeExplicit = true;
+                }
+                else if (a == "--daemon")
+                {
+                    opts.RunMode = "daemon";
+                    opts.ModeExplicit = true;
+                }
+                else if (a == "--mode" && i + 1 < args.Length)
+                {
+                    string m = InstallerCore.NormalizeRunMode(args[++i]);
+                    if (m != null)
+                    {
+                        opts.RunMode = m;
+                        opts.ModeExplicit = true;
+                    }
+                }
+                else if (a.StartsWith("--mode=", StringComparison.OrdinalIgnoreCase))
+                {
+                    string m = InstallerCore.NormalizeRunMode(a.Substring("--mode=".Length));
+                    if (m != null)
+                    {
+                        opts.RunMode = m;
+                        opts.ModeExplicit = true;
+                    }
+                }
+                else if (a == "--desktop-shortcut")
+                {
+                    opts.DesktopShortcut = true;
+                    opts.NoDesktopShortcut = false;
+                }
+                else if (a == "--no-desktop-shortcut")
+                {
+                    opts.DesktopShortcut = false;
+                    opts.NoDesktopShortcut = true;
+                }
                 else if (a == "--install-dir" && i + 1 < args.Length) opts.InstallDir = args[++i];
                 else if (a == "--cdp-port" && i + 1 < args.Length)
                 {
@@ -1270,6 +1634,11 @@ namespace AgyClaudeStyle.Installer
             Dictionary<string, object> d = new Dictionary<string, object>(StringComparer.Ordinal);
             d["ok"] = res.Ok;
             d["mode"] = res.Mode;
+            d["runMode"] = res.RunMode;
+            d["watcherStarted"] = res.WatcherStarted;
+            d["launcherShortcut"] = res.LauncherShortcutPath;
+            d["desktopShortcut"] = res.DesktopShortcutPath;
+            d["startupShortcut"] = res.StartupShortcutActive;
             d["headline"] = res.Headline;
             d["detail"] = res.Detail;
             d["installDir"] = res.InstallDir;
