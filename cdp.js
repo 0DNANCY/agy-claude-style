@@ -723,7 +723,11 @@ function normalizePathForCompare(p, targetPlatform = process.platform) {
   if (!p || typeof p !== 'string') return '';
   const pathMod = targetPlatform === 'win32' ? path.win32 : path.posix;
   let cleaned = pathMod.normalize(p.replace(/[\\\/]+$/, '') || p);
-  if (targetPlatform === 'win32') cleaned = cleaned.toLowerCase();
+  if (targetPlatform === 'darwin') {
+    cleaned = cleaned.replace(/^\/private(?=\/(?:var|tmp|etc)(?:\/|$))/, '');
+  } else if (targetPlatform === 'win32') {
+    cleaned = cleaned.toLowerCase();
+  }
   return cleaned;
 }
 
@@ -907,7 +911,11 @@ function evaluateWatcherOwnership(rawInfo, targetDir = __dirname, targetPlatform
   }
 
   const normRest = targetPlatform === 'win32' ? rest.toLowerCase() : rest;
-  const unquotedRest = normRest.replace(/^["']/, '');
+  const rawUnquotedRest = normRest.replace(/^["']/, '');
+  const unquotedRest =
+    targetPlatform === 'darwin'
+      ? rawUnquotedRest.replace(/^\/private(?=\/(?:var|tmp|etc)(?:\/|\s|"|'|$))/, '')
+      : rawUnquotedRest;
   if (unquotedRest.startsWith(expectedScript)) {
     const nextChar = unquotedRest[expectedScript.length];
     if (!nextChar || /[\s"']/.test(nextChar)) {

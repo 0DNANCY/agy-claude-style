@@ -255,6 +255,8 @@ function createMockCdpServer() {
     },
     async close() {
       for (const s of sockets) s.destroy();
+      if (!server.listening) return;
+      if (typeof server.closeAllConnections === 'function') server.closeAllConnections();
       await new Promise((resolve) => server.close(resolve));
     },
   };

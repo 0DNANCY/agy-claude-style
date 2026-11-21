@@ -353,6 +353,8 @@ function createMockCdpServer() {
     },
     async close() {
       for (const s of sockets) s.destroy();
+      if (!server.listening) return;
+      if (typeof server.closeAllConnections === 'function') server.closeAllConnections();
       await new Promise((resolve) => server.close(resolve));
     },
   };
@@ -417,6 +419,10 @@ test('CdpClient.swift defines defaultStartupGraceSeconds, activateAntigravityApp
   assert.ok(
     cdpSwift.includes('hasStandaloneFlag(cmd, "--watch") || hasStandaloneFlag(cmd, "--managed")'),
     'CdpClient.swift evaluates --managed watcher ownership equivalently to --watch'
+  );
+  assert.ok(
+    cdpSwift.includes('"/private/var", "/private/tmp", "/private/etc"'),
+    'CdpClient.swift canonicalizes macOS /private symlinks in normalizePath & evaluateWatcherOwnership'
   );
   for (const action of [
     'already-cdp',
@@ -688,20 +694,23 @@ test(
       assert.deepEqual(onceResult.pages, ['Antigravity']);
 
       // 4. Test Runtime.bindingCalled -> config.json update & hot-reload
+      const targetPalette = expectedCfgObj.palette === 'claude' ? 'obsidian' : 'claude';
       const beforeCallCount = mockCdp.getCalls().length;
       mockCdp.emitBindingCalled(cdp.SETTING_BINDING, { key: 'palette', value: 'hacker-invalid' });
-      mockCdp.emitBindingCalled(cdp.SETTING_BINDING, { key: 'palette', value: 'claude' });
+      mockCdp.emitBindingCalled(cdp.SETTING_BINDING, { key: 'palette', value: targetPalette });
 
       const updatedCfg = await waitFor(() => {
         const parsed = JSON.parse(fs.readFileSync(path.join(installDir, 'config.json'), 'utf8'));
-        return parsed.palette === 'claude' ? parsed : null;
+        return parsed.palette === targetPalette ? parsed : null;
       });
-      assert.equal(updatedCfg.palette, 'claude');
+      assert.equal(updatedCfg.palette, targetPalette);
 
       // Confirm hot-reload fired on watcher without re-sending full ~1.4MB bundle over Page.addScriptToEvaluateOnNewDocument
       await waitFor(() => {
         const newer = mockCdp.getCalls().slice(beforeCallCount);
-        return newer.some((c) => c.method === 'Page.removeScriptToEvaluateOnNewDocument') ? true : null;
+        const hasRm = newer.some((c) => c.method === 'Page.removeScriptToEvaluateOnNewDocument');
+        const hasAdd = newer.some((c) => c.method === 'Page.addScriptToEvaluateOnNewDocument');
+        return hasRm && hasAdd ? true : null;
       });
       const reloadCalls = mockCdp.getCalls().slice(beforeCallCount);
       const reloadAddCalls = reloadCalls.filter((c) => c.method === 'Page.addScriptToEvaluateOnNewDocument');
@@ -744,7 +753,7 @@ test(
       assert.equal(upgradeResult.ok, true);
       assert.equal(upgradeResult.preservedExistingConfig, true);
       const cfgAfterUpgrade = JSON.parse(fs.readFileSync(path.join(installDir, 'config.json'), 'utf8'));
-      assert.equal(cfgAfterUpgrade.palette, 'claude');
+      assert.equal(cfgAfterUpgrade.palette, targetPalette);
 
       // Close mockCdp -> managed watcher must exit automatically & clean .watch.pid
       await mockCdp.close();

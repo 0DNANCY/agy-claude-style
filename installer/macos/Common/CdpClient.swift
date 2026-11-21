@@ -636,9 +636,15 @@ enum CdpHelper {
     }
 
     static func normalizePath(_ p: String) -> String {
-        let resolved = URL(fileURLWithPath: p).standardizedFileURL.path
+        var resolved = URL(fileURLWithPath: p).standardizedFileURL.path
         if resolved.count > 1 && resolved.hasSuffix("/") {
-            return String(resolved.dropLast())
+            resolved = String(resolved.dropLast())
+        }
+        for prefix in ["/private/var", "/private/tmp", "/private/etc"] {
+            if resolved == prefix || resolved.hasPrefix(prefix + "/") {
+                resolved = String(resolved.dropFirst("/private".count))
+                break
+            }
         }
         return resolved
     }
@@ -796,7 +802,17 @@ enum CdpHelper {
         }
 
         let expectedScript = normalizePath((normDir as NSString).appendingPathComponent("inject.js"))
-        let unquotedRest = rest.hasPrefix("\"") || rest.hasPrefix("'") ? String(rest.dropFirst()) : rest
+        let rawUnquotedRest = rest.hasPrefix("\"") || rest.hasPrefix("'") ? String(rest.dropFirst()) : rest
+        var unquotedRest = rawUnquotedRest
+        for prefix in ["/private/var", "/private/tmp", "/private/etc"] {
+            if rawUnquotedRest.hasPrefix(prefix) {
+                let afterPrefix = rawUnquotedRest.dropFirst(prefix.count)
+                if afterPrefix.isEmpty || afterPrefix.first == "/" || afterPrefix.first == " " || afterPrefix.first == "\t" || afterPrefix.first == "\"" || afterPrefix.first == "'" {
+                    unquotedRest = String(rawUnquotedRest.dropFirst("/private".count))
+                }
+                break
+            }
+        }
         if unquotedRest.hasPrefix(expectedScript) {
             let after = unquotedRest.dropFirst(expectedScript.count)
             if after.isEmpty || after.first == " " || after.first == "\t" || after.first == "\"" || after.first == "'" {
@@ -804,7 +820,9 @@ enum CdpHelper {
             }
         }
         let firstArg = unquotedRest.split(whereSeparator: { $0.isWhitespace || $0 == "\"" || $0 == "'" }).first.map(String.init) ?? ""
-        if firstArg.hasPrefix("/") { return .foreign }
+        if firstArg.hasPrefix("/") {
+            return normalizePath(firstArg) == expectedScript ? .owned : .foreign
+        }
         return (firstArg as NSString).lastPathComponent.lowercased() == "inject.js" ? .unknown : .foreign
     }
 

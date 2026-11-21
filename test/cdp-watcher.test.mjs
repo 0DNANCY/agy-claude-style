@@ -157,6 +157,8 @@ function createMockCdpServer({ evaluateDelayMs = 0 } = {}) {
     },
     async close() {
       for (const s of sockets) s.destroy();
+      if (!server.listening) return;
+      if (typeof server.closeAllConnections === 'function') server.closeAllConnections();
       await new Promise((resolve) => server.close(resolve));
     },
   };
@@ -612,6 +614,8 @@ test('duplicate watcher handling: --managed exits 0 cleanly without clobbering, 
   const dir = stageTempRuntimeDir();
   const mock = createMockCdpServer();
   let first = null;
+  let dupPlain = null;
+  let dupManaged = null;
   let replacer = null;
   try {
     const port = await mock.start();
@@ -631,7 +635,7 @@ test('duplicate watcher handling: --managed exits 0 cleanly without clobbering, 
     }, 5000, 50);
 
     // 1. Plain duplicate --watch exits 1 without overwriting .watch.pid
-    const dupPlain = spawn(process.execPath, [path.join(dir, 'inject.js'), '--watch'], {
+    dupPlain = spawn(process.execPath, [path.join(dir, 'inject.js'), '--watch'], {
       cwd: dir,
       env: { ...process.env, AG_CDP_PORT: String(port) },
       stdio: 'ignore',
@@ -645,7 +649,7 @@ test('duplicate watcher handling: --managed exits 0 cleanly without clobbering, 
     assert.equal(first.exitCode, null);
 
     // 2. Duplicate --managed waits briefly and exits 0 cleanly without clobbering .watch.pid
-    const dupManaged = spawn(process.execPath, [path.join(dir, 'inject.js'), '--managed'], {
+    dupManaged = spawn(process.execPath, [path.join(dir, 'inject.js'), '--managed'], {
       cwd: dir,
       env: { ...process.env, AG_CDP_PORT: String(port) },
       stdio: 'ignore',
@@ -678,11 +682,10 @@ test('duplicate watcher handling: --managed exits 0 cleanly without clobbering, 
     }, 5000, 50);
     assert.equal(replacer.exitCode, null);
   } finally {
-    if (first && first.exitCode === null) {
-      try { first.kill('SIGKILL'); } catch {}
-    }
-    if (replacer && replacer.exitCode === null) {
-      try { replacer.kill('SIGKILL'); } catch {}
+    for (const proc of [first, dupPlain, dupManaged, replacer]) {
+      if (proc && proc.exitCode === null) {
+        try { proc.kill('SIGKILL'); } catch {}
+      }
     }
     try { await mock.close(); } catch {}
     await new Promise((r) => setTimeout(r, 100));
@@ -1274,6 +1277,55 @@ test('evaluateWatcherOwnership classifies --managed node watcher and native --la
       'win32'
     ),
     'owned'
+  );
+
+  // macOS /var <-> /private/var and /tmp <-> /private/tmp symlink canonicalization (including spaces)
+  const varSpaceDir = '/var/folders/ab/My Space Dir/agy-cs';
+  const privVarSpaceDir = `/private${varSpaceDir}`;
+  assert.equal(
+    cdp.evaluateWatcherOwnership(
+      { cmd: `/usr/local/bin/node "${varSpaceDir}/inject.js" --watch`, args: null, exePath: '/usr/local/bin/node', cwd: null },
+      privVarSpaceDir,
+      'darwin'
+    ),
+    'owned'
+  );
+  assert.equal(
+    cdp.evaluateWatcherOwnership(
+      { cmd: `/usr/local/bin/node "${privVarSpaceDir}/inject.js" --managed`, args: null, exePath: '/usr/local/bin/node', cwd: null },
+      varSpaceDir,
+      'darwin'
+    ),
+    'owned'
+  );
+  assert.equal(
+    cdp.evaluateWatcherOwnership(
+      { cmd: `/usr/local/bin/node "/private/tmp/agy cs/inject.js" --watch`, args: null, exePath: null, cwd: null },
+      '/tmp/agy cs',
+      'darwin'
+    ),
+    'owned'
+  );
+  assert.equal(
+    cdp.evaluateWatcherOwnership(
+      {
+        cmd: `/private/var/folders/ab/My Space Dir/agy-cs/agy-claude-style-watcher --launch --dir "/private/var/folders/ab/My Space Dir/agy-cs"`,
+        args: null,
+        exePath: '/var/folders/ab/My Space Dir/agy-cs/agy-claude-style-watcher',
+        cwd: null,
+      },
+      varSpaceDir,
+      'darwin'
+    ),
+    'owned'
+  );
+  assert.equal(
+    cdp.evaluateWatcherOwnership(
+      { cmd: `/usr/local/bin/node "/private/var/folders/other/inject.js" --watch`, args: null, exePath: null, cwd: null },
+      varSpaceDir,
+      'darwin'
+    ),
+    'foreign'
   );
 });
 
