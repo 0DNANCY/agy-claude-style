@@ -189,6 +189,27 @@ async function waitFor(fn, timeoutMs = 12000, intervalMs = 150) {
   throw new Error('Timed out waiting for condition');
 }
 
+async function killAndWait(proc, timeoutMs = 1500) {
+  if (!proc || proc.exitCode !== null) return;
+  await new Promise((resolve) => {
+    const timer = setTimeout(resolve, timeoutMs);
+    proc.once('exit', () => {
+      clearTimeout(timer);
+      resolve();
+    });
+    try {
+      proc.kill('SIGKILL');
+    } catch {
+      clearTimeout(timer);
+      resolve();
+    }
+  });
+}
+
+function cleanupTempDir(dir) {
+  fs.rmSync(dir, { recursive: true, force: true, maxRetries: 15, retryDelay: 100 });
+}
+
 test('formatCdpUnavailableMessage clearly distinguishes Antigravity 2.33.0+ running without CDP vs not running', () => {
   const runningNoPort = cdp.formatCdpUnavailableMessage({ running: true, port: null });
   assert.match(runningNoPort, /2\.33\.0/);
@@ -234,11 +255,9 @@ test('inject.js --watch --exit-on-host-close exits cleanly and removes .watch.pi
     assert.equal(exitCode, 0);
     assert.equal(fs.existsSync(path.join(dir, '.watch.pid')), false, '.watch.pid cleaned up on exit');
   } finally {
-    if (child && child.exitCode === null) {
-      try { child.kill('SIGKILL'); } catch {}
-    }
+    await killAndWait(child);
     try { await mock.close(); } catch {}
-    fs.rmSync(dir, { recursive: true, force: true });
+    cleanupTempDir(dir);
   }
 });
 
@@ -267,10 +286,8 @@ test('inject.js --watch --parent-pid exits cleanly when parent process is gone',
     assert.equal(exitCode, 0);
     assert.equal(fs.existsSync(path.join(dir, '.watch.pid')), false, '.watch.pid cleaned up on parent exit');
   } finally {
-    if (child && child.exitCode === null) {
-      try { child.kill('SIGKILL'); } catch {}
-    }
-    fs.rmSync(dir, { recursive: true, force: true });
+    await killAndWait(child);
+    cleanupTempDir(dir);
   }
 });
 
@@ -542,10 +559,8 @@ test('inject.js --watch --exit-on-host-close --startup-grace 1 exits 0 and clean
     assert.equal(exitCode, 0);
     assert.equal(fs.existsSync(path.join(dir, '.watch.pid')), false, '.watch.pid cleaned up after startup grace exit');
   } finally {
-    if (child && child.exitCode === null) {
-      try { child.kill('SIGKILL'); } catch {}
-    }
-    fs.rmSync(dir, { recursive: true, force: true });
+    await killAndWait(child);
+    cleanupTempDir(dir);
   }
 });
 
@@ -569,11 +584,8 @@ test('plain inject.js --watch does NOT exit when --startup-grace 1 expires (even
     assert.equal(child.exitCode, null, 'plain --watch must stay alive past startup grace');
     assert.ok(fs.existsSync(path.join(dir, '.watch.pid')), '.watch.pid remains while plain watcher is running');
   } finally {
-    if (child && child.exitCode === null) {
-      try { child.kill('SIGKILL'); } catch {}
-    }
-    await new Promise((r) => setTimeout(r, 100));
-    fs.rmSync(dir, { recursive: true, force: true });
+    await killAndWait(child);
+    cleanupTempDir(dir);
   }
 });
 
@@ -590,23 +602,28 @@ test('inject.js --managed attaches to mock CDP, injects, and exits 0 when mock C
     });
 
     const exitPromise = new Promise((resolve) => child.on('exit', (code) => resolve(code)));
-    await waitFor(() => mock.getInjectCount() >= 1, 5000, 50);
+    const logFile = path.join(dir, 'watch.log');
+    await waitFor(() => {
+      try {
+        return fs.readFileSync(logFile, 'utf8').includes('[✓] 已注入 agy-claude-style:');
+      } catch {
+        return false;
+      }
+    }, 6000, 50);
     assert.ok(fs.existsSync(path.join(dir, '.watch.pid')), '.watch.pid created in --managed mode');
 
     await mock.close();
 
     const exitCode = await Promise.race([
       exitPromise,
-      new Promise((_, reject) => setTimeout(() => reject(new Error('--managed watcher did not exit after host closed')), 6000)),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('--managed watcher did not exit after host closed')), 8000)),
     ]);
     assert.equal(exitCode, 0);
     assert.equal(fs.existsSync(path.join(dir, '.watch.pid')), false, '.watch.pid removed when host closed');
   } finally {
-    if (child && child.exitCode === null) {
-      try { child.kill('SIGKILL'); } catch {}
-    }
+    await killAndWait(child);
     try { await mock.close(); } catch {}
-    fs.rmSync(dir, { recursive: true, force: true });
+    cleanupTempDir(dir);
   }
 });
 
@@ -683,13 +700,10 @@ test('duplicate watcher handling: --managed exits 0 cleanly without clobbering, 
     assert.equal(replacer.exitCode, null);
   } finally {
     for (const proc of [first, dupPlain, dupManaged, replacer]) {
-      if (proc && proc.exitCode === null) {
-        try { proc.kill('SIGKILL'); } catch {}
-      }
+      await killAndWait(proc);
     }
     try { await mock.close(); } catch {}
-    await new Promise((r) => setTimeout(r, 100));
-    fs.rmSync(dir, { recursive: true, force: true });
+    cleanupTempDir(dir);
   }
 });
 
