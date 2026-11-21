@@ -12,32 +12,8 @@ const __dirname = path.dirname(__filename);
 const ROOT_DIR = path.resolve(__dirname, '..');
 const cdp = require(path.join(ROOT_DIR, 'cdp.js'));
 
-const VALIDATORS = {
-  language: ['zh-CN', 'zh-TW', 'yue', 'en', 'ja'],
-  palette: ['obsidian', 'claude', 'host'],
-  homeLayout: ['studio', 'classic', 'off'],
-  homeRipple: 'boolean',
-  composerRestyle: 'boolean',
-  mascot: ['crab', 'off'],
-  logoInk: ['accent', 'foreground'],
-  inlineStats: 'boolean',
-  ringMode: ['context', 'quota'],
-  turnBadges: 'boolean',
-  hudTopBar: 'boolean',
-  hudBottomBar: 'boolean',
-  hudRimProgress: 'boolean',
-  hudFooterChip: 'boolean',
-  hudCompact: 'boolean',
-  effortSliderStyle: ['claude', 'chatgpt', 'liangwufeng'],
-  effortAccent: 'boolean',
-  performanceBackdrop: ['off', 'card', 'page'],
-  smoothCaret: 'boolean',
-  sidebarRestyle: 'boolean',
-  sidebarCompact: 'boolean',
-  placeholderStyle: ['studio', 'host'],
-  autoRelaunchWithCdp: 'boolean',
-  exitOnHostClose: 'boolean',
-};
+// Single source of truth imported from cdp.js so installer manifests & inject.js stay aligned.
+const VALIDATORS = cdp.CONFIG_VALIDATORS;
 
 function normalizeVersion(version = cdp.PLUGIN_VERSION) {
   const raw = String(version || cdp.PLUGIN_VERSION).trim().replace(/^v/i, '');

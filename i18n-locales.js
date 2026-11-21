@@ -85,9 +85,10 @@
     weeklyLabel: ['周配额', '週配額', '週配額', 'Weekly', '週間'],
     popoverTitle: ['上下文窗口与 Token 监控', '上下文視窗與 Token 監控', '上下文視窗同 Token 監控', 'Context & Token HUD', 'コンテキスト＆Token HUD'],
     compactBtnTitle: ['向输入框填入 /compact 压缩上下文', '向輸入框填入 /compact 壓縮上下文', '填入 /compact 到輸入框壓縮上下文', 'Fill /compact into composer', '入力欄に /compact を入力して圧縮'],
-    copyBtnTitle: ['复制完整遥测报告', '複製完整遙測報告', '複製完整遙測報告', 'Copy telemetry report', 'テレメトリレポートをコピー'],
+    copyBtnTitle: ['复制遥测报告摘要', '複製遙測報告摘要', '複製遙測報告摘要', 'Copy telemetry report summary', 'テレメトリレポート概要をコピー'],
     copyBtnLabel: ['复制报告', '複製報告', '複製報告', 'Copy', 'コピー'],
     copiedBtnLabel: ['✓ 已复制', '✓ 已複製', '✓ 複製咗', '✓ Copied', '✓ コピー済み'],
+    actionFailedLabel: ['✕ 失败', '✕ 失敗', '✕ 失敗', '✕ Failed', '✕ 失敗'],
     refreshBtnTitle: ['立即刷新遥测与配额', '立即重新整理遙測與配額', '即刻重新整理數據同配額', 'Refresh telemetry', 'データを更新'],
     closeBtnTitle: ['关闭', '關閉', '關閉', 'Close', '閉じる'],
     remAvailLabel: ['剩余可用', '剩餘可用', '剩低可用', 'Remaining', '残り利用可能'],
@@ -324,6 +325,16 @@
         : lang === 'ja'
         ? `入力中の下書き (${n} 文字)`
         : `Live Draft (${n} chars)`;
+    out.lowCtxBanner = (pctRound) =>
+      lang === 'zh-CN'
+        ? `上下文余量仅剩 ${pctRound}%，点击填入 /compact 压缩对话`
+        : lang === 'zh-TW'
+        ? `上下文餘量僅剩 ${pctRound}%，點擊填入 /compact 壓縮對話`
+        : lang === 'yue'
+        ? `上下文剩低 ${pctRound}%，撳呢度填入 /compact 壓縮對話`
+        : lang === 'ja'
+        ? `コンテキスト残量 ${pctRound}% — クリックして /compact を入力`
+        : `Low context (${pctRound}% free) — click to fill /compact`;
     out.subagentsHeading = (cnt, calls, tokFmt) =>
       lang === 'zh-CN'
         ? `子代理消耗 (${cnt} 个 · ${calls} 次调用 · 累计 ${tokFmt})`

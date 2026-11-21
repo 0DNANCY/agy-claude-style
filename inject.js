@@ -10,22 +10,13 @@
 //   Options: --exit-on-host-close, --startup-grace <sec> (default 90s), --poll-ms <ms>, --replace
 const fs = require('fs');
 const path = require('path');
+let cdpApi = require('./cdp');
 const {
   PID_FILE,
   CONFIG_FILE,
   SETTING_BINDING,
   STARTUP_GRACE_SECONDS,
-  readConfig,
-  readPort,
-  listPages,
-  detectAntigravityProcess,
-  hasRemoteDebuggingFlag,
-  relaunchAntigravityWithCdp,
-  ensureAntigravityWithCdp,
-  formatCdpUnavailableMessage,
-  CdpSession,
-  buildInjectExpression,
-} = require('./cdp');
+} = cdpApi;
 
 const MANAGED = process.argv.includes('--managed');
 const LAUNCH = MANAGED || process.argv.includes('--launch');
@@ -87,58 +78,25 @@ function shortTitle(page) {
   return t.length > 60 ? t.slice(0, 57) + '...' : t;
 }
 
-function updateConfigSetting(key, value) {
-  const validators = {
-    language: (v) => v === 'zh-CN' || v === 'zh-TW' || v === 'yue' || v === 'en' || v === 'ja',
-    palette: (v) => v === 'obsidian' || v === 'claude' || v === 'host',
-    homeLayout: (v) => v === 'studio' || v === 'classic' || v === 'off',
-    homeRipple: (v) => typeof v === 'boolean',
-    composerRestyle: (v) => typeof v === 'boolean',
-    mascot: (v) => v === 'crab' || v === 'off',
-    logoInk: (v) => v === 'accent' || v === 'foreground',
-    inlineStats: (v) => typeof v === 'boolean',
-    ringMode: (v) => v === 'context' || v === 'quota',
-    turnBadges: (v) => typeof v === 'boolean',
-    hudTopBar: (v) => typeof v === 'boolean',
-    hudBottomBar: (v) => typeof v === 'boolean',
-    hudRimProgress: (v) => typeof v === 'boolean',
-    hudFooterChip: (v) => typeof v === 'boolean',
-    hudCompact: (v) => typeof v === 'boolean',
-    effortSliderStyle: (v) => v === 'claude' || v === 'chatgpt' || v === 'liangwufeng',
-    effortAccent: (v) => typeof v === 'boolean',
-    performanceBackdrop: (v) => v === 'off' || v === 'card' || v === 'page',
-    smoothCaret: (v) => typeof v === 'boolean',
-    sidebarRestyle: (v) => typeof v === 'boolean',
-    sidebarCompact: (v) => typeof v === 'boolean',
-    placeholderStyle: (v) => v === 'studio' || v === 'host',
-    autoRelaunchWithCdp: (v) => typeof v === 'boolean',
-    exitOnHostClose: (v) => typeof v === 'boolean',
-  };
-  if (!Object.prototype.hasOwnProperty.call(validators, key) || !validators[key](value)) return false;
-  const next = { ...readConfig(), [key]: value };
-  fs.writeFileSync(CONFIG_FILE, JSON.stringify(next, null, 2) + '\n');
-  return true;
-}
-
 async function injectOnce() {
-  const port = readPort();
+  const port = cdpApi.readPort();
   if (!port) {
-    const proc = detectAntigravityProcess();
-    throw new Error(formatCdpUnavailableMessage({ running: proc.running, port: null }));
+    const proc = cdpApi.detectAntigravityProcess();
+    throw new Error(cdpApi.formatCdpUnavailableMessage({ running: proc.running, port: null }));
   }
   let pages;
   try {
-    pages = await listPages(port);
+    pages = await cdpApi.listPages(port);
   } catch {
-    const proc = detectAntigravityProcess();
-    throw new Error(formatCdpUnavailableMessage({ running: proc.running, port }));
+    const proc = cdpApi.detectAntigravityProcess();
+    throw new Error(cdpApi.formatCdpUnavailableMessage({ running: proc.running, port }));
   }
   if (pages.length === 0) throw new Error('未找到 Antigravity 窗口页面');
 
   log(`[+] 调试端口 ${port}，发现 ${pages.length} 个窗口`);
-  const expr = buildInjectExpression();
+  const expr = cdpApi.buildInjectExpression();
   for (const page of pages) {
-    const session = await CdpSession.connect(page.webSocketDebuggerUrl);
+    const session = await cdpApi.CdpSession.connect(page.webSocketDebuggerUrl);
     try {
       const res = await session.evaluate(expr);
       log(`[✓] ${shortTitle(page)} (agy-claude-style ${res.version} · 状态: ${res.status})`);
@@ -150,8 +108,8 @@ async function injectOnce() {
 
 async function launchWithCdp({ autoRelaunchFromConfig = false } = {}) {
   const autoRelaunchWithCdp =
-    WATCH || autoRelaunchFromConfig ? readConfig().autoRelaunchWithCdp === true : false;
-  const res = await ensureAntigravityWithCdp({
+    WATCH || autoRelaunchFromConfig ? cdpApi.readConfig().autoRelaunchWithCdp === true : false;
+  const res = await cdpApi.ensureAntigravityWithCdp({
     port: 0,
     relaunch: RELAUNCH,
     autoRelaunchWithCdp,
@@ -206,41 +164,130 @@ function sleepSync(ms) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
-function acquireLock({ allowGracefulDuplicateExit = false } = {}) {
-  try {
-    const pid = parseInt(fs.readFileSync(PID_FILE, 'utf8'), 10);
-    if (pid && pid !== process.pid && isAlive(pid)) {
-      if (REPLACE_EXISTING) {
-        try {
-          process.kill(pid, 'SIGTERM');
-        } catch {}
-        const deadline = Date.now() + 2000;
-        while (Date.now() < deadline && isAlive(pid)) {
-          sleepSync(50);
-        }
-        if (isAlive(pid)) {
-          try {
-            process.kill(pid, 'SIGKILL');
-          } catch {}
-        }
-      } else if (allowGracefulDuplicateExit) {
-        const deadline = Date.now() + 1500;
-        while (Date.now() < deadline && isAlive(pid)) {
-          sleepSync(100);
-        }
-        if (isAlive(pid)) {
-          log(`[*] 监听进程已在运行 (PID ${pid})，跳过重复启动`);
-          return false;
-        }
-      } else {
-        console.error(`[!] 守护进程已在运行 (PID ${pid})。如需重启请先运行 remove.sh / remove.bat 或附加 --replace`);
-        process.exit(1);
-      }
+function acquireLock(opts = {}) {
+  const pidFile = opts.pidFile || PID_FILE;
+  const targetDir = opts.targetDir || __dirname;
+  const replaceExisting = opts.replaceExisting !== undefined ? opts.replaceExisting : REPLACE_EXISTING;
+  const allowGracefulDuplicateExit = Boolean(opts.allowGracefulDuplicateExit);
+  const duplicateWaitMs = Number.isInteger(opts.duplicateWaitMs) && opts.duplicateWaitMs >= 0 ? opts.duplicateWaitMs : 1500;
+  const killFn = typeof opts.killFn === 'function' ? opts.killFn : (p, sig) => process.kill(p, sig);
+  const exitFn = typeof opts.exitFn === 'function' ? opts.exitFn : (code) => process.exit(code);
+  const aliveCheck = (p) => {
+    try {
+      killFn(p, 0);
+      return true;
+    } catch (err) {
+      return Boolean(err && err.code === 'EPERM');
     }
-  } catch {}
-  fs.writeFileSync(PID_FILE, String(process.pid));
-  process.on('exit', releasePidFile);
-  return true;
+  };
+
+  const decision = cdpApi.resolveExistingWatchPidAction(pidFile, targetDir, {
+    selfPid: opts.selfPid,
+    killFn,
+    inspectFn: opts.inspectFn,
+    platform: opts.platform,
+  });
+
+  if (decision.action === 'refuse') {
+    const errMsg = `[!] 无法验证 .watch.pid 进程归属 (PID ${decision.pid})，出于安全策略拒绝终止或覆盖锁文件`;
+    console.error(errMsg);
+    return exitFn(1, { blocked: true, reason: decision.reason || 'unknown', pid: decision.pid });
+  }
+
+  if (decision.action === 'owned') {
+    const pid = decision.pid;
+    if (replaceExisting) {
+      try {
+        killFn(pid, 'SIGTERM');
+      } catch {}
+      const deadline = Date.now() + 2000;
+      while (Date.now() < deadline && aliveCheck(pid)) {
+        sleepSync(50);
+      }
+      if (aliveCheck(pid)) {
+        try {
+          killFn(pid, 'SIGKILL');
+        } catch {}
+      }
+    } else if (allowGracefulDuplicateExit) {
+      const deadline = Date.now() + duplicateWaitMs;
+      while (Date.now() < deadline && aliveCheck(pid)) {
+        sleepSync(100);
+      }
+      if (aliveCheck(pid)) {
+        log(`[*] 监听进程已在运行 (PID ${pid})，跳过重复启动`);
+        return { acquired: false, duplicate: true, pid };
+      }
+      const reDecision = cdpApi.resolveExistingWatchPidAction(pidFile, targetDir, {
+        selfPid: opts.selfPid,
+        killFn,
+        inspectFn: opts.inspectFn,
+        platform: opts.platform,
+      });
+      if (reDecision.action === 'refuse') {
+        const errMsg = `[!] 无法验证 .watch.pid 进程归属 (PID ${reDecision.pid})，出于安全策略拒绝终止或覆盖锁文件`;
+        console.error(errMsg);
+        return exitFn(1, { blocked: true, reason: reDecision.reason || 'unknown', pid: reDecision.pid });
+      }
+      if (reDecision.action === 'owned') {
+        log(`[*] 监听进程已在运行 (PID ${reDecision.pid})，跳过重复启动`);
+        return { acquired: false, duplicate: true, pid: reDecision.pid };
+      }
+    } else {
+      console.error(`[!] 守护进程已在运行 (PID ${pid})。如需重启请先运行 remove.sh / remove.bat 或附加 --replace`);
+      return exitFn(1, { blocked: true, reason: 'already-running', pid });
+    }
+  }
+
+  // Only reached when action is 'write', 'clear' (dead/foreign/invalid), or 'owned' resolved via --replace / prior exit.
+  cdpApi.writeFileAtomic(pidFile, String(opts.selfPid || process.pid));
+  if (!opts.skipExitHook) {
+    process.on('exit', releasePidFile);
+  }
+  return { acquired: true, replaced: decision.action === 'owned', priorStatus: decision.status };
+}
+
+async function applyPageScripts(entry, { expr, configExpr, refreshOnly = false } = {}) {
+  if (refreshOnly && configExpr && entry.bootstrapScriptId) {
+    if (entry.configScriptId) {
+      await entry.session
+        .send('Page.removeScriptToEvaluateOnNewDocument', { identifier: entry.configScriptId })
+        .catch(() => {});
+      entry.configScriptId = null;
+    }
+    const { identifier } = await entry.session.send('Page.addScriptToEvaluateOnNewDocument', {
+      source: configExpr,
+    });
+    entry.configScriptId = identifier;
+    const fastRes = await entry.session.evaluate(configExpr).catch(() => null);
+    if (fastRes && fastRes.status === 'refreshed') return fastRes;
+  }
+
+  if (entry.configScriptId) {
+    await entry.session
+      .send('Page.removeScriptToEvaluateOnNewDocument', { identifier: entry.configScriptId })
+      .catch(() => {});
+    entry.configScriptId = null;
+  }
+  if (entry.bootstrapScriptId) {
+    await entry.session
+      .send('Page.removeScriptToEvaluateOnNewDocument', { identifier: entry.bootstrapScriptId })
+      .catch(() => {});
+    entry.bootstrapScriptId = null;
+  }
+  const { identifier: bootstrapId } = await entry.session.send('Page.addScriptToEvaluateOnNewDocument', {
+    source: expr,
+  });
+  entry.bootstrapScriptId = bootstrapId;
+  if (configExpr) {
+    const { identifier: cfgId } = await entry.session.send('Page.addScriptToEvaluateOnNewDocument', {
+      source: configExpr,
+    });
+    entry.configScriptId = cfgId;
+    // Apply latest config override before evaluating (possibly cached) full bootstrap expr.
+    await entry.session.evaluate(configExpr).catch(() => null);
+  }
+  return await entry.session.evaluate(expr);
 }
 
 async function watch({
@@ -248,7 +295,8 @@ async function watch({
   startupGraceEnabled = false,
   allowGracefulDuplicateExit = false,
 } = {}) {
-  if (!acquireLock({ allowGracefulDuplicateExit })) return;
+  const lockRes = acquireLock({ allowGracefulDuplicateExit });
+  if (!lockRes || !lockRes.acquired) return;
   try {
     fs.writeFileSync(LOG_FILE, '');
   } catch {}
@@ -261,8 +309,11 @@ async function watch({
   const effectiveExitOnCloseFlag = EXIT_ON_HOST_CLOSE_FLAG || forceExitOnHostClose;
 
   const attached = new Map();
-  let currentConfig = readConfig();
-  let expr = buildInjectExpression(currentConfig);
+  let currentConfig = cdpApi.readConfig();
+  let currentCodeHash = cdpApi.computeHash(cdpApi.readRuntimeBundle());
+  let currentCssHash = cdpApi.computeHash(cdpApi.readCss());
+  let expr = cdpApi.buildInjectExpression(currentConfig);
+  let configExpr = cdpApi.buildConfigScriptExpression(currentConfig, currentCodeHash);
   let shuttingDown = false;
   let tickTimer = null;
   let reloadTimer = null;
@@ -328,24 +379,15 @@ async function watch({
     } catch {}
   }
 
-  async function apply(entry) {
-    if (entry.scriptId) {
-      await entry.session
-        .send('Page.removeScriptToEvaluateOnNewDocument', { identifier: entry.scriptId })
-        .catch(() => {});
-    }
-    const { identifier } = await entry.session.send('Page.addScriptToEvaluateOnNewDocument', {
-      source: expr,
-    });
-    entry.scriptId = identifier;
-    return await entry.session.evaluate(expr);
+  async function apply(entry, opts = {}) {
+    return applyPageScripts(entry, { expr, configExpr, refreshOnly: opts.refreshOnly });
   }
 
   async function attach(page) {
     attached.set(page.id, null);
     try {
-      const session = await CdpSession.connect(page.webSocketDebuggerUrl);
-      const entry = { session, scriptId: null };
+      const session = await cdpApi.CdpSession.connect(page.webSocketDebuggerUrl);
+      const entry = { session, bootstrapScriptId: null, configScriptId: null };
       attached.set(page.id, entry);
       session.onClose = () => {
         attached.delete(page.id);
@@ -356,8 +398,8 @@ async function watch({
         if (name !== SETTING_BINDING) return;
         try {
           const { key, value } = JSON.parse(payload);
-          if (updateConfigSetting(key, value)) {
-            currentConfig = readConfig();
+          if (cdpApi.updateConfigSetting(key, value)) {
+            currentConfig = cdpApi.readConfig();
             log(`[⚙] 设置已保存: ${key} = ${JSON.stringify(value)}`);
           }
         } catch {}
@@ -394,11 +436,11 @@ async function watch({
     busy = true;
     let nextDelayMs = POLL_INTERVAL_MS;
     try {
-      const port = readPort();
+      const port = cdpApi.readPort();
       let pages = null;
       if (port) {
         try {
-          pages = await listPages(port);
+          pages = await cdpApi.listPages(port);
         } catch {
           pages = null;
         }
@@ -422,7 +464,7 @@ async function watch({
           lastPort = null;
         }
 
-        const proc = process.env.AG_CDP_PORT ? { running: false, pids: [] } : detectAntigravityProcess();
+        const proc = process.env.AG_CDP_PORT ? { running: false, pids: [] } : cdpApi.detectAntigravityProcess();
         const shouldExitOnClose = effectiveExitOnCloseFlag || currentConfig.exitOnHostClose === true;
         if (shouldExitOnClose && hadAttachedWindow && attached.size === 0 && consecutivePortFailures >= 3 && !proc.running) {
           shutdown(0, 'Antigravity 宿主已关闭');
@@ -446,7 +488,7 @@ async function watch({
           const pidSig = proc.pids.slice().sort((a, b) => a - b).join(',');
           if (noCdpRunningTicks >= 3) {
             if (cdpFlagCache.pidSig !== pidSig) {
-              cdpFlagCache = { pidSig, hasFlag: hasRemoteDebuggingFlag(proc.pids) };
+              cdpFlagCache = { pidSig, hasFlag: cdpApi.hasRemoteDebuggingFlag(proc.pids) };
             }
             if (cdpFlagCache.hasFlag) {
               if (warnedNoCdpSig !== `cdp:${pidSig}`) {
@@ -456,7 +498,7 @@ async function watch({
             } else {
               if (warnedNoCdpSig !== pidSig) {
                 warnedNoCdpSig = pidSig;
-                log(`[!] ${formatCdpUnavailableMessage({ running: true, port })}`);
+                log(`[!] ${cdpApi.formatCdpUnavailableMessage({ running: true, port })}`);
                 if (!currentConfig.autoRelaunchWithCdp) {
                   log('[*] 提示：可在 config.json 中设置 "autoRelaunchWithCdp": true 以启用自动温和重启接管');
                 }
@@ -469,7 +511,7 @@ async function watch({
                 relaunchedPidSig = pidSig;
                 lastRelaunchAt = Date.now();
                 log('[↻] autoRelaunchWithCdp 已启用：正在温和重启 Antigravity 并附加 --remote-debugging-port=0 ...');
-                const res = await relaunchAntigravityWithCdp({ port: 0 });
+                const res = await cdpApi.relaunchAntigravityWithCdp({ port: 0 });
                 if (res.relaunched) {
                   log('[✓] 已以 CDP 模式重启 Antigravity，等待窗口就绪...');
                   noCdpRunningTicks = 0;
@@ -501,11 +543,23 @@ async function watch({
     if (!filename || !/\.(css|js|json)$/i.test(filename) || filename.startsWith('.')) return;
     clearTimeout(reloadTimer);
     reloadTimer = setTimeout(async () => {
+      let refreshOnly = false;
       try {
         delete require.cache[require.resolve('./cdp')];
-        const freshCdp = require('./cdp');
-        currentConfig = freshCdp.readConfig();
-        expr = freshCdp.buildInjectExpression(currentConfig);
+        cdpApi = require('./cdp');
+        currentConfig = cdpApi.readConfig();
+        const nextCodeHash = cdpApi.computeHash(cdpApi.readRuntimeBundle());
+        const nextCssHash = cdpApi.computeHash(cdpApi.readCss());
+        refreshOnly =
+          Boolean(currentCodeHash) &&
+          nextCodeHash === currentCodeHash &&
+          nextCssHash === currentCssHash;
+        currentCodeHash = nextCodeHash;
+        currentCssHash = nextCssHash;
+        if (!refreshOnly) {
+          expr = cdpApi.buildInjectExpression(currentConfig);
+        }
+        configExpr = cdpApi.buildConfigScriptExpression(currentConfig, currentCodeHash);
       } catch (err) {
         log(`[!] 读取文件失败: ${err.message}`);
         return;
@@ -514,11 +568,11 @@ async function watch({
       for (const entry of attached.values()) {
         if (!entry) continue;
         try {
-          await apply(entry);
+          await apply(entry, { refreshOnly });
           n++;
         } catch {}
       }
-      log(`[↻] ${filename} 已变更，已热更新 ${n} 个窗口`);
+      log(`[↻] ${filename} 已变更，已热更新 ${n} 个窗口${refreshOnly ? '（轻量配置同步）' : ''}`);
     }, 180);
   });
 
@@ -555,7 +609,14 @@ async function main() {
   }
 }
 
-main().catch((err) => {
-  console.error(`[✗] ${err.message}`);
-  process.exit(1);
-});
+module.exports = {
+  acquireLock,
+  applyPageScripts,
+};
+
+if (require.main === module) {
+  main().catch((err) => {
+    console.error(`[✗] ${err.message}`);
+    process.exit(1);
+  });
+}

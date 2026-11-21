@@ -113,10 +113,11 @@ function createMockCdpServer() {
       } else {
         lastInjectedExpr = expr;
         claudeStyleMounted = true;
+        const evalStatus = expr.includes("status: 'refreshed'") ? 'refreshed' : 'ok';
         result = {
           result: {
             type: 'object',
-            value: { version: cdp.PLUGIN_VERSION, status: 'ok', state: { mounted: true } },
+            value: { version: cdp.PLUGIN_VERSION, status: evalStatus, state: { mounted: true } },
           },
         };
       }
@@ -270,15 +271,22 @@ async function waitFor(fn, timeoutMs = 6000, intervalMs = 100) {
 }
 
 test('installer manifest validators match inject.js and cdp.js defaults', () => {
-  const injectSrc = fs.readFileSync(path.join(ROOT_DIR, 'inject.js'), 'utf8');
-  const match = injectSrc.match(/const validators = \{([\s\S]*?)\};/);
-  assert.ok(match, 'validators object found in inject.js');
-  const keysInInject = Array.from(match[1].matchAll(/^\s*([a-zA-Z0-9_]+)\s*:/gm)).map((m) => m[1]);
-  assert.deepEqual(Object.keys(VALIDATORS).sort(), keysInInject.sort());
-
-  for (const k of keysInInject) {
+  const manifestKeys = Object.keys(VALIDATORS).sort();
+  assert.deepEqual(manifestKeys, Object.keys(cdp.CONFIG_VALIDATORS).sort());
+  for (const k of manifestKeys) {
     assert.ok(k in cdp.DEFAULT_CONFIG, `DEFAULT_CONFIG includes ${k}`);
+    const rule = cdp.CONFIG_VALIDATORS[k];
+    if (rule === 'boolean') {
+      assert.equal(cdp.validateConfigSetting(k, true), true);
+      assert.equal(cdp.validateConfigSetting(k, 'invalid'), false);
+    } else if (Array.isArray(rule)) {
+      assert.equal(cdp.validateConfigSetting(k, rule[0]), true);
+      assert.equal(cdp.validateConfigSetting(k, '__invalid_opt__'), false);
+    }
   }
+  assert.equal(cdp.validateConfigSetting('pollIntervalMs', 3000), true);
+  assert.equal(cdp.validateConfigSetting('pollIntervalMs', 50), false);
+  assert.equal(cdp.validateConfigSetting('__unknown_key__', true), false);
 });
 
 test('unified artifact naming and version parity stay consistent across package, runtime, and installers', () => {
@@ -312,14 +320,29 @@ test('Windows C# sources define managed launch contract and stay strictly C# 5 c
   assert.match(csClient, /public\s+const\s+int\s+DefaultStartupGraceSeconds\s*=\s*90\s*;/);
   assert.match(csClient, /EnsureAntigravityWithCdpAsync/);
   assert.match(csClient, /ActivateAntigravityWindow/);
+  assert.ok(csClient.includes('"--managed"'), 'CdpClient.cs must treat --managed equivalently to --watch');
+  assert.ok(csClient.includes('BuildConfigScriptExpression'));
+  assert.ok(csClient.includes('ReadBundleAndCssHashes'));
+  assert.ok(csClient.includes('__agCsOverrideConfig'));
+  assert.equal(csClient.includes('System.Windows.Forms'), false, 'CdpClient.cs must not reference System.Windows.Forms');
 
   assert.match(csWatcher, /--launch/);
   assert.match(csWatcher, /--startup-grace/);
   assert.match(csWatcher, /AG_WATCH_POLL_MS/);
+  assert.ok(csWatcher.includes('BootstrapScriptId'));
+  assert.ok(csWatcher.includes('ConfigScriptId'));
+  assert.ok(csWatcher.includes('GetConfigBool(initCfg, "autoRelaunchWithCdp", true)'));
+  assert.ok(csWatcher.includes('GetConfigBool(nextCfg, "autoRelaunchWithCdp", true)'));
+  assert.equal(csWatcher.includes('GetConfigBool(nextCfg, "autoRelaunchWithCdp")'), false);
+  assert.equal(csWatcher.includes('"autoRelaunchWithCdp", false'), false);
+  assert.equal(csWatcher.includes('System.Windows.Forms'), false, 'watcher/Program.cs must not reference System.Windows.Forms');
 
   assert.match(csSetup, /TargetPath[\s\S]*?watcherExe/);
   assert.match(csSetup, /--launch --relaunch --exit-on-host-close --dir/);
   assert.match(csSetup, /AGY_CS_TEST_SYSTEM_ROOT/);
+  assert.ok(csSetup.includes('AGYClaudeStyleStop_'));
+  assert.ok(csSetup.includes('WatcherPidStatus.Owned'));
+  assert.ok(csSetup.includes('-LiteralPath'));
 
   const csFiles = listCsFiles(path.join(ROOT_DIR, 'installer'));
   assert.ok(csFiles.length >= 4, 'found installer C# source files');
@@ -684,21 +707,46 @@ test(
     assert.deepEqual(onceResult.pages, ['Antigravity']);
 
     // 3. Test Runtime.bindingCalled -> config.json update & hot-reload
+    const targetPalette = expectedCfgObj.palette === 'claude' ? 'obsidian' : 'claude';
     const beforeCallCount = mockCdp.getCalls().length;
     mockCdp.emitBindingCalled(cdp.SETTING_BINDING, { key: 'palette', value: 'hacker-invalid' });
-    mockCdp.emitBindingCalled(cdp.SETTING_BINDING, { key: 'palette', value: 'obsidian' });
+    mockCdp.emitBindingCalled(cdp.SETTING_BINDING, { key: 'palette', value: targetPalette });
 
     const updatedCfg = await waitFor(() => {
       const parsed = JSON.parse(fs.readFileSync(path.join(installDir, 'config.json'), 'utf8'));
-      return parsed.palette === 'obsidian' ? parsed : null;
+      return parsed.palette === targetPalette ? parsed : null;
     });
-    assert.equal(updatedCfg.palette, 'obsidian');
+    assert.equal(updatedCfg.palette, targetPalette);
 
-    // Confirm hot-reload fired on watcher
+    // Confirm hot-reload fired on watcher without re-sending ~1.4MB payload
     await waitFor(() => {
       const newer = mockCdp.getCalls().slice(beforeCallCount);
-      return newer.some((c) => c.method === 'Page.removeScriptToEvaluateOnNewDocument') ? true : null;
+      const hasRemove = newer.some((c) => c.method === 'Page.removeScriptToEvaluateOnNewDocument');
+      const hasAdd = newer.some((c) => c.method === 'Page.addScriptToEvaluateOnNewDocument');
+      return hasRemove && hasAdd ? true : null;
     });
+    const reloadCalls = mockCdp.getCalls().slice(beforeCallCount);
+    const reloadAddCalls = reloadCalls.filter((c) => c.method === 'Page.addScriptToEvaluateOnNewDocument');
+    assert.ok(reloadAddCalls.length >= 1);
+    const maxReloadLen = Math.max(...reloadAddCalls.map((c) => (c.params?.source || '').length));
+    assert.ok(maxReloadLen < 2048, `Expected short config script (<2KB) on C# hot-reload, got ${maxReloadLen}`);
+
+    // Verify compiled C# watcher --remove refuses to kill a foreign PID stored in .watch.pid
+    const probeDir = path.join(workDir, 'foreign-pid-probe');
+    fs.mkdirSync(probeDir, { recursive: true });
+    const foreignProc = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 10000)'], {
+      stdio: 'ignore',
+      windowsHide: true,
+    });
+    try {
+      await new Promise((r) => setTimeout(r, 150));
+      fs.writeFileSync(path.join(probeDir, '.watch.pid'), String(foreignProc.pid), 'utf8');
+      await runExe(watcherExe, ['--remove', '--dir', probeDir], 10000);
+      assert.equal(foreignProc.exitCode, null, 'C# watcher --remove must NOT terminate a foreign PID');
+      assert.equal(fs.existsSync(path.join(probeDir, '.watch.pid')), false, 'Stale foreign .watch.pid should be cleared');
+    } finally {
+      try { foreignProc.kill('SIGKILL'); } catch {}
+    }
 
     // 4. Test re-install / upgrade preserves existing user config.json
     await runExe(
@@ -720,7 +768,7 @@ test(
     assert.equal(upgradeResult.ok, true);
     assert.equal(upgradeResult.preservedExistingConfig, true);
     const cfgAfterUpgrade = JSON.parse(fs.readFileSync(path.join(installDir, 'config.json'), 'utf8'));
-    assert.equal(cfgAfterUpgrade.palette, 'obsidian');
+    assert.equal(cfgAfterUpgrade.palette, targetPalette);
 
     // 5. Test --uninstall from installed copy inside installDir (exercises self-delete & CDP cleanup)
     const installedSelf = path.join(installDir, 'agy-claude-style-installer.exe');

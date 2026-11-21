@@ -212,10 +212,11 @@ function createMockCdpServer() {
       } else {
         lastInjectedExpr = expr;
         claudeStyleMounted = true;
+        const evalStatus = expr.includes("status: 'refreshed'") ? 'refreshed' : 'ok';
         result = {
           result: {
             type: 'object',
-            value: { version: cdp.PLUGIN_VERSION, status: 'ok', state: { mounted: true } },
+            value: { version: cdp.PLUGIN_VERSION, status: evalStatus, state: { mounted: true } },
           },
         };
       }
@@ -398,7 +399,7 @@ test('generateInfoPlist generates valid bundle metadata and escapes special XML 
   assert.ok(plist.includes('<string>1.2.3-beta&amp;1&lt;test&gt;</string>'));
 });
 
-test('CdpClient.swift defines defaultStartupGraceSeconds, activateAntigravityApp, and ensureAntigravityWithCdp', () => {
+test('CdpClient.swift defines defaultStartupGraceSeconds, activateAntigravityApp, ensureAntigravityWithCdp, ownership, and lightweight config script', () => {
   const cdpSwift = fs.readFileSync(
     path.join(ROOT_DIR, 'installer', 'macos', 'Common', 'CdpClient.swift'),
     'utf8'
@@ -408,6 +409,15 @@ test('CdpClient.swift defines defaultStartupGraceSeconds, activateAntigravityApp
   assert.ok(cdpSwift.includes('static func activateAntigravityApp('));
   assert.ok(cdpSwift.includes('static func ensureAntigravityWithCdp('));
   assert.ok(cdpSwift.includes('removeStalePortFile()'));
+  assert.ok(cdpSwift.includes('static func readBundleAndCssHashes('));
+  assert.ok(cdpSwift.includes('static func buildConfigScriptExpression('));
+  assert.ok(cdpSwift.includes('__agCsOverrideConfig'));
+  assert.ok(cdpSwift.includes('static func evaluateWatcherOwnership('));
+  assert.ok(cdpSwift.includes('static func classifyWatcherPid('));
+  assert.ok(
+    cdpSwift.includes('hasStandaloneFlag(cmd, "--watch") || hasStandaloneFlag(cmd, "--managed")'),
+    'CdpClient.swift evaluates --managed watcher ownership equivalently to --watch'
+  );
   for (const action of [
     'already-cdp',
     'waiting-cdp',
@@ -421,7 +431,7 @@ test('CdpClient.swift defines defaultStartupGraceSeconds, activateAntigravityApp
   }
 });
 
-test('Watcher/main.swift supports --launch, --relaunch, --replace, --exit-on-host-close, --startup-grace, and startup grace exit', () => {
+test('Watcher/main.swift supports --launch, --relaunch, --replace, --exit-on-host-close, --startup-grace, lightweight reload, and fail-closed ownership', () => {
   const watcherSwift = fs.readFileSync(
     path.join(ROOT_DIR, 'installer', 'macos', 'Watcher', 'main.swift'),
     'utf8'
@@ -435,6 +445,10 @@ test('Watcher/main.swift supports --launch, --relaunch, --replace, --exit-on-hos
   assert.ok(watcherSwift.includes('initCfg["autoRelaunchWithCdp"]?.boolValue ?? true'));
   assert.ok(watcherSwift.includes('nextCfg["autoRelaunchWithCdp"]?.boolValue ?? true'));
   assert.equal(watcherSwift.includes('autoRelaunchWithCdp"]?.boolValue ?? false'), false);
+  assert.ok(watcherSwift.includes('var bootstrapScriptId: String?'));
+  assert.ok(watcherSwift.includes('var configScriptId: String?'));
+  assert.ok(watcherSwift.includes('buildConfigScriptExpression('));
+  assert.ok(watcherSwift.includes('CdpHelper.classifyWatcherPid(existingPid'));
   assert.ok(watcherSwift.includes('func runLaunchAndWatch('));
   assert.ok(watcherSwift.includes('AGY_CS_NO_UI'));
   assert.ok(watcherSwift.includes('/usr/bin/osascript'));
@@ -442,9 +456,13 @@ test('Watcher/main.swift supports --launch, --relaunch, --replace, --exit-on-hos
   assert.ok(watcherSwift.includes('Date().timeIntervalSince(watchStart) >= startupGraceSeconds'));
   assert.ok(watcherSwift.includes('waitBrieflyForLock'));
   assert.ok(watcherSwift.includes('DispatchTimeInterval.milliseconds(sleepMs)'));
+
+  const existingIdx = watcherSwift.indexOf('if let existingPid = readPidFile()');
+  const writePidIdx = watcherSwift.indexOf('try? String(selfPid).write(toFile: pidFile');
+  assert.ok(existingIdx > 0 && writePidIdx > existingIdx, 'existingPid check must precede .watch.pid write');
 });
 
-test('Setup/main.swift supports managed/daemon modes, launcher .app, updated .command, and LaunchAgent cleanup', () => {
+test('Setup/main.swift supports managed/daemon modes, launcher .app, updated .command, LaunchAgent cleanup, and --managed legacy cleanup', () => {
   const setupSwift = fs.readFileSync(
     path.join(ROOT_DIR, 'installer', 'macos', 'Setup', 'main.swift'),
     'utf8'
@@ -468,6 +486,11 @@ test('Setup/main.swift supports managed/daemon modes, launcher .app, updated .co
   assert.ok(setupSwift.includes('"installedMode"'));
   assert.ok(setupSwift.includes('activeCfg["autoRelaunchWithCdp"]?.boolValue ?? true'));
   assert.equal(setupSwift.includes('activeCfg["autoRelaunchWithCdp"]?.boolValue ?? false'), false);
+  assert.ok(setupSwift.includes('CdpHelper.matchesWatcherForDir('));
+  assert.ok(
+    setupSwift.includes('(!lowerRaw.contains("--watch") && !lowerRaw.contains("--managed"))'),
+    'Setup/main.swift stopLegacyNodeWatchers accepts --watch or --managed'
+  );
 });
 
 test('All Swift sources under installer/macos have balanced delimiters and valid macOS 11.0+ compatibility', () => {
@@ -675,11 +698,30 @@ test(
       });
       assert.equal(updatedCfg.palette, 'claude');
 
-      // Confirm hot-reload fired on watcher
+      // Confirm hot-reload fired on watcher without re-sending full ~1.4MB bundle over Page.addScriptToEvaluateOnNewDocument
       await waitFor(() => {
         const newer = mockCdp.getCalls().slice(beforeCallCount);
         return newer.some((c) => c.method === 'Page.removeScriptToEvaluateOnNewDocument') ? true : null;
       });
+      const reloadCalls = mockCdp.getCalls().slice(beforeCallCount);
+      const reloadAddCalls = reloadCalls.filter((c) => c.method === 'Page.addScriptToEvaluateOnNewDocument');
+      assert.ok(reloadAddCalls.length >= 1, 'Expected lightweight Page.addScriptToEvaluateOnNewDocument during config reload');
+      const maxReloadLen = Math.max(...reloadAddCalls.map((c) => (c.params?.source || '').length));
+      assert.ok(maxReloadLen < 2048, `Expected short config script (<2KB) on Swift hot-reload, got ${maxReloadLen}`);
+
+      // Verify compiled Swift watcher --remove refuses to kill a foreign PID stored in .watch.pid
+      const probeDir = path.join(workDir, 'foreign-pid-probe');
+      fs.mkdirSync(probeDir, { recursive: true });
+      const foreignProc = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 10000)'], { stdio: 'ignore' });
+      try {
+        await new Promise((r) => setTimeout(r, 100));
+        fs.writeFileSync(path.join(probeDir, '.watch.pid'), String(foreignProc.pid), 'utf8');
+        await runBin(watcherBin, ['--remove', '--dir', probeDir], 10000);
+        assert.equal(foreignProc.exitCode, null, 'Swift watcher --remove must NOT terminate a foreign PID');
+        assert.equal(fs.existsSync(path.join(probeDir, '.watch.pid')), false, 'Stale foreign .watch.pid should be cleared');
+      } finally {
+        try { foreignProc.kill('SIGKILL'); } catch {}
+      }
 
       // 5. Test re-install / upgrade preserves existing user config.json
       await runBin(

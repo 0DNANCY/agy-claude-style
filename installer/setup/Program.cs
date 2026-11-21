@@ -379,55 +379,88 @@ namespace AgyClaudeStyle.Installer
         public static void StopWatcherInDir(string dir, Action<string> log)
         {
             if (!Directory.Exists(dir)) return;
-            string hash = GetDirHash(dir);
-            try
-            {
-                using (EventWaitHandle stopEvt = EventWaitHandle.OpenExisting("Local\\AGYClaudeStyleStop_" + hash))
-                {
-                    stopEvt.Set();
-                }
-            }
-            catch { }
-
+            int selfPid = Process.GetCurrentProcess().Id;
             string pidFile = Path.Combine(dir, ".watch.pid");
             if (File.Exists(pidFile))
             {
+                bool shouldDeletePidFile = false;
                 try
                 {
                     int pid;
-                    if (int.TryParse(File.ReadAllText(pidFile, Encoding.UTF8).Trim(), out pid) && pid > 0)
+                    if (!int.TryParse(File.ReadAllText(pidFile, Encoding.UTF8).Trim(), out pid) || pid <= 0)
                     {
-                        try
+                        shouldDeletePidFile = true;
+                    }
+                    else if (pid != selfPid)
+                    {
+                        CdpHelper.WatcherPidClassification cls = CdpHelper.ClassifyWatcherPid(pid, dir);
+                        if (cls.Status == CdpHelper.WatcherPidStatus.Owned)
                         {
-                            using (Process p = Process.GetProcessById(pid))
+                            string hash = GetDirHash(dir);
+                            try
                             {
-                                if (!p.WaitForExit(2000))
+                                using (EventWaitHandle stopEvt = EventWaitHandle.OpenExisting("Local\\AGYClaudeStyleStop_" + hash))
                                 {
-                                    p.Kill();
-                                    p.WaitForExit(2000);
+                                    stopEvt.Set();
                                 }
                             }
-                            if (log != null) log("已停止运行中的守护进程 (PID " + pid + ")");
+                            catch { }
+
+                            try
+                            {
+                                using (Process p = Process.GetProcessById(pid))
+                                {
+                                    if (!p.WaitForExit(2000))
+                                    {
+                                        p.Kill();
+                                        p.WaitForExit(2000);
+                                    }
+                                    if (log != null) log("已停止运行中的守护进程 (PID " + pid + ")");
+                                }
+                            }
+                            catch { }
+                            shouldDeletePidFile = true;
                         }
-                        catch { }
+                        else if (cls.Status == CdpHelper.WatcherPidStatus.Dead || cls.Status == CdpHelper.WatcherPidStatus.Foreign)
+                        {
+                            // Never signal/kill foreign processes; clean stale pointer only.
+                            shouldDeletePidFile = true;
+                        }
+                        else
+                        {
+                            // Fail closed: unknown ownership must not be terminated or unlinked.
+                            if (log != null) log("无法验证 .watch.pid 进程归属 (PID " + pid + ")，已拒绝终止并保留锁文件");
+                        }
                     }
                 }
                 catch { }
-                try { File.Delete(pidFile); } catch { }
+                if (shouldDeletePidFile)
+                {
+                    try { File.Delete(pidFile); } catch { }
+                }
             }
 
-            string normalizedDir = Path.GetFullPath(dir).TrimEnd('\\', '/').ToLowerInvariant();
             try
             {
+                string hash = GetDirHash(dir);
                 Process[] procs = Process.GetProcessesByName(Path.GetFileNameWithoutExtension(WatcherExeName));
                 for (int i = 0; i < procs.Length; i++)
                 {
                     try
                     {
-                        string path = procs[i].MainModule.FileName;
-                        if (!string.IsNullOrEmpty(path) &&
-                            Path.GetFullPath(path).ToLowerInvariant().StartsWith(normalizedDir + "\\", StringComparison.Ordinal))
+                        if (procs[i].Id == selfPid) continue;
+                        CdpHelper.WatcherPidClassification cls = CdpHelper.ClassifyWatcherPid(procs[i].Id, dir);
+                        if (cls.Status == CdpHelper.WatcherPidStatus.Owned)
                         {
+                            try
+                            {
+                                using (EventWaitHandle stopEvt = EventWaitHandle.OpenExisting("Local\\AGYClaudeStyleStop_" + hash))
+                                {
+                                    stopEvt.Set();
+                                }
+                            }
+                            catch { }
+
                             if (!procs[i].WaitForExit(1500))
                             {
                                 procs[i].Kill();
@@ -458,22 +491,42 @@ namespace AgyClaudeStyle.Installer
                         string legacyPidFile = Path.Combine(workDir, ".watch.pid");
                         if (File.Exists(legacyPidFile))
                         {
+                            bool deleteLegacyPid = false;
                             int pid;
                             if (int.TryParse(File.ReadAllText(legacyPidFile, Encoding.UTF8).Trim(), out pid) && pid > 0)
                             {
-                                try
+                                CdpHelper.WatcherPidClassification cls = CdpHelper.ClassifyWatcherPid(pid, workDir);
+                                if (cls.Status == CdpHelper.WatcherPidStatus.Owned)
                                 {
-                                    Process p = Process.GetProcessById(pid);
-                                    if (string.Equals(p.ProcessName, "node", StringComparison.OrdinalIgnoreCase))
+                                    try
                                     {
-                                        p.Kill();
-                                        p.WaitForExit(1500);
+                                        using (Process p = Process.GetProcessById(pid))
+                                        {
+                                            p.Kill();
+                                            p.WaitForExit(1500);
+                                        }
                                         if (log != null) log("已停止旧版脚本守护进程 (PID " + pid + ")");
                                     }
+                                    catch { }
+                                    deleteLegacyPid = true;
                                 }
-                                catch { }
+                                else if (cls.Status == CdpHelper.WatcherPidStatus.Dead || cls.Status == CdpHelper.WatcherPidStatus.Foreign)
+                                {
+                                    deleteLegacyPid = true;
+                                }
+                                else if (log != null)
+                                {
+                                    log("无法验证旧版 .watch.pid 进程归属 (PID " + pid + ")，已跳过终止");
+                                }
                             }
-                            try { File.Delete(legacyPidFile); } catch { }
+                            else
+                            {
+                                deleteLegacyPid = true;
+                            }
+                            if (deleteLegacyPid)
+                            {
+                                try { File.Delete(legacyPidFile); } catch { }
+                            }
                         }
                     }
                 }
@@ -482,30 +535,50 @@ namespace AgyClaudeStyle.Installer
 
             try
             {
+                int selfPid = Process.GetCurrentProcess().Id;
                 using (ManagementObjectSearcher searcher = new ManagementObjectSearcher(
-                    "SELECT ProcessId, CommandLine FROM Win32_Process WHERE Name = 'node.exe'"))
+                    "SELECT ProcessId, ExecutablePath, CommandLine FROM Win32_Process WHERE Name = 'node.exe'"))
                 {
                     foreach (ManagementObject obj in searcher.Get())
                     {
                         try
                         {
                             string cmd = obj["CommandLine"] as string;
-                            if (string.IsNullOrEmpty(cmd)) continue;
-                            if (cmd.IndexOf("agy-claude-style", StringComparison.OrdinalIgnoreCase) >= 0 &&
-                                cmd.IndexOf("inject.js", StringComparison.OrdinalIgnoreCase) >= 0 &&
-                                cmd.IndexOf("--watch", StringComparison.OrdinalIgnoreCase) >= 0)
+                            string exePath = obj["ExecutablePath"] as string;
+                            if (string.IsNullOrWhiteSpace(cmd)) continue;
+                            int pid = Convert.ToInt32(obj["ProcessId"]);
+                            if (pid <= 0 || pid == selfPid) continue;
+
+                            List<string> args = CdpHelper.SplitCommandArgs(cmd);
+                            if (args.Count < 2) continue;
+                            string scriptArg = args[1];
+                            if (string.IsNullOrEmpty(scriptArg) || scriptArg.StartsWith("-", StringComparison.Ordinal)) continue;
+                            if (!Path.IsPathRooted(scriptArg)) continue;
+                            if (!string.Equals(Path.GetFileName(scriptArg), "inject.js", StringComparison.OrdinalIgnoreCase)) continue;
+
+                            string parentDir = Path.GetDirectoryName(Path.GetFullPath(scriptArg));
+                            if (string.IsNullOrEmpty(parentDir) ||
+                                parentDir.IndexOf("agy-claude-style", StringComparison.OrdinalIgnoreCase) < 0)
                             {
-                                int pid = Convert.ToInt32(obj["ProcessId"]);
+                                continue;
+                            }
+
+                            CdpHelper.WatcherPidStatus status = CdpHelper.EvaluateWatcherOwnership(exePath, cmd, parentDir);
+                            if (status == CdpHelper.WatcherPidStatus.Owned)
+                            {
                                 try
                                 {
-                                    Process p = Process.GetProcessById(pid);
-                                    p.Kill();
-                                    p.WaitForExit(1500);
+                                    using (Process p = Process.GetProcessById(pid))
+                                    {
+                                        p.Kill();
+                                        p.WaitForExit(1500);
+                                    }
                                     if (log != null) log("已替换旧版 Node 守护进程 (PID " + pid + ")");
                                 }
                                 catch { }
                             }
                         }
+                        catch { }
                         finally
                         {
                             obj.Dispose();
@@ -770,7 +843,10 @@ namespace AgyClaudeStyle.Installer
                                     logContent = sr.ReadToEnd();
                                 }
                             }
-                            bool watcherInjected = logContent.IndexOf("[✓] 已注入 agy-claude-style:", StringComparison.Ordinal) >= 0;
+                            bool watcherInjected =
+                                logContent.IndexOf("[✓]", StringComparison.Ordinal) >= 0 ||
+                                logContent.IndexOf("[↻]", StringComparison.Ordinal) >= 0 ||
+                                (File.Exists(Path.Combine(installDir, ".watch.pid")) && attempt >= 2);
                             if (pages != null && pages.Count > 0 && watcherInjected)
                             {
                                 bool allReady = true;
@@ -1010,12 +1086,15 @@ namespace AgyClaudeStyle.Installer
         {
             string selfExe = Assembly.GetExecutingAssembly().Location;
             if (string.IsNullOrEmpty(selfExe)) return;
-            string cmd = string.Format(
-                "/c for /L %i in (1,1,10) do (ping -n 2 127.0.0.1 >nul & del /f /q \"{0}\" >nul 2>&1 & rmdir /s /q \"{1}\" >nul 2>&1 & if not exist \"{1}\" exit /b 0)",
-                selfExe,
-                installDir
+            string escapedExe = selfExe.Replace("'", "''");
+            string escapedDir = installDir.Replace("'", "''");
+            string psScript = string.Format(
+                "$e='{0}';$d='{1}';for($i=0;$i -lt 12;$i++){{Start-Sleep -Milliseconds 350;if(Test-Path -LiteralPath $e){{Remove-Item -LiteralPath $e -Force -ErrorAction SilentlyContinue}};if(Test-Path -LiteralPath $d){{Remove-Item -LiteralPath $d -Recurse -Force -ErrorAction SilentlyContinue}};if(-not (Test-Path -LiteralPath $d)){{exit 0}}}}",
+                escapedExe,
+                escapedDir
             );
-            ProcessStartInfo psi = new ProcessStartInfo("cmd.exe", cmd);
+            string encoded = Convert.ToBase64String(Encoding.Unicode.GetBytes(psScript));
+            ProcessStartInfo psi = new ProcessStartInfo("powershell.exe", "-NoProfile -NonInteractive -WindowStyle Hidden -EncodedCommand " + encoded);
             psi.WorkingDirectory = Path.GetTempPath();
             psi.CreateNoWindow = true;
             psi.UseShellExecute = false;

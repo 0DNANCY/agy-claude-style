@@ -266,25 +266,36 @@ enum InstallerCore {
         }
         guard fm.fileExists(atPath: dir) else { return }
 
+        let selfPid = getpid()
         let pidFile = (dir as NSString).appendingPathComponent(".watch.pid")
         if let pidStr = try? String(contentsOfFile: pidFile, encoding: .utf8),
            let pid = Int32(pidStr.trimmingCharacters(in: .whitespacesAndNewlines)),
-           pid > 0 {
-            if terminatePid(pid) {
-                log?("已停止运行中的守护进程 (PID \(pid))")
+           pid > 0, pid != selfPid {
+            let cls = CdpHelper.classifyWatcherPid(pid, baseDir: dir)
+            switch cls.status {
+            case .owned:
+                if terminatePid(pid) {
+                    log?("已停止运行中的守护进程 (PID \(pid))")
+                }
+                try? fm.removeItem(atPath: pidFile)
+            case .dead, .foreign:
+                // Never signal foreign processes; clear stale/reused .watch.pid pointer.
+                try? fm.removeItem(atPath: pidFile)
+            case .unknown:
+                // Fail closed: cannot verify process ownership, refuse to terminate or remove lock.
+                log?("无法验证 .watch.pid 进程归属 (PID \(pid))，已拒绝终止并保留锁文件")
             }
-            try? fm.removeItem(atPath: pidFile)
         }
 
-        let normalizedDir = URL(fileURLWithPath: dir).standardizedFileURL.path
         let ps = runProcessSync(executable: "/bin/ps", arguments: ["-ax", "-o", "pid=,command="])
+        guard ps.code == 0 else { return }
         for rawLine in ps.stdout.components(separatedBy: CharacterSet.newlines) {
             let line = rawLine.trimmingCharacters(in: .whitespaces)
             if line.isEmpty { continue }
             let parts = line.split(maxSplits: 1, omittingEmptySubsequences: true, whereSeparator: { $0.isWhitespace })
-            guard parts.count == 2, let pid = Int32(parts[0]) else { continue }
+            guard parts.count == 2, let pid = Int32(parts[0]), pid > 0, pid != selfPid else { continue }
             let cmd = String(parts[1])
-            if cmd.contains(watcherExeName) && cmd.contains(normalizedDir) {
+            if CdpHelper.matchesWatcherForDir(command: cmd, baseDir: dir) && cmd.contains(watcherExeName) {
                 _ = terminatePid(pid)
             }
         }
@@ -292,16 +303,61 @@ enum InstallerCore {
 
     static func stopLegacyNodeWatchers(log: ((String) -> Void)?) {
         let ps = runProcessSync(executable: "/bin/ps", arguments: ["-ax", "-o", "pid=,command="])
+        guard ps.code == 0 else { return }
+        let selfPid = getpid()
         for rawLine in ps.stdout.components(separatedBy: CharacterSet.newlines) {
             let line = rawLine.trimmingCharacters(in: .whitespaces)
             if line.isEmpty { continue }
             let parts = line.split(maxSplits: 1, omittingEmptySubsequences: true, whereSeparator: { $0.isWhitespace })
-            guard parts.count == 2, let pid = Int32(parts[0]) else { continue }
-            let cmd = String(parts[1]).lowercased()
-            if cmd.contains("node") &&
-                cmd.contains("agy-claude-style") &&
-                cmd.contains("inject.js") &&
-                cmd.contains("--watch") {
+            guard parts.count == 2, let pid = Int32(parts[0]), pid > 0, pid != selfPid else { continue }
+            let rawCmd = String(parts[1])
+            let lowerRaw = rawCmd.lowercased()
+            if !lowerRaw.contains("agy-claude-style") || !lowerRaw.contains("inject.js") || (!lowerRaw.contains("--watch") && !lowerRaw.contains("--managed")) {
+                continue
+            }
+
+            guard let info = CdpHelper.inspectProcessInfo(pid: pid) else { continue }
+            let cmd = info.cmd
+            let leading = cmd.split(maxSplits: 1, omittingEmptySubsequences: true, whereSeparator: { $0.isWhitespace }).first.map(String.init) ?? ""
+            var rest = ""
+            if let ep = info.exePath, !ep.isEmpty {
+                let baseEp = (ep as NSString).lastPathComponent
+                if cmd.hasPrefix(ep + " ") || cmd.hasPrefix(ep + "\t") {
+                    rest = String(cmd.dropFirst(ep.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+                } else if cmd.hasPrefix(baseEp + " ") || cmd.hasPrefix(baseEp + "\t") {
+                    rest = String(cmd.dropFirst(baseEp.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+                } else if !leading.isEmpty {
+                    rest = String(cmd.dropFirst(leading.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+                }
+            } else if !leading.isEmpty {
+                rest = String(cmd.dropFirst(leading.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+
+            // Ambiguous if empty or starts with a pre-script flag (e.g. -e, --require) or non-absolute relative path.
+            guard !rest.isEmpty, !rest.hasPrefix("-") else { continue }
+            let unquoted = (rest.hasPrefix("\"") || rest.hasPrefix("'")) ? String(rest.dropFirst()) : rest
+            guard unquoted.hasPrefix("/"),
+                  let endRange = unquoted.range(of: "/inject.js", options: .caseInsensitive) else {
+                continue
+            }
+            let afterIdx = endRange.upperBound
+            if afterIdx < unquoted.endIndex {
+                let nextCh = unquoted[afterIdx]
+                if !nextCh.isWhitespace && nextCh != "\"" && nextCh != "'" { continue }
+            }
+            let scriptPath = String(unquoted[..<afterIdx])
+            guard !scriptPath.contains(" --"),
+                  FileManager.default.fileExists(atPath: scriptPath) else {
+                continue
+            }
+            let parentDir = (scriptPath as NSString).deletingLastPathComponent
+            guard !parentDir.isEmpty,
+                  parentDir.lowercased().contains("agy-claude-style") else {
+                continue
+            }
+
+            let cls = CdpHelper.classifyWatcherPid(pid, baseDir: parentDir)
+            if cls.status == .owned {
                 if terminatePid(pid) {
                     log?("已替换旧版 Node 守护进程 (PID \(pid))")
                 }
@@ -669,7 +725,11 @@ enum InstallerCore {
                 if let pages = try? CdpHelper.listPages(port: port) {
                     cdpReachable = true
                     let logContent = (try? String(contentsOfFile: watchLogPath, encoding: .utf8)) ?? ""
-                    let watcherInjected = logContent.contains("[✓] 已注入 agy-claude-style:")
+                    let pidExists = FileManager.default.fileExists(atPath: (installDir as NSString).appendingPathComponent(".watch.pid"))
+                    let watcherInjected =
+                        logContent.contains("[✓]") ||
+                        logContent.contains("[↻]") ||
+                        (pidExists && attempt >= 2)
                     if !pages.isEmpty && watcherInjected {
                         var allReady = true
                         var titles: [String] = []
