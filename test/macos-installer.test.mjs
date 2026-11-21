@@ -18,9 +18,12 @@ const __dirname = path.dirname(__filename);
 const ROOT_DIR = path.resolve(__dirname, '..');
 const cdp = require(path.join(ROOT_DIR, 'cdp.js'));
 
-function runBin(binPath, args, timeoutMs = 20000) {
+function runBin(binPath, args, timeoutMs = 20000, extraEnv = null) {
   return new Promise((resolve, reject) => {
-    const child = spawn(binPath, args, { stdio: 'ignore' });
+    const child = spawn(binPath, args, {
+      stdio: 'ignore',
+      env: extraEnv ? { ...process.env, ...extraEnv } : process.env,
+    });
     const timer = setTimeout(() => {
       try { child.kill(); } catch {}
       reject(new Error(`Timeout running ${path.basename(binPath)} ${args.join(' ')}`));
@@ -35,6 +38,127 @@ function runBin(binPath, args, timeoutMs = 20000) {
       else reject(new Error(`${path.basename(binPath)} exited with code ${code}`));
     });
   });
+}
+
+function collectSwiftFiles(dir) {
+  const results = [];
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      results.push(...collectSwiftFiles(full));
+    } else if (entry.isFile() && entry.name.endsWith('.swift')) {
+      results.push(full);
+    }
+  }
+  return results.sort();
+}
+
+function verifySwiftDelimiters(src, fileLabel) {
+  const stack = [];
+  const openers = { '{': '}', '(': ')', '[': ']' };
+  const closers = { '}': '{', ')': '(', ']': '[' };
+  // Mode stack: 'code' | 'str' | 'mstr'
+  const modeStack = [{ kind: 'code', parenDepth: 0 }];
+  let i = 0;
+  while (i < src.length) {
+    const cur = modeStack[modeStack.length - 1];
+    const ch = src[i];
+    const next = src[i + 1];
+
+    if (cur.kind === 'code') {
+      if (ch === '/' && next === '/') {
+        i += 2;
+        while (i < src.length && src[i] !== '\n') i++;
+        continue;
+      }
+      if (ch === '/' && next === '*') {
+        let depth = 1;
+        i += 2;
+        while (i < src.length && depth > 0) {
+          if (src[i] === '/' && src[i + 1] === '*') {
+            depth++;
+            i += 2;
+          } else if (src[i] === '*' && src[i + 1] === '/') {
+            depth--;
+            i += 2;
+          } else {
+            i++;
+          }
+        }
+        assert.equal(depth, 0, `${fileLabel}: unterminated block comment`);
+        continue;
+      }
+      if (ch === '"' && src[i + 1] === '"' && src[i + 2] === '"') {
+        modeStack.push({ kind: 'mstr' });
+        i += 3;
+        continue;
+      }
+      if (ch === '"') {
+        modeStack.push({ kind: 'str' });
+        i += 1;
+        continue;
+      }
+      if (openers[ch]) {
+        stack.push({ ch, idx: i });
+        if (ch === '(') cur.parenDepth++;
+      } else if (closers[ch]) {
+        const top = stack.pop();
+        assert.ok(top && top.ch === closers[ch], `${fileLabel}: unmatched '${ch}' at offset ${i}`);
+        if (ch === ')') {
+          if (cur.parenDepth > 0) {
+            cur.parenDepth--;
+          } else if (modeStack.length > 1) {
+            modeStack.pop();
+          }
+        }
+      }
+      i += 1;
+      continue;
+    }
+
+    if (cur.kind === 'str') {
+      if (ch === '\\') {
+        if (next === '(') {
+          stack.push({ ch: '(', idx: i + 1 });
+          modeStack.push({ kind: 'code', parenDepth: 0 });
+          i += 2;
+          continue;
+        }
+        i += 2;
+        continue;
+      }
+      if (ch === '"') {
+        modeStack.pop();
+        i += 1;
+        continue;
+      }
+      assert.notEqual(ch, '\n', `${fileLabel}: unterminated string literal before newline at offset ${i}`);
+      i += 1;
+      continue;
+    }
+
+    if (cur.kind === 'mstr') {
+      if (ch === '\\') {
+        if (next === '(') {
+          stack.push({ ch: '(', idx: i + 1 });
+          modeStack.push({ kind: 'code', parenDepth: 0 });
+          i += 2;
+          continue;
+        }
+        i += 2;
+        continue;
+      }
+      if (ch === '"' && src[i + 1] === '"' && src[i + 2] === '"') {
+        modeStack.pop();
+        i += 3;
+        continue;
+      }
+      i += 1;
+      continue;
+    }
+  }
+  assert.equal(modeStack.length, 1, `${fileLabel}: unterminated string literal at EOF`);
+  assert.equal(stack.length, 0, `${fileLabel}: unclosed delimiters remaining: ${JSON.stringify(stack)}`);
 }
 
 function createMockCdpServer() {
@@ -274,18 +398,113 @@ test('generateInfoPlist generates valid bundle metadata and escapes special XML 
   assert.ok(plist.includes('<string>1.2.3-beta&amp;1&lt;test&gt;</string>'));
 });
 
+test('CdpClient.swift defines defaultStartupGraceSeconds, activateAntigravityApp, and ensureAntigravityWithCdp', () => {
+  const cdpSwift = fs.readFileSync(
+    path.join(ROOT_DIR, 'installer', 'macos', 'Common', 'CdpClient.swift'),
+    'utf8'
+  );
+  assert.ok(cdpSwift.includes('static let defaultStartupGraceSeconds: Double = 90.0'));
+  assert.ok(cdpSwift.includes('struct EnsureAntigravityResult'));
+  assert.ok(cdpSwift.includes('static func activateAntigravityApp('));
+  assert.ok(cdpSwift.includes('static func ensureAntigravityWithCdp('));
+  assert.ok(cdpSwift.includes('removeStalePortFile()'));
+  for (const action of [
+    'already-cdp',
+    'waiting-cdp',
+    'relaunched',
+    'relaunch-failed',
+    'running-without-cdp',
+    'launched',
+    'executable-not-found',
+  ]) {
+    assert.ok(cdpSwift.includes(`"${action}"`), `CdpClient.swift handles ${action}`);
+  }
+});
+
+test('Watcher/main.swift supports --launch, --relaunch, --replace, --exit-on-host-close, --startup-grace, and startup grace exit', () => {
+  const watcherSwift = fs.readFileSync(
+    path.join(ROOT_DIR, 'installer', 'macos', 'Watcher', 'main.swift'),
+    'utf8'
+  );
+  for (const flag of ['"--launch"', '"--relaunch"', '"--replace"', '"--exit-on-host-close"', '"--startup-grace"', '"--startup-grace="']) {
+    assert.ok(watcherSwift.includes(flag), `Watcher/main.swift supports ${flag}`);
+  }
+  assert.ok(watcherSwift.includes('AG_STARTUP_GRACE_SEC'));
+  assert.ok(watcherSwift.includes('AG_WATCH_POLL_MS'));
+  assert.ok(watcherSwift.includes('mode == "watch" || mode == "launch"'));
+  assert.ok(watcherSwift.includes('initCfg["autoRelaunchWithCdp"]?.boolValue ?? true'));
+  assert.ok(watcherSwift.includes('nextCfg["autoRelaunchWithCdp"]?.boolValue ?? true'));
+  assert.equal(watcherSwift.includes('autoRelaunchWithCdp"]?.boolValue ?? false'), false);
+  assert.ok(watcherSwift.includes('func runLaunchAndWatch('));
+  assert.ok(watcherSwift.includes('AGY_CS_NO_UI'));
+  assert.ok(watcherSwift.includes('/usr/bin/osascript'));
+  assert.ok(watcherSwift.includes('startupGraceEnabled'));
+  assert.ok(watcherSwift.includes('Date().timeIntervalSince(watchStart) >= startupGraceSeconds'));
+  assert.ok(watcherSwift.includes('waitBrieflyForLock'));
+  assert.ok(watcherSwift.includes('DispatchTimeInterval.milliseconds(sleepMs)'));
+});
+
+test('Setup/main.swift supports managed/daemon modes, launcher .app, updated .command, and LaunchAgent cleanup', () => {
+  const setupSwift = fs.readFileSync(
+    path.join(ROOT_DIR, 'installer', 'macos', 'Setup', 'main.swift'),
+    'utf8'
+  );
+  for (const flag of ['"--managed"', '"--daemon"', '"--mode"', '"--mode="', '"--app-launcher"', '"--no-app-launcher"']) {
+    assert.ok(setupSwift.includes(flag), `Setup/main.swift supports ${flag}`);
+  }
+  assert.ok(setupSwift.includes('AGY_CS_TEST_SYSTEM_ROOT'));
+  assert.ok(setupSwift.includes('Antigravity (AGY Claude Style).app'));
+  assert.ok(setupSwift.includes('createLauncherAppBundle('));
+  assert.ok(setupSwift.includes('--launch --relaunch --exit-on-host-close --dir'));
+  assert.ok(setupSwift.includes('launch-antigravity.command'));
+  assert.ok(setupSwift.includes('.install-mode'));
+  assert.ok(setupSwift.includes('NSButton(\n            radioButtonWithTitle:') || setupSwift.includes('radioButtonWithTitle:'));
+  assert.ok(setupSwift.includes('checkboxWithTitle:'));
+  assert.ok(setupSwift.includes('width: 620, height: 560'));
+  assert.ok(setupSwift.includes('"runMode"'));
+  assert.ok(setupSwift.includes('"watcherStarted"'));
+  assert.ok(setupSwift.includes('"launchAgent"'));
+  assert.ok(setupSwift.includes('"launcherApp"'));
+  assert.ok(setupSwift.includes('"installedMode"'));
+  assert.ok(setupSwift.includes('activeCfg["autoRelaunchWithCdp"]?.boolValue ?? true'));
+  assert.equal(setupSwift.includes('activeCfg["autoRelaunchWithCdp"]?.boolValue ?? false'), false);
+});
+
+test('All Swift sources under installer/macos have balanced delimiters and valid macOS 11.0+ compatibility', () => {
+  const swiftFiles = collectSwiftFiles(path.join(ROOT_DIR, 'installer', 'macos'));
+  assert.equal(swiftFiles.length, 4);
+  for (const file of swiftFiles) {
+    const rel = path.relative(ROOT_DIR, file);
+    const src = fs.readFileSync(file, 'utf8');
+    verifySwiftDelimiters(src, rel);
+  }
+});
+
 test(
-  'macOS .app builds cleanly as universal binary and executes full install, CDP injection, setting sync, upgrade, and uninstall lifecycle',
+  'macOS .app builds cleanly as universal binary and executes managed/daemon install, mode switching, startup grace, and uninstall lifecycle',
   { skip: process.platform !== 'darwin' ? 'macOS-only .app E2E test' : false },
   async () => {
     const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-cs-macos-e2e-'));
+    const testRoot = path.join(workDir, 'test-sys-root');
     const appPath = path.join(workDir, 'AGY Claude Style.app');
     const installDir = path.join(workDir, 'installed');
+    const outManagedNoCdp = path.join(workDir, 'managed-nocdp.json');
     const outInstall = path.join(workDir, 'install.json');
     const outUpgrade = path.join(workDir, 'upgrade.json');
+    const outDaemon = path.join(workDir, 'daemon.json');
+    const outBackToManaged = path.join(workDir, 'back-managed.json');
     const outUninstall = path.join(workDir, 'uninstall.json');
     const outStatus = path.join(workDir, 'status.json');
+    const plistPath = path.join(testRoot, 'LaunchAgents', 'io.github.0dnancy.agy-claude-style.plist');
+    const appLauncherPath = path.join(testRoot, 'Applications', 'Antigravity (AGY Claude Style).app');
+    const testEnv = {
+      AGY_CS_TEST_SYSTEM_ROOT: testRoot,
+      AGY_CS_NO_UI: '1',
+      AG_WATCH_POLL_MS: '200',
+    };
     const mockCdp = createMockCdpServer();
+    const mockCdp2 = createMockCdpServer();
+    const mockCdp3 = createMockCdpServer();
 
     try {
       const buildRes = buildMacosApp({ appOut: appPath, createDmg: false });
@@ -307,22 +526,75 @@ test(
 
       const port = await mockCdp.start();
 
-      // 1. Check --status CLI
+      // 1. Check --status CLI before install
       await runBin(
         installerBin,
         ['--status', '--install-dir', installDir, '--cdp-port', String(port), '--out', outStatus],
-        10000
+        10000,
+        testEnv
       );
-      const st = JSON.parse(fs.readFileSync(outStatus, 'utf8'));
-      assert.equal(st.installed, false);
-      assert.equal(st.cdpPort, port);
+      const stBefore = JSON.parse(fs.readFileSync(outStatus, 'utf8'));
+      assert.equal(stBefore.installed, false);
+      assert.equal(stBefore.cdpPort, port);
+      assert.equal(stBefore.launchAgent, false);
+      assert.equal(stBefore.launcherApp, false);
 
-      // 2. Run --silent install against mock CDP server
+      // 2. Fresh managed install with NO CDP -> 0 watchers, no LaunchAgent plist, launcher .app + .command created
       await runBin(
         installerBin,
         [
           '--silent',
-          '--no-autostart',
+          '--mode=managed',
+          '--no-kill-legacy',
+          '--install-dir',
+          installDir,
+          '--cdp-port',
+          '1',
+          '--out',
+          outManagedNoCdp,
+        ],
+        20000,
+        testEnv
+      );
+      const managedNoCdpRes = JSON.parse(fs.readFileSync(outManagedNoCdp, 'utf8'));
+      assert.equal(managedNoCdpRes.ok, true);
+      assert.equal(managedNoCdpRes.runMode, 'managed');
+      assert.equal(managedNoCdpRes.watcherStarted, false);
+      assert.equal(managedNoCdpRes.launchAgent, false);
+      assert.equal(fs.existsSync(path.join(installDir, '.watch.pid')), false);
+      assert.equal(fs.existsSync(plistPath), false);
+      assert.equal(fs.readFileSync(path.join(installDir, '.install-mode'), 'utf8').trim(), 'managed');
+      assert.ok(fs.existsSync(appLauncherPath));
+      const launcherExe = path.join(appLauncherPath, 'Contents', 'MacOS', 'launch-antigravity');
+      assert.ok(fs.existsSync(launcherExe));
+      assert.ok((fs.statSync(launcherExe).mode & 0o111) !== 0);
+      assert.ok(fs.readFileSync(launcherExe, 'utf8').includes('--launch --relaunch --exit-on-host-close --dir'));
+      assert.ok(fs.existsSync(path.join(installDir, 'Antigravity (AGY Claude Style).app')));
+      const cmdFile = path.join(installDir, 'launch-antigravity.command');
+      assert.ok(fs.existsSync(cmdFile));
+      assert.ok(fs.readFileSync(cmdFile, 'utf8').includes('agy-claude-style-watcher'));
+      assert.ok(fs.readFileSync(cmdFile, 'utf8').includes('--launch --relaunch --exit-on-host-close --dir'));
+
+      await runBin(
+        installerBin,
+        ['--status', '--install-dir', installDir, '--cdp-port', '1', '--out', outStatus],
+        10000,
+        testEnv
+      );
+      const stManaged = JSON.parse(fs.readFileSync(outStatus, 'utf8'));
+      assert.equal(stManaged.installed, true);
+      assert.equal(stManaged.installedMode, 'managed');
+      assert.equal(stManaged.runMode, 'managed');
+      assert.equal(stManaged.watcherStarted, false);
+      assert.equal(stManaged.launchAgent, false);
+      assert.equal(stManaged.launcherApp, true);
+
+      // 3. Managed install against active mock CDP server
+      await runBin(
+        installerBin,
+        [
+          '--silent',
+          '--mode=managed',
           '--no-kill-legacy',
           '--install-dir',
           installDir,
@@ -331,12 +603,16 @@ test(
           '--out',
           outInstall,
         ],
-        20000
+        20000,
+        testEnv
       );
 
       const installResult = JSON.parse(fs.readFileSync(outInstall, 'utf8'));
       assert.equal(installResult.ok, true);
-      assert.equal(installResult.preservedExistingConfig, false);
+      assert.equal(installResult.runMode, 'managed');
+      assert.equal(installResult.watcherStarted, true);
+      assert.equal(installResult.launchAgent, false);
+      assert.equal(installResult.preservedExistingConfig, true);
       assert.deepEqual(installResult.injectedPages, ['Antigravity']);
       assert.ok(fs.existsSync(path.join(installDir, 'agy-claude-style-watcher')));
       assert.ok(fs.existsSync(path.join(installDir, 'agy-claude-style-installer')));
@@ -381,13 +657,14 @@ test(
       await runBin(
         watcherBin,
         ['--once', '--dir', installDir, '--cdp-port', String(port), '--out', onceOut],
-        10000
+        10000,
+        testEnv
       );
       const onceResult = JSON.parse(fs.readFileSync(onceOut, 'utf8'));
       assert.equal(onceResult.ok, true);
       assert.deepEqual(onceResult.pages, ['Antigravity']);
 
-      // 3. Test Runtime.bindingCalled -> config.json update & hot-reload
+      // 4. Test Runtime.bindingCalled -> config.json update & hot-reload
       const beforeCallCount = mockCdp.getCalls().length;
       mockCdp.emitBindingCalled(cdp.SETTING_BINDING, { key: 'palette', value: 'hacker-invalid' });
       mockCdp.emitBindingCalled(cdp.SETTING_BINDING, { key: 'palette', value: 'claude' });
@@ -404,12 +681,12 @@ test(
         return newer.some((c) => c.method === 'Page.removeScriptToEvaluateOnNewDocument') ? true : null;
       });
 
-      // 4. Test re-install / upgrade preserves existing user config.json
+      // 5. Test re-install / upgrade preserves existing user config.json
       await runBin(
         installerBin,
         [
           '--silent',
-          '--no-autostart',
+          '--mode=managed',
           '--no-kill-legacy',
           '--install-dir',
           installDir,
@@ -418,7 +695,8 @@ test(
           '--out',
           outUpgrade,
         ],
-        20000
+        20000,
+        testEnv
       );
       const upgradeResult = JSON.parse(fs.readFileSync(outUpgrade, 'utf8'));
       assert.equal(upgradeResult.ok, true);
@@ -426,28 +704,101 @@ test(
       const cfgAfterUpgrade = JSON.parse(fs.readFileSync(path.join(installDir, 'config.json'), 'utf8'));
       assert.equal(cfgAfterUpgrade.palette, 'claude');
 
-      // 5. Test --uninstall from installed copy inside installDir
+      // Close mockCdp -> managed watcher must exit automatically & clean .watch.pid
+      await mockCdp.close();
+      await waitFor(() => (!fs.existsSync(path.join(installDir, '.watch.pid')) ? true : null), 8000, 100);
+
+      // 6. Switch managed -> daemon: creates LaunchAgent plist & persistent watcher stays alive after CDP closes
+      const port2 = await mockCdp2.start();
+      await runBin(
+        installerBin,
+        [
+          '--silent',
+          '--mode=daemon',
+          '--no-kill-legacy',
+          '--install-dir',
+          installDir,
+          '--cdp-port',
+          String(port2),
+          '--out',
+          outDaemon,
+        ],
+        20000,
+        testEnv
+      );
+      const daemonResult = JSON.parse(fs.readFileSync(outDaemon, 'utf8'));
+      assert.equal(daemonResult.ok, true);
+      assert.equal(daemonResult.runMode, 'daemon');
+      assert.equal(daemonResult.watcherStarted, true);
+      assert.equal(daemonResult.launchAgent, true);
+      assert.equal(daemonResult.preservedExistingConfig, true);
+      assert.ok(fs.existsSync(plistPath));
+      assert.equal(fs.readFileSync(path.join(installDir, '.install-mode'), 'utf8').trim(), 'daemon');
+      assert.ok(fs.existsSync(path.join(installDir, '.watch.pid')));
+
+      await mockCdp2.close();
+      await new Promise((r) => setTimeout(r, 1200));
+      assert.ok(fs.existsSync(path.join(installDir, '.watch.pid')), 'daemon watcher stays alive after CDP closes');
+
+      // 7. Switch daemon -> managed with no CDP: deletes LaunchAgent plist & stops daemon watcher
+      await runBin(
+        installerBin,
+        [
+          '--silent',
+          '--mode=managed',
+          '--no-kill-legacy',
+          '--install-dir',
+          installDir,
+          '--cdp-port',
+          '1',
+          '--out',
+          outBackToManaged,
+        ],
+        20000,
+        testEnv
+      );
+      const backManagedResult = JSON.parse(fs.readFileSync(outBackToManaged, 'utf8'));
+      assert.equal(backManagedResult.ok, true);
+      assert.equal(backManagedResult.runMode, 'managed');
+      assert.equal(backManagedResult.watcherStarted, false);
+      assert.equal(backManagedResult.launchAgent, false);
+      assert.equal(fs.existsSync(plistPath), false);
+      assert.equal(fs.existsSync(path.join(installDir, '.watch.pid')), false);
+
+      // 8. Watcher --startup-grace 1 exits cleanly when no CDP window appears
+      await runBin(
+        watcherBin,
+        ['--watch', '--exit-on-host-close', '--startup-grace', '1', '--cdp-port', '1', '--dir', installDir],
+        8000,
+        testEnv
+      );
+      assert.equal(fs.existsSync(path.join(installDir, '.watch.pid')), false);
+
+      // 9. Test --uninstall from installed copy inside installDir (removes appLauncher, plist, CDP injection, installDir)
+      const port3 = await mockCdp3.start();
       const installedSelf = path.join(installDir, 'agy-claude-style-installer');
       await runBin(
         installedSelf,
         [
           '--uninstall',
           '--silent',
-          '--no-autostart',
           '--install-dir',
           installDir,
           '--cdp-port',
-          String(port),
+          String(port3),
           '--out',
           outUninstall,
         ],
-        20000
+        20000,
+        testEnv
       );
 
       const uninstallResult = JSON.parse(fs.readFileSync(outUninstall, 'utf8'));
       assert.equal(uninstallResult.ok, true);
       assert.deepEqual(uninstallResult.injectedPages, ['Antigravity']);
-      assert.equal(mockCdp.getLastRemovedExpr(), cdp.REMOVE_EXPRESSION);
+      assert.equal(mockCdp3.getLastRemovedExpr(), cdp.REMOVE_EXPRESSION);
+      assert.equal(fs.existsSync(appLauncherPath), false);
+      assert.equal(fs.existsSync(plistPath), false);
 
       await waitFor(() => (!fs.existsSync(installDir) ? true : null), 5000, 100);
       assert.equal(fs.existsSync(installDir), false);
@@ -460,6 +811,8 @@ test(
         }
       } catch {}
       await mockCdp.close();
+      await mockCdp2.close();
+      await mockCdp3.close();
       try {
         fs.rmSync(workDir, { recursive: true, force: true });
       } catch {}
