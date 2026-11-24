@@ -221,6 +221,7 @@
       }
     }
 
+    html.setAttribute('data-ag-cs-glass', cfg.glassEffect === false ? 'off' : 'on');
     const perfBd = cfg.performanceBackdrop === 'page' || cfg.performanceBackdrop === 'off' ? cfg.performanceBackdrop : 'card';
     html.setAttribute('data-ag-cs-perf-backdrop', perfBd);
     if (perfBd !== 'page' || effortCore.normalizeEffortStyle(cfg.effortSliderStyle) !== 'liangwufeng') {
@@ -4943,9 +4944,14 @@
   }
 
   // ── Settings Panel Integration ─────────────────────────────────────────
+  // Settings are now managed exclusively by the native Aux Pane control panel
+  // (sidecars/panel), so we no longer inject a duplicate section into Appearance.
   const SETTINGS_SEC_ID = 'ag-cs-settings-sec';
 
   function ensureSettingsSection() {
+    const stale = document.getElementById(SETTINGS_SEC_ID);
+    if (stale) stale.remove();
+    return;
     const lang = getLang();
     const ui = uiText(lang);
     const targetTitles = ['Appearance', '外观', '外觀', '外観'];
@@ -5939,6 +5945,7 @@
         for (const attr of [
           'data-ag-cs-style',
           'data-ag-cs-palette',
+          'data-ag-cs-glass',
           'data-ag-cs-home',
           'data-ag-cs-composer',
           'data-ag-cs-logo-ink',

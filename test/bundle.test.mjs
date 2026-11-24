@@ -418,133 +418,49 @@ test('inject expression mounts and REMOVE_EXPRESSION cleanly tears down on simul
     assert.equal(ctxPop.innerHTML.includes('Token HUD 与圆环快捷设置'), false);
     assert.equal(ctxPop.innerHTML.includes('data-hud-key'), false);
 
-    // Settings section must mount ONLY in Appearance, NOT General, grouped cleanly into 3 cards + collapsible HUD details
+    // Settings are managed by the native Aux Pane control panel, so Appearance stays untouched
     assert.equal(generalPanel.querySelector('#ag-cs-settings-sec'), null);
-    const settingsSec = appearancePanel.querySelector('#ag-cs-settings-sec');
-    assert.ok(settingsSec);
-    assert.equal(settingsSec.querySelector('h3')?.textContent, 'AGY Claude Style (agy-claude-style)');
-    const settingGroups = settingsSec.querySelectorAll('.ag-cs-settings-group');
-    assert.equal(settingGroups.length, 3);
-    assert.deepEqual(
-      settingGroups.map((g) => g.getAttribute('data-ag-cs-group')),
-      ['appearance', 'interaction', 'telemetry']
-    );
-    const hudDetails = settingsSec.querySelector('.ag-cs-settings-details');
-    assert.ok(hudDetails);
-    assert.equal(hudDetails.hasAttribute('open'), false);
-    const claudeCondRow = settingsSec.querySelector('[data-ag-cs-cond="claude"]');
-    const lwfCondRow = settingsSec.querySelector('[data-ag-cs-cond="liangwufeng"]');
-    assert.equal(claudeCondRow?.getAttribute('data-ag-cs-dim'), '1'); // because liangwufeng is currently active
-    assert.equal(lwfCondRow?.hasAttribute('data-ag-cs-dim'), false);
+    assert.equal(appearancePanel.querySelector('#ag-cs-settings-sec'), null);
 
-    const settingKeys = new Set(
-      appearancePanel.querySelectorAll('#ag-cs-settings-sec button').map((b) => b.getAttribute('data-ag-cs-key'))
-    );
-    assert.equal(settingKeys.size, 22);
-    for (const expectedKey of [
-      'language',
-      'homeLayout',
-      'palette',
-      'logoInk',
-      'sidebarRestyle',
-      'composerRestyle',
-      'effortSliderStyle',
-      'effortAccent',
-      'performanceBackdrop',
-      'smoothCaret',
-      'mascot',
-      'homeRipple',
-      'rewindPanel',
-      'undoConfirmMode',
-      'inlineStats',
-      'ringMode',
-      'turnBadges',
-      'hudTopBar',
-      'hudBottomBar',
-      'hudRimProgress',
-      'hudFooterChip',
-      'hudCompact',
-    ]) {
-      assert.ok(settingKeys.has(expectedKey), `Missing settings control for ${expectedKey}`);
-    }
-
-    // Verify all 5 language buttons exist in Appearance settings and clicking switches UI + emits CDP binding
-    const bindingCalls = [];
-    sandbox[cdp.SETTING_BINDING] = (payload) => bindingCalls.push(JSON.parse(payload));
-    const getLangBtns = () =>
-      appearancePanel
-        .querySelectorAll('#ag-cs-settings-sec button')
-        .filter((b) => b.getAttribute('data-ag-cs-key') === 'language');
-    assert.deepEqual(
-      getLangBtns().map((b) => [b.getAttribute('data-ag-cs-val'), b.textContent]),
-      [
-        ['"zh-CN"', '简体中文'],
-        ['"zh-TW"', '繁體中文'],
-        ['"yue"', '粵語'],
-        ['"en"', 'English'],
-        ['"ja"', '日本語'],
-      ]
-    );
-
-    const checkLangSwitch = (targetLang, hostTitle, expectedSettingsLangTitle, expectedOverviewTab, expectedPlaceholder, expectedQuotaTab) => {
-      appearanceH2.textContent = hostTitle;
-      const btn = getLangBtns().find((b) => b.getAttribute('data-ag-cs-val') === JSON.stringify(targetLang));
-      assert.ok(btn, `Expected language button for ${targetLang}`);
-      btn.dispatch('click');
+    // Verify all 5 language switches work live via refreshConfig (used by Aux Pane control panel)
+    const checkLangSwitch = (targetLang, expectedOverviewTab, expectedPlaceholder, expectedQuotaTab) => {
+      doc.hidden = true;
+      sandbox.window.__agClaudeStyle.refreshConfig({ ...cdp.DEFAULT_CONFIG, language: targetLang, effortSliderStyle: 'liangwufeng' });
+      doc.hidden = false;
       assert.equal(html.getAttribute('data-ag-cs-lang'), targetLang);
-      const secNow = appearancePanel.querySelector('#ag-cs-settings-sec');
-      assert.ok(secNow, `Settings section should stay mounted when Appearance title is ${hostTitle}`);
-      assert.equal(secNow.getAttribute('data-ag-cs-lang'), targetLang);
-      assert.equal(secNow.querySelector('[data-ag-cs-row="language"] [data-k="t"]')?.textContent, expectedSettingsLangTitle);
+      assert.equal(appearancePanel.querySelector('#ag-cs-settings-sec'), null);
       assert.equal(home.querySelector('.ag-cs-home-tab[data-tab="overview"]')?.textContent, expectedOverviewTab);
       assert.equal(placeholder.getAttribute('data-ag-cs-placeholder'), expectedPlaceholder);
       assert.ok(ctxPop.innerHTML.includes(expectedQuotaTab));
     };
 
-    checkLangSwitch('zh-TW', '外觀', '介面語言', '概覽', '描述任務或提出問題', '模型配額');
-    checkLangSwitch('yue', '外觀', '介面語言', '概覽', '寫低你想做嘅任務或者問題', '模型配額');
-    checkLangSwitch('en', 'Appearance', 'Interface Language', 'Overview', 'How can I help you today?', 'Quotas');
+    checkLangSwitch('zh-TW', '概覽', '描述任務或提出問題', '模型配額');
+    checkLangSwitch('yue', '概覽', '寫低你想做嘅任務或者問題', '模型配額');
+    checkLangSwitch('en', 'Overview', 'How can I help you today?', 'Quotas');
     assert.equal(html.hasAttribute('data-ag-cs-cjk'), false);
-    checkLangSwitch('ja', '外観', '表示言語', '概要', 'タスクの説明や質問を入力してください', 'クォータ');
+    checkLangSwitch('ja', '概要', 'タスクの説明や質問を入力してください', 'クォータ');
     assert.equal(html.getAttribute('data-ag-cs-cjk'), '1');
-    checkLangSwitch('zh-CN', '外观', '界面语言', '概览', '描述任务或提出问题', '模型配额');
+    checkLangSwitch('zh-CN', '概览', '描述任务或提出问题', '模型配额');
 
     // Also verify live open Effort Popover refreshes across languages
     sandbox.window.__agClaudeStyle.openEffortPopover(effortSpan, modelBtn);
     const activeLwfPop = body.querySelector('.ag-cs-effort-popover');
     assert.ok(activeLwfPop);
     assert.ok(activeLwfPop.innerHTML.includes('性能 · PERFORMANCE'));
-    getLangBtns().find((b) => b.getAttribute('data-ag-cs-val') === '"ja"').dispatch('click');
+    doc.hidden = true;
+    sandbox.window.__agClaudeStyle.refreshConfig({ ...cdp.DEFAULT_CONFIG, language: 'ja', effortSliderStyle: 'liangwufeng' });
+    doc.hidden = false;
     assert.ok(activeLwfPop.innerHTML.includes('パフォーマンス'));
-    getLangBtns().find((b) => b.getAttribute('data-ag-cs-val') === '"en"').dispatch('click');
+    doc.hidden = true;
+    sandbox.window.__agClaudeStyle.refreshConfig({ ...cdp.DEFAULT_CONFIG, language: 'en', effortSliderStyle: 'liangwufeng' });
+    doc.hidden = false;
     assert.ok(activeLwfPop.innerHTML.includes('PERFORMANCE'));
-    getLangBtns().find((b) => b.getAttribute('data-ag-cs-val') === '"zh-CN"').dispatch('click');
+    doc.hidden = true;
+    sandbox.window.__agClaudeStyle.refreshConfig({ ...cdp.DEFAULT_CONFIG, language: 'zh-CN', effortSliderStyle: 'liangwufeng' });
+    doc.hidden = false;
     assert.ok(activeLwfPop.innerHTML.includes('性能 · PERFORMANCE'));
 
-    assert.deepEqual(
-      bindingCalls.map((c) => [c.key, c.value]),
-      [
-        ['language', 'zh-TW'],
-        ['language', 'yue'],
-        ['language', 'en'],
-        ['language', 'ja'],
-        ['language', 'zh-CN'],
-        ['language', 'ja'],
-        ['language', 'en'],
-        ['language', 'zh-CN'],
-      ]
-    );
-    appearanceH2.textContent = '外观';
-
-    // Refreshing config to chatgpt (Codex) dims BOTH claude and liangwufeng sub-rows
-    doc.hidden = true;
-    sandbox.window.__agClaudeStyle.refreshConfig({ ...cdp.DEFAULT_CONFIG, effortSliderStyle: 'chatgpt' });
-    await new Promise((r) => setTimeout(r, 80));
-    doc.hidden = false;
-    assert.equal(appearancePanel.querySelector('[data-ag-cs-cond="claude"]')?.getAttribute('data-ag-cs-dim'), '1');
-    assert.equal(appearancePanel.querySelector('[data-ag-cs-cond="liangwufeng"]')?.getAttribute('data-ag-cs-dim'), '1');
-
-    // Refreshing config externally syncs open Settings buttons & conditional row dimming immediately
+    // Refreshing config updates palette and effort attributes cleanly
     doc.hidden = true;
     sandbox.window.__agClaudeStyle.refreshConfig({ ...cdp.DEFAULT_CONFIG, palette: 'claude' });
     await new Promise((r) => setTimeout(r, 80));
@@ -552,13 +468,6 @@ test('inject expression mounts and REMOVE_EXPRESSION cleanly tears down on simul
     assert.equal(html.getAttribute('data-ag-cs-palette'), 'claude');
     assert.equal(html.getAttribute('data-ag-cs-effort-accent'), 'on');
     assert.equal(html.getAttribute('data-ag-cs-perf-backdrop'), 'card');
-    assert.equal(appearancePanel.querySelector('[data-ag-cs-cond="claude"]')?.hasAttribute('data-ag-cs-dim'), false);
-    assert.equal(appearancePanel.querySelector('[data-ag-cs-cond="liangwufeng"]')?.getAttribute('data-ag-cs-dim'), '1');
-    const claudeBtn = appearancePanel
-      .querySelectorAll('#ag-cs-settings-sec button')
-      .find((b) => b.getAttribute('data-ag-cs-key') === 'palette' && b.getAttribute('data-ag-cs-val') === '"claude"');
-    assert.equal(claudeBtn.getAttribute('aria-pressed'), 'true');
-    assert.equal(claudeBtn.hasAttribute('data-pressed'), true);
 
     // Effort word-boundary guard: "Flow" inside a model label must not be tagged "low"
     effortSpan.textContent = 'Flow';

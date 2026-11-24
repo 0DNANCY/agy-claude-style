@@ -18,13 +18,48 @@ const APP_DATA = IS_MAC
   ? process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming')
   : process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config');
 
+function resolvePluginDataDir(env = process.env) {
+  const explicitState = String(env?.AGY_CLAUDE_STYLE_STATE_DIR || '').trim();
+  if (explicitState) return path.resolve(explicitState);
+  const pluginData = String(env?.AGY_CLAUDE_STYLE_PLUGIN_DATA || '').trim();
+  if (pluginData && !pluginData.includes('${')) {
+    return path.resolve(pluginData);
+  }
+  const sidecarData = String(env?.ANTIGRAVITY_EXECUTABLE_DATA_DIR || '').trim();
+  const lsAddr = String(env?.ANTIGRAVITY_LS_ADDRESS || '').trim();
+  if (sidecarData && lsAddr !== 'test.invalid') {
+    const resolvedSidecar = path.resolve(sidecarData);
+    let cur = resolvedSidecar;
+    let prevChild = '';
+    for (let depth = 0; depth < 8 && cur && path.dirname(cur) !== cur; depth += 1) {
+      const base = path.basename(cur);
+      const isSidecarData = process.platform === 'win32'
+        ? base.toLowerCase() === 'sidecar_data'
+        : base === 'sidecar_data';
+      if (isSidecarData && prevChild) {
+        return path.join(path.dirname(cur), 'plugin_data', prevChild);
+      }
+      prevChild = base;
+      cur = path.dirname(cur);
+    }
+    return resolvedSidecar;
+  }
+  return null;
+}
+
+const PLUGIN_DATA_DIR = resolvePluginDataDir(process.env);
+const STATE_DIR = PLUGIN_DATA_DIR || __dirname;
 const PORT_FILE = path.join(APP_DATA, 'Antigravity', 'DevToolsActivePort');
-const PID_FILE = path.join(__dirname, '.watch.pid');
-const CONFIG_FILE = path.join(__dirname, 'config.json');
+const PID_FILE = path.join(STATE_DIR, '.watch.pid');
+const CONFIG_FILE_ENV = String(process.env.AGY_CLAUDE_STYLE_CONFIG || '').trim();
+const CONFIG_FILE = CONFIG_FILE_ENV
+  ? path.resolve(CONFIG_FILE_ENV)
+  : path.join(STATE_DIR, 'config.json');
 
 const DEFAULT_CONFIG = {
   language: 'zh-CN',
   palette: 'obsidian',
+  glassEffect: true,
   homeLayout: 'studio',
   homeRipple: true,
   composerRestyle: true,
@@ -56,6 +91,7 @@ const DEFAULT_CONFIG = {
 const CONFIG_VALIDATORS = {
   language: ['zh-CN', 'zh-TW', 'yue', 'en', 'ja'],
   palette: ['obsidian', 'claude', 'host'],
+  glassEffect: 'boolean',
   homeLayout: ['studio', 'classic', 'off'],
   homeRipple: 'boolean',
   composerRestyle: 'boolean',
@@ -95,6 +131,9 @@ function validateConfigSetting(key, value) {
 
 function writeFileAtomic(filePath, content) {
   const dir = path.dirname(filePath);
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
   const tmpPath = path.join(dir, `.${path.basename(filePath)}.tmp.${process.pid}.${Date.now()}`);
   try {
     fs.writeFileSync(tmpPath, content, 'utf8');
@@ -407,6 +446,7 @@ const REMOVE_EXPRESSION = `(() => {
   delete globalThis.__agCsFeatures;
   const root = document.documentElement;
   if (root) {
+    root.removeAttribute('data-ag-cs-glass');
     root.removeAttribute('data-ag-cs-effort-accent');
     root.removeAttribute('data-ag-cs-perf-backdrop');
     root.removeAttribute('data-ag-cs-lang');
@@ -871,9 +911,23 @@ function evaluateWatcherOwnership(rawInfo, targetDir = __dirname, targetPlatform
     return 'unknown';
   }
 
-  // 2. Node inject.js --watch / --managed check: verify executable AND exact first script argument (no ambiguous CLI flag skipping).
-  if (!hasFlag('--watch') && !hasFlag('--managed')) return 'foreign';
+  // 2. Node watcher check: supports both `node inject.js --watch|--managed` and native `node plugin/mcp-host.js`.
   const expectedScript = normalizePathForCompare(pathMod.join(normTargetDir, 'inject.js'), targetPlatform);
+  const expectedMcpScript = normalizePathForCompare(pathMod.join(normTargetDir, 'plugin', 'mcp-host.js'), targetPlatform);
+  const matchesTargetRealpath = (candidatePath, expectedPath) => {
+    if (!candidatePath) return false;
+    if (candidatePath === expectedPath) return true;
+    if (targetPlatform === process.platform) {
+      try {
+        if (fs.existsSync(candidatePath) && fs.existsSync(expectedPath)) {
+          return normalizePathForCompare(fs.realpathSync(candidatePath), targetPlatform) ===
+            normalizePathForCompare(fs.realpathSync(expectedPath), targetPlatform);
+        }
+      } catch {}
+    }
+    return false;
+  };
+  const isWatchOrManaged = hasFlag('--watch') || hasFlag('--managed');
 
   if (args && args.length >= 2) {
     if (!isNodeBinaryName(info.exePath || args[0], targetPlatform)) return 'foreign';
@@ -882,12 +936,21 @@ function evaluateWatcherOwnership(rawInfo, targetDir = __dirname, targetPlatform
     if (entryScript.startsWith('-')) {
       return NODE_DISALLOWED_ENTRY_FLAGS.has(entryScript.toLowerCase()) ? 'foreign' : 'unknown';
     }
-    if (pathMod.basename(entryScript).toLowerCase() !== 'inject.js') {
+    const baseEntry = pathMod.basename(entryScript).toLowerCase();
+    if (baseEntry === 'mcp-host.js') {
+      const resolvedEntry = resolveCandidatePath(entryScript, info.cwd, targetPlatform);
+      if (resolvedEntry) {
+        return matchesTargetRealpath(resolvedEntry, expectedMcpScript) ? 'owned' : 'foreign';
+      }
+      return 'unknown';
+    }
+    if (!isWatchOrManaged) return 'foreign';
+    if (baseEntry !== 'inject.js') {
       return 'foreign';
     }
     const resolvedEntry = resolveCandidatePath(entryScript, info.cwd, targetPlatform);
     if (resolvedEntry) {
-      return resolvedEntry === expectedScript ? 'owned' : 'foreign';
+      return matchesTargetRealpath(resolvedEntry, expectedScript) ? 'owned' : 'foreign';
     }
     return 'unknown';
   }
@@ -931,6 +994,21 @@ function evaluateWatcherOwnership(rawInfo, targetDir = __dirname, targetPlatform
     targetPlatform === 'darwin'
       ? rawUnquotedRest.replace(/^\/private(?=\/(?:var|tmp|etc)(?:\/|\s|"|'|$))/, '')
       : rawUnquotedRest;
+  if (unquotedRest.startsWith(expectedMcpScript)) {
+    const nextChar = unquotedRest[expectedMcpScript.length];
+    if (!nextChar || /[\s"']/.test(nextChar)) {
+      return 'owned';
+    }
+  }
+  const firstArg = rest.replace(/^["']/, '').split(/[\s"']/)[0] || '';
+  if (firstArg && pathMod.basename(firstArg).toLowerCase() === 'mcp-host.js') {
+    const resolvedMcp = resolveCandidatePath(firstArg, info.cwd, targetPlatform);
+    if (resolvedMcp) {
+      return matchesTargetRealpath(resolvedMcp, expectedMcpScript) ? 'owned' : 'foreign';
+    }
+    return 'unknown';
+  }
+  if (!isWatchOrManaged) return 'foreign';
   if (unquotedRest.startsWith(expectedScript)) {
     const nextChar = unquotedRest[expectedScript.length];
     if (!nextChar || /[\s"']/.test(nextChar)) {
@@ -938,7 +1016,6 @@ function evaluateWatcherOwnership(rawInfo, targetDir = __dirname, targetPlatform
     }
   }
 
-  const firstArg = rest.replace(/^["']/, '').split(/[\s"']/)[0] || '';
   if (!firstArg || pathMod.basename(firstArg).toLowerCase() !== 'inject.js') {
     // Handles non-inject.js first arg (e.g. other.js) AND also safe fallback for unknown spaces in script path
     if (pathMod.isAbsolute(firstArg)) return 'foreign';
@@ -946,7 +1023,7 @@ function evaluateWatcherOwnership(rawInfo, targetDir = __dirname, targetPlatform
   }
   const resolvedRel = resolveCandidatePath(firstArg, info.cwd, targetPlatform);
   if (resolvedRel) {
-    return resolvedRel === expectedScript ? 'owned' : 'foreign';
+    return matchesTargetRealpath(resolvedRel, expectedScript) ? 'owned' : 'foreign';
   }
   return 'unknown';
 }
@@ -1239,8 +1316,10 @@ module.exports = {
   STARTUP_GRACE_SECONDS,
   RUNTIME_PARTS,
   PORT_FILE,
+  STATE_DIR,
   PID_FILE,
   CONFIG_FILE,
+  resolvePluginDataDir,
   DEFAULT_CONFIG,
   CONFIG_VALIDATORS,
   validateConfigSetting,
