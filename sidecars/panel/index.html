@@ -1,353 +1,475 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="zh-CN">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Claude Style</title>
+  <script src="/preload.js"></script>
   <style>
     :root {
-      color-scheme: dark light;
-      --bg: #171615;
-      --surface: #201e1c;
-      --surface-2: #282523;
-      --border: rgba(255, 255, 255, 0.09);
-      --border-strong: rgba(255, 255, 255, 0.16);
-      --fg: #eceae6;
-      --muted: #9a958d;
-      --accent: #d97757;
-      --accent-soft: rgba(217, 119, 87, 0.16);
-      --ok: #4ade80;
-      --ok-soft: rgba(74, 222, 128, 0.14);
-      --warn: #f59e0b;
-      --warn-soft: rgba(245, 158, 11, 0.15);
-      --danger: #f87171;
-      --radius: 10px;
+      color-scheme: light dark;
+      --bg: var(--background, #141518);
+      --fg: var(--foreground, #eceef2);
+      --muted-fg: var(--muted-foreground, #969aa6);
+      --card-bg: var(--card, rgba(255, 255, 255, 0.04));
+      --border-col: var(--border, rgba(255, 255, 255, 0.1));
+      --divider-col: rgba(255, 255, 255, 0.07);
+      --control-bg: rgba(255, 255, 255, 0.06);
+      --control-hover: rgba(255, 255, 255, 0.1);
+      --brand-accent: #d97757;
+      --brand-accent-soft: rgba(217, 119, 87, 0.14);
+      --switch-off: rgba(255, 255, 255, 0.18);
+      --ok: #3fb950;
+      --ok-soft: rgba(63, 185, 80, 0.14);
+      --warn: #d29922;
+      --warn-bg: rgba(210, 153, 34, 0.14);
+      --warn-border: rgba(210, 153, 34, 0.42);
+      --toast-bg: rgba(24, 25, 29, 0.95);
+      --toast-fg: #f4f5f8;
+      --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.22);
+      --radius: 12px;
     }
     @media (prefers-color-scheme: light) {
-      :root {
-        --bg: #f6f4ef;
-        --surface: #ffffff;
-        --surface-2: #f0ece4;
-        --border: rgba(26, 24, 22, 0.09);
-        --border-strong: rgba(26, 24, 22, 0.18);
-        --fg: #1d1b19;
-        --muted: #6c675f;
-        --accent: #c96442;
-        --accent-soft: rgba(201, 100, 66, 0.13);
-        --ok: #16a34a;
-        --ok-soft: rgba(22, 163, 74, 0.12);
-        --warn: #d97706;
-        --warn-soft: rgba(217, 119, 6, 0.13);
-        --danger: #dc2626;
+      :root:not([data-theme="dark"]) {
+        --bg: var(--background, #f6f7f9);
+        --fg: var(--foreground, #181a1f);
+        --muted-fg: var(--muted-foreground, #646974);
+        --card-bg: var(--card, #ffffff);
+        --border-col: var(--border, rgba(15, 23, 42, 0.09));
+        --divider-col: rgba(15, 23, 42, 0.06);
+        --control-bg: #f4f5f8;
+        --control-hover: #eceef3;
+        --switch-off: rgba(15, 23, 42, 0.16);
+        --ok: #1f9d4c;
+        --ok-soft: rgba(31, 157, 76, 0.1);
+        --warn-bg: rgba(210, 153, 34, 0.1);
+        --toast-bg: rgba(24, 26, 31, 0.94);
+        --toast-fg: #ffffff;
+        --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.04);
       }
     }
+    :root[data-theme="light"] {
+      --bg: var(--background, #f6f7f9);
+      --fg: var(--foreground, #181a1f);
+      --muted-fg: var(--muted-foreground, #646974);
+      --card-bg: var(--card, #ffffff);
+      --border-col: var(--border, rgba(15, 23, 42, 0.09));
+      --divider-col: rgba(15, 23, 42, 0.06);
+      --control-bg: #f4f5f8;
+      --control-hover: #eceef3;
+      --switch-off: rgba(15, 23, 42, 0.16);
+      --ok: #1f9d4c;
+      --ok-soft: rgba(31, 157, 76, 0.1);
+      --warn-bg: rgba(210, 153, 34, 0.1);
+      --toast-bg: rgba(24, 26, 31, 0.94);
+      --toast-fg: #ffffff;
+      --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.04);
+    }
+    :root[data-theme="dark"] {
+      --bg: var(--background, #141518);
+      --fg: var(--foreground, #eceef2);
+      --muted-fg: var(--muted-foreground, #969aa6);
+      --card-bg: var(--card, rgba(255, 255, 255, 0.04));
+      --border-col: var(--border, rgba(255, 255, 255, 0.1));
+      --divider-col: rgba(255, 255, 255, 0.07);
+      --control-bg: #1e2025;
+      --control-hover: #272a31;
+      --switch-off: rgba(255, 255, 255, 0.18);
+      --ok: #3fb950;
+      --ok-soft: rgba(63, 185, 80, 0.14);
+      --warn-bg: rgba(210, 153, 34, 0.14);
+      --toast-bg: rgba(24, 25, 29, 0.95);
+      --toast-fg: #f4f5f8;
+      --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.22);
+    }
     * { box-sizing: border-box; }
-    html, body {
+    html {
+      scrollbar-width: thin;
+      scrollbar-color: var(--border-col) transparent;
+    }
+    body {
       margin: 0;
-      padding: 0;
+      padding: 12px 14px 18px;
       background: var(--bg);
       color: var(--fg);
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", sans-serif;
-      font-size: 12.5px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", Roboto, sans-serif;
+      font-size: 13px;
       line-height: 1.45;
       -webkit-font-smoothing: antialiased;
     }
-    .app {
-      padding: 12px;
-      display: flex;
-      flex-direction: column;
-      gap: 10px;
-      max-width: 520px;
-      margin: 0 auto;
-    }
-    .header {
-      background: var(--surface);
-      border: 1px solid var(--border);
+
+    /* Header Card */
+    .header-card {
+      background: var(--card-bg);
+      border: 1px solid var(--border-col);
       border-radius: var(--radius);
-      padding: 11px 12px;
-      display: flex;
-      flex-direction: column;
-      gap: 9px;
+      padding: 12px;
+      margin-bottom: 12px;
+      box-shadow: var(--shadow-sm);
     }
     .header-top {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      gap: 8px;
+      gap: 10px;
+      margin-bottom: 11px;
     }
     .brand {
       display: flex;
       align-items: center;
-      gap: 8px;
+      gap: 10px;
       min-width: 0;
     }
-    .brand-icon {
-      width: 26px;
-      height: 26px;
-      border-radius: 7px;
-      flex-shrink: 0;
+    .brand-badge {
+      width: 36px;
+      height: 36px;
+      border-radius: 10px;
+      background: linear-gradient(135deg, rgba(217, 119, 87, 0.18) 0%, rgba(167, 139, 250, 0.18) 100%);
+      border: 1px solid rgba(217, 119, 87, 0.34);
+      display: grid;
+      place-items: center;
+      flex: 0 0 auto;
     }
+    .brand-badge svg {
+      width: 28px;
+      height: 28px;
+      display: block;
+    }
+    .brand-info { min-width: 0; }
     .brand-title {
+      font-weight: 650;
       font-size: 14px;
-      font-weight: 700;
       letter-spacing: -0.01em;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
-    .brand-ver {
+    .brand-sub {
       font-size: 11px;
-      color: var(--muted);
-      font-weight: 500;
-      margin-left: 4px;
+      color: var(--muted-fg);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
-    .badges {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 6px;
-    }
-    .pill {
+    .status-pill {
       display: inline-flex;
       align-items: center;
-      gap: 5px;
-      padding: 2px 8px;
+      gap: 6px;
+      padding: 4px 10px;
       border-radius: 999px;
       font-size: 11px;
-      border: 1px solid var(--border);
-      background: var(--surface-2);
-      color: var(--muted);
+      font-weight: 500;
+      border: 1px solid var(--border-col);
+      background: var(--control-bg);
+      color: var(--muted-fg);
       white-space: nowrap;
+      flex-shrink: 0;
     }
-    .pill .dot {
-      width: 6px;
-      height: 6px;
-      border-radius: 50%;
-      background: var(--muted);
-    }
-    .pill.ok {
-      border-color: rgba(74, 222, 128, 0.28);
+    .status-pill.is-ok {
       background: var(--ok-soft);
+      border-color: rgba(63, 185, 80, 0.3);
       color: var(--ok);
     }
-    .pill.ok .dot { background: var(--ok); }
-    .pill.warn {
-      border-color: rgba(245, 158, 11, 0.35);
-      background: var(--warn-soft);
-      color: var(--warn);
+    .dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--warn);
+      flex-shrink: 0;
     }
-    .pill.warn .dot { background: var(--warn); }
+    .dot.ok { background: var(--ok); }
+
+    /* Balanced Action Grid */
     .actions {
       display: flex;
-      flex-wrap: wrap;
+      flex-direction: column;
+      gap: 7px;
+    }
+    .actions-secondary {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
       gap: 6px;
     }
-    .btn {
+    button {
       appearance: none;
-      border: 1px solid var(--border);
-      background: var(--surface-2);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 5px;
+      width: 100%;
+      min-height: 32px;
+      border: 1px solid var(--border-col);
+      background: var(--control-bg);
       color: var(--fg);
-      border-radius: 7px;
-      padding: 5px 9px;
-      font-size: 11.5px;
+      padding: 6px 8px;
+      border-radius: 8px;
+      font-size: 12px;
       font-weight: 500;
       cursor: pointer;
-      transition: background 120ms ease, border-color 120ms ease, opacity 120ms ease;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      transition: background 140ms ease, border-color 140ms ease, transform 90ms ease, filter 140ms ease;
     }
-    .btn:hover { border-color: var(--border-strong); }
-    .btn:disabled { opacity: 0.55; cursor: wait; }
-    .btn-primary {
-      background: var(--accent);
-      border-color: transparent;
-      color: #fff;
+    button:hover {
+      border-color: rgba(217, 119, 87, 0.55);
+      background: var(--control-hover);
     }
-    .btn-primary:hover { filter: brightness(1.06); }
+    button:active { transform: scale(0.985); }
+    button.primary {
+      min-height: 35px;
+      background: linear-gradient(180deg, color-mix(in srgb, var(--brand-accent) 88%, #ffffff 12%) 0%, var(--brand-accent) 100%);
+      border-color: var(--brand-accent);
+      color: #ffffff;
+      font-weight: 600;
+      box-shadow: 0 2px 8px color-mix(in srgb, var(--brand-accent) 28%, transparent);
+    }
+    button.primary:hover {
+      filter: brightness(1.06);
+      background: linear-gradient(180deg, color-mix(in srgb, var(--brand-accent) 88%, #ffffff 12%) 0%, var(--brand-accent) 100%);
+    }
+    button:disabled { opacity: 0.55; cursor: wait; transform: none; }
+
+    /* CDP Alert Banner */
     .banner {
       display: none;
-      background: var(--warn-soft);
-      border: 1px solid rgba(245, 158, 11, 0.35);
-      border-radius: var(--radius);
       padding: 10px 12px;
-      flex-direction: column;
-      gap: 6px;
-    }
-    .banner.show { display: flex; }
-    .banner-title { font-weight: 600; color: var(--warn); font-size: 12px; }
-    .banner-desc { color: var(--fg); font-size: 11.5px; opacity: 0.9; }
-    .group {
-      background: var(--surface);
-      border: 1px solid var(--border);
       border-radius: var(--radius);
+      background: var(--warn-bg);
+      border: 1px solid var(--warn-border);
+      font-size: 12px;
+      margin-bottom: 12px;
+    }
+    .banner.show { display: block; }
+    .banner-title { font-weight: 600; margin-bottom: 3px; }
+    .banner-desc { font-size: 11.5px; color: var(--muted-fg); margin-bottom: 8px; }
+
+    /* Collapsible Section Cards */
+    .section {
+      background: var(--card-bg);
+      border: 1px solid var(--border-col);
+      border-radius: var(--radius);
+      padding: 0;
+      margin-bottom: 10px;
+      box-shadow: var(--shadow-sm);
       overflow: hidden;
     }
-    .group-head {
-      width: 100%;
-      appearance: none;
-      border: 0;
-      background: transparent;
-      color: var(--fg);
-      padding: 9px 12px;
+    button.section-head {
       display: flex;
       align-items: center;
       justify-content: space-between;
       gap: 8px;
-      cursor: pointer;
+      width: 100%;
+      min-height: 0;
+      margin: 0;
+      padding: 11px 13px;
+      border: none;
+      border-radius: 0;
+      background: transparent;
+      color: var(--fg);
       text-align: left;
-      font-size: 12.5px;
-      font-weight: 600;
+      cursor: pointer;
     }
-    .group-head:hover { background: rgba(255, 255, 255, 0.03); }
-    .group-head-left {
-      display: flex;
+    button.section-head:hover {
+      border-color: transparent;
+      background: var(--control-bg);
+    }
+    button.section-head:active { transform: none; }
+    .section-title {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12.5px;
+      font-weight: 650;
+      color: var(--fg);
+    }
+    .section-head-right {
+      display: inline-flex;
       align-items: center;
       gap: 7px;
+      flex-shrink: 0;
     }
-    .group-count {
-      font-size: 10.5px;
+    .section-badge {
+      font-size: 11px;
       font-weight: 500;
-      color: var(--muted);
-      padding: 1px 6px;
+      color: var(--muted-fg);
+      background: var(--control-bg);
+      border: 1px solid var(--border-col);
+      padding: 1px 7px;
       border-radius: 999px;
-      background: var(--surface-2);
+      white-space: nowrap;
     }
-    .group-chev {
-      font-size: 10px;
-      color: var(--muted);
-      transition: transform 140ms ease;
+    .section-chevron {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 16px;
+      height: 16px;
+      color: var(--muted-fg);
+      transition: transform 160ms cubic-bezier(0.22, 1, 0.36, 1);
     }
-    .group.collapsed .group-chev { transform: rotate(-90deg); }
-    .group.collapsed .group-body { display: none; }
-    .group-body {
-      border-top: 1px solid var(--border);
-      display: flex;
-      flex-direction: column;
+    .section.is-collapsed .section-chevron { transform: rotate(-90deg); }
+    .section-body {
+      padding: 0 13px 4px;
+      border-top: 1px solid var(--divider-col);
     }
+    .section.is-collapsed .section-body { display: none; }
+
+    /* Setting Rows (Single clean horizontal row) */
     .row {
-      padding: 9px 12px;
       display: flex;
-      flex-direction: column;
-      gap: 6px;
-      border-bottom: 1px solid var(--border);
-    }
-    .row:last-child { border-bottom: 0; }
-    .row.bool-row {
-      flex-direction: row;
       align-items: center;
       justify-content: space-between;
-      gap: 10px;
+      gap: 12px;
+      padding: 9px 0;
+      border-top: 1px solid var(--divider-col);
     }
-    .row.dimmed { opacity: 0.45; }
-    .row-info {
+    .row:first-of-type { border-top: none; }
+    .row.is-dimmed {
+      opacity: 0.42;
+      transition: opacity 150ms ease;
+    }
+    .row.is-dimmed select,
+    .row.is-dimmed .switch { cursor: not-allowed; }
+    .row-label {
       display: flex;
       flex-direction: column;
       gap: 2px;
       min-width: 0;
       flex: 1;
     }
-    .row-title { font-size: 12px; font-weight: 500; color: var(--fg); }
-    .row-desc { font-size: 11px; color: var(--muted); }
-    .seg {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 4px;
+    .row-name {
+      font-weight: 550;
+      font-size: 12.5px;
+      color: var(--fg);
     }
-    .seg-btn {
-      appearance: none;
-      border: 1px solid var(--border);
-      background: var(--surface-2);
-      color: var(--muted);
-      border-radius: 6px;
-      padding: 3px 8px;
+    .row-desc {
       font-size: 11px;
+      line-height: 1.4;
+      color: var(--muted-fg);
+    }
+
+    /* Sleek Select */
+    select {
+      appearance: none;
+      -webkit-appearance: none;
+      background-color: var(--control-bg);
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%238a8f9b' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 8px center;
+      color: var(--fg);
+      border: 1px solid var(--border-col);
+      border-radius: 8px;
+      padding: 5px 26px 5px 9px;
+      font-size: 12px;
       font-weight: 500;
+      width: 138px;
+      flex-shrink: 0;
       cursor: pointer;
-      transition: all 120ms ease;
+      transition: border-color 140ms ease, background-color 140ms ease;
     }
-    .seg-btn:hover { color: var(--fg); border-color: var(--border-strong); }
-    .seg-btn.active {
-      background: var(--accent-soft);
-      border-color: var(--accent);
-      color: var(--accent);
-      font-weight: 600;
+    select:hover:not(:disabled) {
+      border-color: rgba(217, 119, 87, 0.55);
+      background-color: var(--control-hover);
     }
+    select:focus {
+      outline: none;
+      border-color: var(--brand-accent);
+    }
+
+    /* Pill Toggle Switch */
     .switch {
       position: relative;
-      width: 34px;
-      height: 19px;
-      border-radius: 999px;
-      border: 1px solid var(--border-strong);
-      background: var(--surface-2);
-      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      width: 36px;
+      height: 20px;
       flex-shrink: 0;
-      transition: background 140ms ease, border-color 140ms ease;
-      padding: 0;
+      cursor: pointer;
     }
-    .switch::after {
+    .switch input {
+      position: absolute;
+      opacity: 0;
+      width: 0;
+      height: 0;
+      margin: 0;
+    }
+    .switch-track {
+      position: absolute;
+      inset: 0;
+      border-radius: 999px;
+      background: var(--switch-off);
+      transition: background 160ms ease, box-shadow 160ms ease;
+    }
+    .switch-track::after {
       content: '';
       position: absolute;
       top: 2px;
       left: 2px;
-      width: 13px;
-      height: 13px;
+      width: 16px;
+      height: 16px;
       border-radius: 50%;
-      background: var(--muted);
-      transition: transform 140ms ease, background 140ms ease;
+      background: #ffffff;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.26);
+      transition: transform 160ms cubic-bezier(0.22, 1, 0.36, 1);
     }
-    .switch.on {
-      background: var(--accent);
-      border-color: var(--accent);
+    .switch input:checked + .switch-track {
+      background: var(--brand-accent);
+      box-shadow: 0 0 0 2px var(--brand-accent-soft);
     }
-    .switch.on::after {
-      transform: translateX(15px);
-      background: #fff;
+    .switch input:checked + .switch-track::after {
+      transform: translateX(16px);
     }
-    .meta-list {
-      padding: 9px 12px;
+
+    /* Compact Companion Status Footer */
+    .companion-strip {
       display: flex;
-      flex-direction: column;
+      flex-wrap: wrap;
       gap: 6px;
-      font-size: 11.5px;
+      padding: 8px 0 6px;
+      border-top: 1px solid var(--divider-col);
     }
-    .meta-item {
-      display: flex;
+    .chip {
+      display: inline-flex;
       align-items: center;
-      justify-content: space-between;
-      gap: 8px;
-      color: var(--muted);
-    }
-    .meta-val {
-      color: var(--fg);
-      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      gap: 5px;
+      padding: 2px 8px;
+      border-radius: 999px;
       font-size: 11px;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-      max-width: 240px;
+      color: var(--muted-fg);
+      background: var(--control-bg);
+      border: 1px solid var(--border-col);
     }
+    .chip.on {
+      color: var(--ok);
+      background: var(--ok-soft);
+      border-color: rgba(63, 185, 80, 0.28);
+    }
+
     .toast {
-      position: fixed;
-      left: 12px;
-      right: 12px;
-      bottom: 12px;
-      background: var(--surface-2);
-      border: 1px solid var(--border-strong);
-      color: var(--fg);
-      border-radius: 8px;
-      padding: 7px 11px;
-      font-size: 11.5px;
-      box-shadow: 0 8px 20px rgba(0, 0, 0, 0.35);
-      opacity: 0;
-      transform: translateY(8px);
-      pointer-events: none;
-      transition: opacity 150ms ease, transform 150ms ease;
+      position: sticky;
+      bottom: 10px;
+      margin-top: 8px;
+      padding: 8px 12px;
+      border-radius: 10px;
+      background: var(--toast-bg);
+      color: var(--toast-fg);
+      border: 1px solid rgba(217, 119, 87, 0.65);
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.24);
+      font-size: 12px;
+      text-align: center;
+      display: none;
     }
-    .toast.show { opacity: 1; transform: translateY(0); }
-    .toast.err { border-color: var(--danger); color: var(--danger); }
+    .toast.show { display: block; }
   </style>
 </head>
 <body>
-  <div class="app">
-    <div class="header">
-      <div class="header-top">
-        <div class="brand">
-          <svg class="brand-icon" viewBox="0 0 64 64" aria-hidden="true">
-            <rect x="2" y="2" width="60" height="60" rx="14" fill="#1B1918" stroke="#D97757" stroke-width="3"/>
+  <div class="header-card">
+    <div class="header-top">
+      <div class="brand">
+        <div class="brand-badge">
+          <svg viewBox="0 0 64 64" aria-hidden="true">
+            <rect x="3" y="3" width="58" height="58" rx="14" fill="#1B1918" stroke="#D97757" stroke-width="3"/>
             <g fill="#E07A58">
               <rect x="14" y="13" width="6" height="6"/><rect x="44" y="13" width="6" height="6"/>
               <rect x="11" y="19" width="9" height="4"/><rect x="44" y="19" width="9" height="4"/>
@@ -357,389 +479,626 @@
             </g>
             <g fill="#1B1918"><rect x="22" y="27" width="4" height="6"/><rect x="38" y="27" width="4" height="6"/></g>
           </svg>
-          <div>
-            <span class="brand-title" id="brand-title">Claude Style</span>
-            <span class="brand-ver" id="brand-ver">v2.1.0</span>
-          </div>
         </div>
-        <button type="button" class="btn" id="btn-refresh">刷新</button>
+        <div class="brand-info">
+          <div class="brand-title" id="brand-title">Claude Style</div>
+          <div class="brand-sub" id="meta-line">加载中…</div>
+        </div>
       </div>
-      <div class="badges">
-        <span class="pill" id="pill-cdp"><span class="dot"></span><span id="txt-cdp">检查中…</span></span>
-        <span class="pill" id="pill-watcher"><span class="dot"></span><span id="txt-watcher">守护检查中</span></span>
-      </div>
-      <div class="actions">
-        <button type="button" class="btn btn-primary" id="btn-reinject">✦ 立即应用</button>
-        <button type="button" class="btn" id="btn-remove">还原原生</button>
-        <button type="button" class="btn" id="btn-reset">恢复默认</button>
+      <div class="status-pill" id="status-pill">
+        <span class="dot" id="status-dot"></span>
+        <span id="status-text">检查中</span>
       </div>
     </div>
-
-    <div class="banner" id="cdp-banner">
-      <div class="banner-title" id="cdp-banner-title">未检测到 Antigravity CDP 调试端口</div>
-      <div class="banner-desc" id="cdp-banner-desc">Antigravity 2.33+ 默认关闭远程调试端口，点击下方按钮可带 --remote-debugging-port=0 重启。</div>
-      <div>
-        <button type="button" class="btn btn-primary" id="btn-relaunch">一键带调试端口重启</button>
+    <div class="actions">
+      <button type="button" class="primary" id="btn-reinject">✦ 立即应用并刷新</button>
+      <div class="actions-secondary">
+        <button type="button" id="btn-remove">还原原生</button>
+        <button type="button" id="btn-reset">恢复默认</button>
+        <button type="button" id="btn-refresh">刷新状态</button>
       </div>
     </div>
-
-    <div id="groups-root"></div>
   </div>
+
+  <div class="banner" id="cdp-banner">
+    <div class="banner-title" id="cdp-banner-title">未检测到 Antigravity 调试端口</div>
+    <div class="banner-desc" id="cdp-banner-desc">Antigravity 2.33+ 默认关闭 CDP 调试端口，点击下方按钮可带参重启。</div>
+    <button type="button" class="primary" id="btn-relaunch">一键带调试端口重启</button>
+  </div>
+
+  <div id="sections"></div>
   <div class="toast" id="toast"></div>
 
   <script>
-    const TEXT = {
+    const TEXTS = {
       'zh-CN': {
-        brand: 'Claude Style',
-        refresh: '刷新',
-        checking: '检查中…',
-        cdpOk: (p, n) => `CDP :${p} · ${n} 个目标`,
-        cdpOff: '未连接 CDP',
+        brandTitle: 'Claude Style',
+        loading: '加载中…',
+        checking: '检查中',
+        connected: (p, n) => `CDP :${p} · ${n} 目标`,
+        waitingPort: '等待调试端口',
+        disconnected: '未连接',
         watcherOn: (pid) => `守护运行中 (PID ${pid})`,
         watcherOff: '守护未运行',
-        reinject: '✦ 立即应用',
-        remove: '还原原生',
-        reset: '恢复默认',
-        cdpTitle: '未检测到 Antigravity CDP 调试端口',
-        cdpDesc: 'Antigravity 2.33+ 默认关闭远程调试端口，点击下方按钮可带参重启。',
-        relaunch: '一键带调试端口重启',
-        saved: (k) => `已更新 ${k}（实时生效）`,
-        ok: (l) => `${l}成功`,
-        fail: (l, e) => `${l}失败：${e}`,
-        grpAppearance: '外观与布局',
-        grpInteraction: '交互与 Rewind',
-        grpTelemetry: '双圆环与 Token HUD',
-        grpSystem: '协同插件与注入状态',
-        count: (n) => `${n} 项`,
-        installed: '已启用',
-        disabled: '已禁用',
-        notInstalled: '未安装',
-        targetsLabel: '已注入目标',
-        capsuleLabel: 'agy-capsule',
-        bridgeLabel: 'claude-capsule-bridge',
+        cdpTitle: '未检测到 Antigravity 调试端口',
+        cdpDesc: 'Antigravity 2.33+ 默认关闭远程调试端口，点击下方按钮可带 --remote-debugging-port=0 重启。',
+        btnRelaunch: '一键带调试端口重启',
+        relaunching: '正在带调试端口重启 Antigravity…',
+        btnReinject: '✦ 立即应用并刷新',
+        btnRemove: '还原原生',
+        btnReset: '恢复默认',
+        btnRefresh: '刷新状态',
+        actionOk: (l) => `${l.replace(/^✦\s*/, '')}成功`,
+        actionFail: (l, e) => `${l.replace(/^✦\s*/, '')}失败：${e}`,
+        savedToast: (k) => `已更新 ${k}，实时生效`,
+        invalidToast: (k) => `配置项 ${k} 校验失败`,
+        saveErrToast: (e) => `保存失败：${e}`,
+        grpBasics: '基础设置',
+        grpLayout: '界面与材质',
+        grpAdvanced: '进阶互动',
+        grpTelemetry: '用量与圆环',
+        countBadge: (n) => `${n} 项`,
+        chipTargets: (w, s) => `窗口 ${w} · Swarm ${s}`,
         items: {
-          language: ['界面语言', '5 语言全局翻译（含 Swarm 侧栏），保留代码与原文', [['zh-CN', '简体中文'], ['zh-TW', '繁體中文'], ['yue', '粵語'], ['en', 'English'], ['ja', '日本語']]],
-          palette: ['主题配色', '选择黑曜石、Claude 暖灰或宿主原生配色', [['obsidian', '黑曜石'], ['claude', 'Claude 暖灰'], ['host', '宿主原生']]],
-          homeLayout: ['首页布局', '新对话首页：统计看板 / 经典居中 / 原生', [['studio', '统计看板'], ['classic', '经典居中'], ['off', '原生']]],
-          logoInk: ['首页 Logo 色彩', '首页顶部标志使用强调色或跟随文字色', [['accent', '强调色'], ['foreground', '文字色']]],
+          language: ['界面语言', '切换全局 5 语言翻译（含 Swarm 侧栏），保护代码原文', [['zh-CN', '简体中文'], ['zh-TW', '繁體中文'], ['yue', '粵語'], ['en', 'English'], ['ja', '日本語']]],
+          homeLayout: ['首页布局', '新对话首页：用量看板 / 经典居中 / 原生', [['studio', '用量看板'], ['classic', '经典居中'], ['off', '原生首页']]],
+          palette: ['主题配色', '选择黑曜石、Claude 暖灰或保持宿主原生配色', [['obsidian', '黑曜石'], ['claude', 'Claude 暖灰'], ['host', '宿主原生']]],
+          glassEffect: ['毛玻璃质感', '为输入框、浮层与 Rewind 条添加磨砂高光边框、看图胶囊及聚焦柔光'],
           sidebarRestyle: ['侧边栏美化', '应用 Claude 风格侧栏行高与悬停高亮'],
-          sidebarCompact: ['紧凑侧边栏', '收紧列表间距以显示更多对话'],
-          composerRestyle: ['Claude 风格输入框', '圆角卡片输入框与紧凑底栏布局'],
-          placeholderStyle: ['输入框引导语', '选择 Studio 引导语或保留宿主原生提示', [['studio', 'Studio'], ['host', '原生']]],
-          rewindPanel: ['Rewind 回退面板', '输入 /rewind 或双击 Esc 在输入框上方打开时间线回退条'],
-          undoConfirmMode: ['撤销按钮行为', '点击消息旁 Undo 时的动作模式', [['picker', 'Rewind 面板'], ['prompt', '原生确认'], ['auto_both', '自动(代码+对话)'], ['auto_chat', '自动(仅对话)']]],
-          effortSliderStyle: ['思考强度滑块', '点击思考等级徽章弹出的滑块样式', [['claude', 'Claude'], ['chatgpt', 'Codex'], ['liangwufeng', '梁武锋']]],
-          effortAccent: ['Claude 推理色阶', 'Claude 滑块按思考等级显示蓝紫渐变'],
-          performanceBackdrop: ['性能模式背景', '梁武锋滑块背景展示方式', [['off', '关闭'], ['card', '卡片'], ['page', '全屏']]],
-          smoothCaret: ['丝滑打字光标', '平滑插值光标，兼容多行与中文输入法'],
-          mascot: ['像素螃蟹 Clawd', '输入框右上角状态互动像素螃蟹', [['crab', '开启'], ['off', '关闭']]],
-          homeRipple: ['首页字符波纹', '点击首页背景触发字符水波动画'],
+          sidebarCompact: ['紧凑侧边栏', '收紧列表间距，同屏显示更多对话'],
+          composerRestyle: ['Claude 风格输入框', '采用圆角输入框与极简底栏布局'],
+          placeholderStyle: ['输入框引导语', '选择 Claude 风格引导语或保留原生提示', [['studio', 'Claude 风格'], ['host', '原生提示']]],
+          logoInk: ['首页 Logo 色彩', '首页顶部标志使用强调色或跟随文字色', [['accent', '主题强调色'], ['foreground', '跟随文字色']]],
+          rewindPanel: ['Rewind 回退条', '输入 /rewind 或双击 Esc 在输入框上方打开时间线回退面板'],
+          undoConfirmMode: ['消息撤销行为', '点击消息旁 Undo 时的默认处理模式', [['picker', 'Rewind 面板'], ['prompt', '原生确认'], ['auto_both', '自动(代码+对话)'], ['auto_chat', '自动(仅对话)']]],
+          effortSliderStyle: ['思考强度滑块', '点击模型思考等级时弹出的滑块样式', [['claude', 'Claude Code'], ['chatgpt', 'ChatGPT Codex'], ['liangwufeng', '梁武锋']]],
+          effortAccent: ['Claude 推理色阶', 'Claude 模式下按思考等级显示蓝紫渐变'],
+          performanceBackdrop: ['性能模式背景', '梁武锋滑块的背景展示方式', [['card', '卡片背景'], ['page', '全屏背景'], ['off', '关闭']]],
+          smoothCaret: ['丝滑打字光标', '打字时平滑插值滑动，兼容多行与中文输入法'],
+          mascot: ['像素小螃蟹 Clawd', '输入框右上角像素小螃蟹，随思考与回复状态实时互动'],
+          homeRipple: ['首页字符波纹海', '点击首页空白处触发字符水波扩散动画'],
           inlineStats: ['底栏统计与圆环', '在输入框底栏渲染用量统计与圆环按钮'],
-          ringMode: ['右下角圆环模式', '单圆环或双圆环（左配额剩余 + 右上下文占用）', [['context', '上下文剩余'], ['quota', '配额剩余'], ['both', '双圆环']]],
-          turnBadges: ['每轮 #T 徽章', '在每轮 AI 回复底部显示上下文增量与速率'],
-          hudTopBar: ['顶部上下文进度条', '在输入框上方显示上下文分段进度条'],
-          hudBottomBar: ['底部详情统计栏', '在输入框下方显示上下文与配额统计条'],
-          hudRimProgress: ['流光边框进度', '沿输入框边线显示上下文占比进度'],
-          hudFooterChip: ['底栏剩余容量胶囊', '在底栏显示剩余上下文/配额胶囊按钮'],
-          hudCompact: ['HUD 紧凑模式', '缩小 HUD 与圆环边距字体节省空间'],
-          autoRelaunchWithCdp: ['无 CDP 时自动重拉', 'CLI 启动发现未开调试端口时自动带参重启'],
+          ringMode: ['右下角圆环模式', '切换单圆环或双圆环（左配额剩余 + 右上下文占用）', [['context', '上下文剩余'], ['quota', '配额剩余'], ['both', '双圆环']]],
+          turnBadges: ['每轮 #T 徽章', '在每轮 AI 回复底部显示上下文增量、输出与速率'],
+          hudTopBar: ['顶部上下文条', '在输入框上方显示上下文占比分段进度条'],
+          hudBottomBar: ['底部详情统计栏', '在输入框下方显示本对话详细 Token 与配额条'],
+          hudRimProgress: ['流光边框进度', '沿输入框边线显示上下文实时占比进度'],
+          hudFooterChip: ['底栏配额胶囊', '在底栏显示剩余容量与当前模型配额胶囊'],
+          hudCompact: ['紧凑 HUD 样式', '缩小上述用量条与圆环的边距字号，更省空间'],
+        },
+      },
+      'zh-TW': {
+        brandTitle: 'Claude Style',
+        loading: '載入中…',
+        checking: '檢查中',
+        connected: (p, n) => `CDP :${p} · ${n} 目標`,
+        waitingPort: '等待偵錯埠',
+        disconnected: '未連線',
+        watcherOn: (pid) => `守護運行中 (PID ${pid})`,
+        watcherOff: '守護未運行',
+        cdpTitle: '未偵測到 Antigravity 偵錯埠',
+        cdpDesc: 'Antigravity 2.33+ 預設關閉遠端偵錯埠，點擊下方按鈕可帶參重啟。',
+        btnRelaunch: '一鍵帶偵錯埠重啟',
+        relaunching: '正在重啟 Antigravity…',
+        btnReinject: '✦ 立即套用並重新整理',
+        btnRemove: '還原原生',
+        btnReset: '重設預設',
+        btnRefresh: '重新整理',
+        actionOk: (l) => `${l.replace(/^✦\s*/, '')}成功`,
+        actionFail: (l, e) => `${l.replace(/^✦\s*/, '')}失敗：${e}`,
+        savedToast: (k) => `已更新 ${k}，即時生效`,
+        invalidToast: (k) => `設定項 ${k} 驗證失敗`,
+        saveErrToast: (e) => `儲存失敗：${e}`,
+        grpBasics: '基礎設定',
+        grpLayout: '介面與材質',
+        grpAdvanced: '進階互動',
+        grpTelemetry: '用量與圓環',
+        countBadge: (n) => `${n} 項`,
+        chipTargets: (w, s) => `視窗 ${w} · Swarm ${s}`,
+        items: {
+          language: ['介面語言', '切換全域 5 語言翻譯（含 Swarm 側欄）', [['zh-CN', '简体中文'], ['zh-TW', '繁體中文'], ['yue', '粵語'], ['en', 'English'], ['ja', '日本語']]],
+          homeLayout: ['首頁版面', '新對話首頁：用量看板 / 經典置中 / 原生', [['studio', '用量看板'], ['classic', '經典置中'], ['off', '原生首頁']]],
+          palette: ['主題配色', '選擇黑曜石、Claude 暖灰或宿主原生配色', [['obsidian', '黑曜石'], ['claude', 'Claude 暖灰'], ['host', '宿主原生']]],
+          glassEffect: ['毛玻璃質感', '為輸入框、浮層與 Rewind 條加入磨砂高光邊框與聚焦柔光'],
+          sidebarRestyle: ['側邊欄美化', '套用 Claude 風格側欄行高與懸停高亮'],
+          sidebarCompact: ['緊湊側邊欄', '收緊清單間距以顯示更多對話'],
+          composerRestyle: ['Claude 風格輸入框', '採用圓角輸入框與極簡底列'],
+          placeholderStyle: ['輸入框引導語', '選擇 Claude 風格引導語或保留原生提示', [['studio', 'Claude 風格'], ['host', '原生提示']]],
+          logoInk: ['首頁 Logo 顏色', '首頁頂部標誌使用強調色或跟隨文字色', [['accent', '主題強調色'], ['foreground', '跟隨文字色']]],
+          rewindPanel: ['Rewind 回退條', '輸入 /rewind 或雙擊 Esc 在輸入框上方開啟時間線回退面板'],
+          undoConfirmMode: ['訊息復原行為', '點擊訊息旁 Undo 時的預設模式', [['picker', 'Rewind 面板'], ['prompt', '原生確認'], ['auto_both', '自動(程式+對話)'], ['auto_chat', '自動(僅對話)']]],
+          effortSliderStyle: ['思考強度滑桿', '點擊思考等級時彈出的滑桿樣式', [['claude', 'Claude Code'], ['chatgpt', 'ChatGPT Codex'], ['liangwufeng', '梁武鋒']]],
+          effortAccent: ['Claude 推理色階', 'Claude 模式下依思考等級顯示藍紫漸層'],
+          performanceBackdrop: ['效能模式背景', '梁武鋒滑桿的背景展示方式', [['card', '卡片背景'], ['page', '全螢幕背景'], ['off', '關閉']]],
+          smoothCaret: ['絲滑打字游標', '平滑插值跟隨，相容多行與中文輸入法'],
+          mascot: ['像素小螃蟹 Clawd', '輸入框右上角像素小螃蟹，隨狀態即時互動'],
+          homeRipple: ['首頁字元波紋海', '點擊首頁空白處觸發字元水波動畫'],
+          inlineStats: ['底列統計與圓環', '在輸入框底列顯示用量統計與圓環按鈕'],
+          ringMode: ['右下角圓環模式', '切換單圓環或雙圓環（左配額剩餘 + 右上下文佔用）', [['context', '上下文剩餘'], ['quota', '配額剩餘'], ['both', '雙圓環']]],
+          turnBadges: ['每輪 #T 徽章', '於每輪 AI 回覆底部顯示上下文增量與速率'],
+          hudTopBar: ['頂部上下文條', '在輸入框上方顯示上下文佔比進度條'],
+          hudBottomBar: ['底部詳情統計列', '在輸入框下方顯示詳細 Token 與配額統計'],
+          hudRimProgress: ['流光邊框進度', '沿輸入框邊線顯示上下文使用進度'],
+          hudFooterChip: ['底列配額膠囊', '於底列顯示剩餘容量與配額標籤'],
+          hudCompact: ['緊湊 HUD 樣式', '縮小用量條與圓環邊距字號以節省空間'],
+        },
+      },
+      yue: {
+        brandTitle: 'Claude Style',
+        loading: '載入緊…',
+        checking: '檢查緊',
+        connected: (p, n) => `CDP :${p} · ${n} 目標`,
+        waitingPort: '等緊除錯埠',
+        disconnected: '未連接',
+        watcherOn: (pid) => `守護行緊 (PID ${pid})`,
+        watcherOff: '守護未開',
+        cdpTitle: '未搵到 Antigravity 除錯埠',
+        cdpDesc: 'Antigravity 2.33+ 預設閂咗除錯埠，撳下面粒掣即可帶參重開。',
+        btnRelaunch: '一鍵帶除錯埠重開',
+        relaunching: '重開緊 Antigravity…',
+        btnReinject: '✦ 即刻套用並刷新',
+        btnRemove: '還原原版',
+        btnReset: '重設預設',
+        btnRefresh: '刷新狀態',
+        actionOk: (l) => `${l.replace(/^✦\s*/, '')}搞掂`,
+        actionFail: (l, e) => `${l.replace(/^✦\s*/, '')}失敗：${e}`,
+        savedToast: (k) => `已更新 ${k}，即刻生效`,
+        invalidToast: (k) => `設定項 ${k} 校驗失敗`,
+        saveErrToast: (e) => `儲存失敗：${e}`,
+        grpBasics: '基礎設定',
+        grpLayout: '介面同材質',
+        grpAdvanced: '進階互動',
+        grpTelemetry: '用量同圓環',
+        countBadge: (n) => `${n} 項`,
+        chipTargets: (w, s) => `視窗 ${w} · Swarm ${s}`,
+        items: {
+          language: ['介面語言', '切換全介面 5 語言（含 Swarm 側欄）', [['zh-CN', '简体中文'], ['zh-TW', '繁體中文'], ['yue', '粵語'], ['en', 'English'], ['ja', '日本語']]],
+          homeLayout: ['首頁版面', '新對話首頁：用量看板 / 經典置中 / 原生', [['studio', '用量看板'], ['classic', '經典置中'], ['off', '原生首頁']]],
+          palette: ['主題配色', '揀黑曜石、Claude 暖灰或者原生配色', [['obsidian', '黑曜石'], ['claude', 'Claude 暖灰'], ['host', '宿主原生']]],
+          glassEffect: ['毛玻璃質感', '幫輸入框、浮層同 Rewind 條加磨砂高光框同聚焦柔光'],
+          sidebarRestyle: ['側邊欄美化', '套用 Claude 風格側欄行高同懸停高亮'],
+          sidebarCompact: ['緊湊側邊欄', '收窄列表間距，一屏睇多幾條對話'],
+          composerRestyle: ['Claude 風格輸入框', '圓角輸入框配極簡底欄'],
+          placeholderStyle: ['輸入框引導語', '揀 Claude 風格引導語定保留原版提示', [['studio', 'Claude 風格'], ['host', '原生提示']]],
+          logoInk: ['首頁 Logo 顏色', '首頁頂部標誌用強調色定跟隨文字色', [['accent', '主題強調色'], ['foreground', '跟隨文字色']]],
+          rewindPanel: ['Rewind 回退條', '打 /rewind 或連撳兩下 Esc 打開時間線回退面板'],
+          undoConfirmMode: ['還原掣行為', '撳訊息隔離 Undo 掣嘅預設動作', [['picker', 'Rewind 面板'], ['prompt', '原生確認'], ['auto_both', '自動(代碼+對話)'], ['auto_chat', '自動(只係對話)']]],
+          effortSliderStyle: ['思考強度滑桿', '撳思考等級彈出嘅滑桿樣式', [['claude', 'Claude Code'], ['chatgpt', 'ChatGPT Codex'], ['liangwufeng', '梁武鋒']]],
+          effortAccent: ['Claude 推理色階', 'Claude 模式下跟思考等級顯示藍紫漸變'],
+          performanceBackdrop: ['性能模式背景', '梁武鋒滑桿嘅背景顯示方式', [['card', '卡片背景'], ['page', '全屏背景'], ['off', '關閉']]],
+          smoothCaret: ['順滑打字光標', '打字時順滑跟住郁，支援多行同中文輸入法'],
+          mascot: ['像素小螃蟹 Clawd', '輸入框右上角像素小螃蟹，跟住狀態互動'],
+          homeRipple: ['首頁字符波紋海', '撳首頁空白位觸發字符水波擴散'],
+          inlineStats: ['底欄統計同圓環', '喺輸入框底欄顯示用量統計同圓環掣'],
+          ringMode: ['右下角圓環模式', '單圓環或者雙圓環（左配額剩低 + 右上下文佔用）', [['context', '上下文剩餘'], ['quota', '配額剩餘'], ['both', '雙圓環']]],
+          turnBadges: ['每輪 #T 徽章', '喺每輪 AI 回覆底顯示增量同速度'],
+          hudTopBar: ['頂部上下文條', '喺輸入框上面顯示上下文佔比進度條'],
+          hudBottomBar: ['底部詳情統計欄', '喺輸入框下面顯示詳細 Token 同配額條'],
+          hudRimProgress: ['流光邊框進度', '沿輸入框邊線顯示上下文進度'],
+          hudFooterChip: ['底欄配額膠囊', '喺底欄顯示剩低容量同配額標籤'],
+          hudCompact: ['緊湊 HUD 樣式', '縮細用量條同圓環邊距字號慳返位'],
         },
       },
       en: {
-        brand: 'Claude Style',
-        refresh: 'Refresh',
-        checking: 'Checking…',
-        cdpOk: (p, n) => `CDP :${p} · ${n} targets`,
-        cdpOff: 'CDP Disconnected',
+        brandTitle: 'Claude Style',
+        loading: 'Loading…',
+        checking: 'Checking',
+        connected: (p, n) => `CDP :${p} · ${n} targets`,
+        waitingPort: 'Waiting for CDP',
+        disconnected: 'Disconnected',
         watcherOn: (pid) => `Watcher PID ${pid}`,
-        watcherOff: 'Watcher Stopped',
-        reinject: '✦ Apply Now',
-        remove: 'Vanilla UI',
-        reset: 'Defaults',
-        cdpTitle: 'Antigravity CDP port not detected',
+        watcherOff: 'Watcher stopped',
+        cdpTitle: 'Antigravity CDP debug port not detected',
         cdpDesc: 'Antigravity 2.33+ disables remote debugging by default. Click below to relaunch with --remote-debugging-port=0.',
-        relaunch: 'Relaunch with CDP',
-        saved: (k) => `Updated ${k} (live)`,
-        ok: (l) => `${l} succeeded`,
-        fail: (l, e) => `${l} failed: ${e}`,
-        grpAppearance: 'Appearance & Layout',
-        grpInteraction: 'Interaction & Rewind',
-        grpTelemetry: 'Dual Rings & Token HUD',
-        grpSystem: 'Companions & Status',
-        count: (n) => `${n}`,
-        installed: 'Enabled',
-        disabled: 'Disabled',
-        notInstalled: 'Not installed',
-        targetsLabel: 'Injected Targets',
-        capsuleLabel: 'agy-capsule',
-        bridgeLabel: 'claude-capsule-bridge',
+        btnRelaunch: 'Relaunch with Debug Port',
+        relaunching: 'Relaunching Antigravity…',
+        btnReinject: '✦ Apply & Refresh',
+        btnRemove: 'Vanilla UI',
+        btnReset: 'Defaults',
+        btnRefresh: 'Refresh',
+        actionOk: (l) => `${l.replace(/^✦\s*/, '')} complete`,
+        actionFail: (l, e) => `${l.replace(/^✦\s*/, '')} failed: ${e}`,
+        savedToast: (k) => `Updated ${k} (live)`,
+        invalidToast: (k) => `Invalid value for ${k}`,
+        saveErrToast: (e) => `Save failed: ${e}`,
+        grpBasics: 'Basic Settings',
+        grpLayout: 'UI & Material',
+        grpAdvanced: 'Interactions',
+        grpTelemetry: 'Usage & Rings',
+        countBadge: (n) => `${n}`,
+        chipTargets: (w, s) => `Main ${w} · Swarm ${s}`,
         items: {
-          language: ['Language', '5-language UI & Swarm localization (preserves code/chat)', [['zh-CN', '简体中文'], ['zh-TW', '繁體中文'], ['yue', '粵語'], ['en', 'English'], ['ja', '日本語']]],
-          palette: ['Color Palette', 'Obsidian, Claude warm gray, or host native', [['obsidian', 'Obsidian'], ['claude', 'Claude'], ['host', 'Host']]],
-          homeLayout: ['Home Layout', 'Usage dashboard / Classic / Native', [['studio', 'Dashboard'], ['classic', 'Classic'], ['off', 'Native']]],
-          logoInk: ['Home Logo Color', 'Accent color or plain foreground', [['accent', 'Accent'], ['foreground', 'Foreground']]],
-          sidebarRestyle: ['Sidebar Restyle', 'Claude-style row height and hover states'],
-          sidebarCompact: ['Compact Sidebar', 'Tighter spacing to show more chats'],
-          composerRestyle: ['Claude Composer', 'Rounded composer card and compact footer'],
-          placeholderStyle: ['Placeholder Copy', 'Studio prompt copy or host native', [['studio', 'Studio'], ['host', 'Host']]],
-          rewindPanel: ['Rewind Panel', 'Open inline timeline bar via /rewind or double-Esc'],
-          undoConfirmMode: ['Undo Button Mode', 'Action when clicking turn Undo button', [['picker', 'Rewind Bar'], ['prompt', 'Native Dialog'], ['auto_both', 'Auto (Code+Chat)'], ['auto_chat', 'Auto (Chat Only)']]],
-          effortSliderStyle: ['Effort Slider', 'Popover style for model thinking effort', [['claude', 'Claude'], ['chatgpt', 'Codex'], ['liangwufeng', 'Perf']]],
+          language: ['Interface Language', '5-language UI & Swarm translation (preserves code/chat)', [['zh-CN', '简体中文'], ['zh-TW', '繁體中文'], ['yue', '粵語'], ['en', 'English'], ['ja', '日本語']]],
+          homeLayout: ['Home Layout', 'New-chat home: Dashboard / Classic / Native', [['studio', 'Dashboard'], ['classic', 'Classic'], ['off', 'Native']]],
+          palette: ['Color Palette', 'Obsidian, Claude warm gray, or host native', [['obsidian', 'Obsidian'], ['claude', 'Claude'], ['host', 'Host Native']]],
+          glassEffect: ['Frosted Glass', 'Frosted surfaces with 1px specular borders, media capsules & focus halos'],
+          sidebarRestyle: ['Claude Sidebar', 'Claude-style sidebar row height and hover states'],
+          sidebarCompact: ['Compact Sidebar', 'Tighter list spacing to fit more chats'],
+          composerRestyle: ['Claude Composer', 'Rounded composer card with a clean minimal footer'],
+          placeholderStyle: ['Input Prompt', 'Claude-style prompt copy or host native prompt', [['studio', 'Claude Style'], ['host', 'Native']]],
+          logoInk: ['Home Logo Color', 'Tint home logo with accent color or plain text color', [['accent', 'Accent'], ['foreground', 'Text Color']]],
+          rewindPanel: ['Rewind Bar', 'Type /rewind or press Esc twice to open inline timeline rewind bar'],
+          undoConfirmMode: ['Undo Behavior', 'Action when clicking turn Undo button', [['picker', 'Rewind Bar'], ['prompt', 'Native Dialog'], ['auto_both', 'Auto (Code+Chat)'], ['auto_chat', 'Auto (Chat Only)']]],
+          effortSliderStyle: ['Effort Slider', 'Slider style when clicking model thinking level', [['claude', 'Claude Code'], ['chatgpt', 'ChatGPT Codex'], ['liangwufeng', 'Performance']]],
           effortAccent: ['Claude Effort Gradient', 'Color-code effort levels with blue-violet gradient'],
-          performanceBackdrop: ['Performance Backdrop', 'Backdrop style for performance slider', [['off', 'Off'], ['card', 'Card'], ['page', 'Page']]],
-          smoothCaret: ['Smooth Caret', 'Interpolated typing caret (IME & multiline safe)'],
-          mascot: ['Pixel Crab Clawd', 'Reactive pixel crab on composer top-right', [['crab', 'On'], ['off', 'Off']]],
-          homeRipple: ['Home Ripple Field', 'Interactive ASCII ripple on home background'],
-          inlineStats: ['Footer Stats & Rings', 'Show inline telemetry and capacity rings in footer'],
-          ringMode: ['Ring Mode', 'Single ring or Dual Rings (Quota left + Used right)', [['context', 'Context Rem'], ['quota', 'Quota Rem'], ['both', 'Dual Rings']]],
-          turnBadges: ['Per-Turn #T Badges', 'Show delta tokens & speed under each reply'],
-          hudTopBar: ['Top Context Bar', 'Segmented context progress bar above composer'],
-          hudBottomBar: ['Bottom Telemetry Bar', 'Detailed context & quota bar below composer'],
-          hudRimProgress: ['Composer Rim Progress', 'Context progress line along composer rim'],
-          hudFooterChip: ['Footer Quota Chip', 'Remaining capacity/quota pill in footer'],
-          hudCompact: ['Compact HUD Mode', 'Condensed spacing and font sizes for HUD'],
-          autoRelaunchWithCdp: ['Auto Relaunch CDP', 'Auto-relaunch with CDP flag when invoked via CLI'],
+          performanceBackdrop: ['Perf Backdrop', 'Backdrop display for performance slider', [['card', 'Card'], ['page', 'Full Page'], ['off', 'Off']]],
+          smoothCaret: ['Smooth Caret', 'Glide typing caret smoothly (multiline & IME safe)'],
+          mascot: ['Pixel Crab Clawd', 'Reactive pixel crab on composer top-right'],
+          homeRipple: ['Home Ripple Waves', 'Click empty home background for ASCII ripple waves'],
+          inlineStats: ['Footer Stats & Rings', 'Show telemetry stats and capacity ring in footer'],
+          ringMode: ['Ring Mode', 'Single ring or Dual Rings (Quota left + Context used right)', [['context', 'Context Left'], ['quota', 'Quota Left'], ['both', 'Dual Rings']]],
+          turnBadges: ['Per-Turn #T Badges', 'Show delta tokens & speed under each AI reply'],
+          hudTopBar: ['Top Context Bar', 'Segmented context usage bar above composer'],
+          hudBottomBar: ['Bottom Details Bar', 'Detailed token & quota telemetry bar below composer'],
+          hudRimProgress: ['Rim Progress Line', 'Context usage progress along composer border'],
+          hudFooterChip: ['Footer Quota Chip', 'Show remaining capacity/quota pill in footer'],
+          hudCompact: ['Compact HUD Style', 'Use condensed spacing and font sizes for HUD'],
+        },
+      },
+      ja: {
+        brandTitle: 'Claude Style',
+        loading: '読み込み中…',
+        checking: '確認中',
+        connected: (p, n) => `CDP :${p} · ${n} 対象`,
+        waitingPort: 'ポート待機中',
+        disconnected: '未接続',
+        watcherOn: (pid) => `常駐中 (PID ${pid})`,
+        watcherOff: '監視停止中',
+        cdpTitle: 'Antigravity のデバッグポートが未検出です',
+        cdpDesc: 'Antigravity 2.33+ は既定でデバッグポートが無効です。下のボタンから再起動できます。',
+        btnRelaunch: 'デバッグ有効で再起動',
+        relaunching: 'Antigravity を再起動中…',
+        btnReinject: '✦ 今すぐ適用＆更新',
+        btnRemove: '標準 UI',
+        btnReset: '初期値',
+        btnRefresh: '状態更新',
+        actionOk: (l) => `${l.replace(/^✦\s*/, '')}完了`,
+        actionFail: (l, e) => `${l.replace(/^✦\s*/, '')}失敗：${e}`,
+        savedToast: (k) => `${k} を更新しました`,
+        invalidToast: (k) => `${k} の値が無効です`,
+        saveErrToast: (e) => `保存エラー：${e}`,
+        grpBasics: '基本設定',
+        grpLayout: 'UI・質感',
+        grpAdvanced: 'インタラクション',
+        grpTelemetry: '使用量・リング',
+        countBadge: (n) => `${n} 件`,
+        chipTargets: (w, s) => `窓 ${w} · Swarm ${s}`,
+        items: {
+          language: ['表示言語', 'Swarm 含む 5 言語ローカライズ（コード保護）', [['zh-CN', '简体中文'], ['zh-TW', '繁體中文'], ['yue', '粵語'], ['en', 'English'], ['ja', '日本語']]],
+          homeLayout: ['ホームレイアウト', '使用量ボード / クラシック / 標準', [['studio', '使用量ボード'], ['classic', 'クラシック'], ['off', '標準']]],
+          palette: ['テーマ配色', 'Obsidian・Claude 暖灰またはホスト標準', [['obsidian', 'Obsidian'], ['claude', 'Claude'], ['host', '標準']]],
+          glassEffect: ['すりガラス質感', '入力欄・浮遊パネル・Rewind バーのすりガラス＆高光枠'],
+          sidebarRestyle: ['サイドバー最適化', 'Claude 風の行高とホバーハイライト'],
+          sidebarCompact: ['コンパクトサイドバー', '余白を詰めてより多くの会話を表示'],
+          composerRestyle: ['Claude 風入力欄', '角丸入力欄とシンプルなフッター'],
+          placeholderStyle: ['入力欄ガイド文', 'Claude 風ガイド文または標準の案内文', [['studio', 'Claude 風'], ['host', '標準']]],
+          logoInk: ['ホームロゴ色', 'アクセント色または通常文字色', [['accent', 'アクセント'], ['foreground', '文字色']]],
+          rewindPanel: ['Rewind バー', '/rewind または Esc 2回で入力欄上にタイムライン復元バーを表示'],
+          undoConfirmMode: ['元に戻す動作', 'メッセージ横の元に戻すボタン押下時の動作', [['picker', 'Rewind パネル'], ['prompt', '標準確認'], ['auto_both', '自動(コード+会話)'], ['auto_chat', '自動(会話のみ)']]],
+          effortSliderStyle: ['推論強度スライダー', '推論レベル押下時のスライダー形式', [['claude', 'Claude Code'], ['chatgpt', 'ChatGPT Codex'], ['liangwufeng', 'パフォーマンス']]],
+          effortAccent: ['Claude 推論カラー', '推論レベルに応じた青紫グラデ表示'],
+          performanceBackdrop: ['背景表示', 'パフォーマンススライダーの背景表示', [['card', 'カード'], ['page', '全画面'], ['off', 'オフ']]],
+          smoothCaret: ['スムーズカーソル', '入力時にカーソルを滑らかに追従'],
+          mascot: ['ピクセルカニ Clawd', '入力欄右上のカニが状態に応じて反応'],
+          homeRipple: ['ホーム波紋エフェクト', '背景クリックで文字グリッドの波紋を再生'],
+          inlineStats: ['フッター統計＆リング', 'フッターに速度・キャッシュ率・リングを表示'],
+          ringMode: ['リングモード', '単一リングまたはデュアルリング（左クォータ残量 + 右使用率）', [['context', 'コンテキスト残量'], ['quota', 'クォータ残量'], ['both', 'デュアルリング']]],
+          turnBadges: ['ターン毎 #T バッジ', '各応答下部に増分トークンと速度を表示'],
+          hudTopBar: ['上部コンテキストバー', '入力欄上にコンテキスト進捗バーを表示'],
+          hudBottomBar: ['下部詳細バー', '入力欄下に詳細なトークン・クォータ統計を表示'],
+          hudRimProgress: ['枠線進捗ライン', '入力欄の枠線に沿って使用率を表示'],
+          hudFooterChip: ['フッタークォータ', '残り容量とクォータのチップを表示'],
+          hudCompact: ['コンパクト HUD', 'HUD とリングの余白・フォントを省スペース化'],
         },
       },
     };
 
-    const GROUPS = [
-      { id: 'appearance', icon: '🎨', titleKey: 'grpAppearance', keys: ['language', 'palette', 'homeLayout', 'logoInk', 'sidebarRestyle', 'sidebarCompact', 'composerRestyle', 'placeholderStyle'] },
-      { id: 'interaction', icon: '⏪', titleKey: 'grpInteraction', keys: ['rewindPanel', 'undoConfirmMode', 'effortSliderStyle', 'effortAccent', 'performanceBackdrop', 'smoothCaret', 'mascot', 'homeRipple'] },
-      { id: 'telemetry', icon: '◎', titleKey: 'grpTelemetry', keys: ['inlineStats', 'ringMode', 'turnBadges', 'hudTopBar', 'hudBottomBar', 'hudRimProgress', 'hudFooterChip', 'hudCompact'] },
-      { id: 'system', icon: '🔌', titleKey: 'grpSystem', keys: ['autoRelaunchWithCdp'], showMeta: true },
+    const GROUP_DEFS = [
+      { id: 'basics', icon: '🎨', titleKey: 'grpBasics', keys: ['language', 'homeLayout', 'palette'] },
+      { id: 'layout', icon: '🧩', titleKey: 'grpLayout', keys: ['glassEffect', 'sidebarRestyle', 'sidebarCompact', 'composerRestyle', 'placeholderStyle', 'logoInk'] },
+      { id: 'advanced', icon: '✨', titleKey: 'grpAdvanced', keys: ['rewindPanel', 'undoConfirmMode', 'effortSliderStyle', 'effortAccent', 'performanceBackdrop', 'smoothCaret', 'mascot', 'homeRipple'] },
+      { id: 'telemetry', icon: '📊', titleKey: 'grpTelemetry', keys: ['inlineStats', 'ringMode', 'turnBadges', 'hudTopBar', 'hudBottomBar', 'hudRimProgress', 'hudFooterChip', 'hudCompact'], showCompanions: true },
     ];
 
-    const COLLAPSED_KEY = 'agCsPanelCollapsed';
-    let collapsed = {};
-    try { collapsed = JSON.parse(localStorage.getItem(COLLAPSED_KEY) || '{}') || {}; } catch {}
-
-    let state = { config: { language: 'zh-CN' }, status: null };
-    let toastTimer = null;
-
-    function t() {
-      const lang = state.config?.language || 'zh-CN';
-      return TEXT[lang] || (lang === 'zh-TW' || lang === 'yue' ? TEXT['zh-CN'] : TEXT.en);
-    }
-
-    function apiFetch(url, opts = {}) {
+    const apiFetch = (url, opts) => {
       if (window.sidecar && typeof window.sidecar.fetch === 'function') {
         return window.sidecar.fetch(url, opts);
       }
       return fetch(url, {
         ...opts,
-        headers: { 'Content-Type': 'application/json', ...(opts.headers || {}) },
+        headers: { 'Content-Type': 'application/json', ...(opts && opts.headers) },
       });
+    };
+
+    const COLLAPSED_KEY = 'agCsPanelCollapsedV2';
+    let collapsedGroups = new Set();
+    try {
+      const raw = JSON.parse(localStorage.getItem(COLLAPSED_KEY) || '[]');
+      if (Array.isArray(raw)) collapsedGroups = new Set(raw.filter((x) => typeof x === 'string'));
+    } catch {}
+
+    let currentConfig = { language: 'zh-CN' };
+    let lastStatus = null;
+    let toastTimer = null;
+
+    function getT() {
+      return TEXTS[currentConfig?.language] || TEXTS['zh-CN'];
     }
 
-    function showToast(msg, isErr = false) {
+    function parseLum(raw) {
+      const s = String(raw || '').trim();
+      const hex = s.match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i);
+      if (hex) {
+        const h = hex[1];
+        const r = parseInt(h.length === 3 ? h[0] + h[0] : h.slice(0, 2), 16);
+        const g = parseInt(h.length === 3 ? h[1] + h[1] : h.slice(2, 4), 16);
+        const b = parseInt(h.length === 3 ? h[2] + h[2] : h.slice(4, 6), 16);
+        return 0.299 * r + 0.587 * g + 0.114 * b;
+      }
+      const rgb = s.match(/^rgba?\(\s*([\d.]+)\s*[,\s]\s*([\d.]+)\s*[,\s]\s*([\d.]+)/i);
+      if (rgb) return 0.299 * Number(rgb[1]) + 0.587 * Number(rgb[2]) + 0.114 * Number(rgb[3]);
+      return null;
+    }
+
+    function syncHostThemeAttr(overrideBg) {
+      const cands = [
+        overrideBg,
+        getComputedStyle(document.documentElement).getPropertyValue('--background'),
+        document.body ? getComputedStyle(document.body).backgroundColor : '',
+      ];
+      for (const c of cands) {
+        const lum = parseLum(c);
+        if (lum !== null) {
+          document.documentElement.setAttribute('data-theme', lum < 140 ? 'dark' : 'light');
+          return;
+        }
+      }
+      if (typeof window.matchMedia === 'function') {
+        const isLight = window.matchMedia('(prefers-color-scheme: light)').matches;
+        document.documentElement.setAttribute('data-theme', isLight ? 'light' : 'dark');
+      }
+    }
+
+    function showToast(msg) {
       const el = document.getElementById('toast');
       el.textContent = msg;
-      el.className = 'toast show' + (isErr ? ' err' : '');
+      el.classList.add('show');
       clearTimeout(toastTimer);
-      toastTimer = setTimeout(() => { el.className = 'toast'; }, 2200);
+      toastTimer = setTimeout(() => el.classList.remove('show'), 2400);
     }
 
-    function renderHeader() {
-      const tr = t();
-      const s = state.status;
-      document.getElementById('brand-title').textContent = tr.brand;
-      document.getElementById('brand-ver').textContent = s?.version ? `v${s.version}` : '';
-      document.getElementById('btn-refresh').textContent = tr.refresh;
-      document.getElementById('btn-reinject').textContent = tr.reinject;
-      document.getElementById('btn-remove').textContent = tr.remove;
-      document.getElementById('btn-reset').textContent = tr.reset;
-      document.getElementById('cdp-banner-title').textContent = tr.cdpTitle;
-      document.getElementById('cdp-banner-desc').textContent = tr.cdpDesc;
-      document.getElementById('btn-relaunch').textContent = tr.relaunch;
+    function renderStaticChrome() {
+      const t = getT();
+      document.documentElement.lang = currentConfig?.language === 'yue' ? 'zh-HK' : (currentConfig?.language || 'zh-CN');
+      document.getElementById('brand-title').textContent = t.brandTitle;
+      document.getElementById('btn-reinject').textContent = t.btnReinject;
+      document.getElementById('btn-remove').textContent = t.btnRemove;
+      document.getElementById('btn-reset').textContent = t.btnReset;
+      document.getElementById('btn-refresh').textContent = t.btnRefresh;
+      document.getElementById('btn-relaunch').textContent = t.btnRelaunch;
+      document.getElementById('cdp-banner-title').textContent = t.cdpTitle;
+      document.getElementById('cdp-banner-desc').textContent = t.cdpDesc;
 
-      const cdpPill = document.getElementById('pill-cdp');
-      const cdpTxt = document.getElementById('txt-cdp');
-      const banner = document.getElementById('cdp-banner');
-      if (s?.cdp?.port) {
-        cdpPill.className = 'pill ok';
-        cdpTxt.textContent = tr.cdpOk(s.cdp.port, s.cdp.pageCount || 0);
-        banner.classList.remove('show');
-      } else if (s) {
-        cdpPill.className = 'pill warn';
-        cdpTxt.textContent = tr.cdpOff;
-        banner.classList.add('show');
+      const pill = document.getElementById('status-pill');
+      const dot = document.getElementById('status-dot');
+      const txt = document.getElementById('status-text');
+      const meta = document.getElementById('meta-line');
+      if (lastStatus) {
+        const st = lastStatus;
+        const hasCdp = Boolean(st.cdp?.port && st.cdp?.pageCount > 0);
+        dot.classList.toggle('ok', hasCdp);
+        pill.classList.toggle('is-ok', hasCdp);
+        txt.textContent = hasCdp
+          ? t.connected(st.cdp.port, st.cdp.pageCount)
+          : st.watcher?.alive ? t.waitingPort : t.disconnected;
+        meta.textContent = `v${st.version || '2.1.0'} · ${st.watcher?.alive ? t.watcherOn(st.watcher.pid) : t.watcherOff}`;
+        document.getElementById('cdp-banner').classList.toggle('show', Boolean(st.cdp?.needsCdpRestart));
       } else {
-        cdpPill.className = 'pill';
-        cdpTxt.textContent = tr.checking;
-      }
-
-      const wPill = document.getElementById('pill-watcher');
-      const wTxt = document.getElementById('txt-watcher');
-      if (s?.watcher?.alive) {
-        wPill.className = 'pill ok';
-        wTxt.textContent = tr.watcherOn(s.watcher.pid);
-      } else if (s) {
-        wPill.className = 'pill';
-        wTxt.textContent = tr.watcherOff;
+        meta.textContent = t.loading;
+        txt.textContent = t.checking;
       }
     }
 
-    function formatCompanion(c, tr) {
-      if (!c || !c.installed) return tr.notInstalled;
-      const ver = c.version ? ` v${c.version}` : '';
-      return `${c.enabled ? tr.installed : tr.disabled}${ver}`;
+    function isRowDimmed(key, cfg) {
+      if (key === 'undoConfirmMode' && cfg.rewindPanel === false) return true;
+      if (key === 'effortAccent' && cfg.effortSliderStyle !== 'claude') return true;
+      if (key === 'performanceBackdrop' && cfg.effortSliderStyle !== 'liangwufeng') return true;
+      if (key === 'ringMode' && cfg.inlineStats === false) return true;
+      return false;
     }
 
-    function renderGroups() {
-      const tr = t();
-      const cfg = state.config || {};
-      const root = document.getElementById('groups-root');
-      root.innerHTML = '';
+    function renderForm(cfg) {
+      const t = getT();
+      const container = document.getElementById('sections');
+      container.innerHTML = '';
 
-      for (const grp of GROUPS) {
-        const isCollapsed = Boolean(collapsed[grp.id]);
-        const card = document.createElement('div');
-        card.className = 'group' + (isCollapsed ? ' collapsed' : '');
+      for (const group of GROUP_DEFS) {
+        const isCollapsed = collapsedGroups.has(group.id);
+        const sec = document.createElement('div');
+        sec.className = isCollapsed ? 'section is-collapsed' : 'section';
 
         const head = document.createElement('button');
         head.type = 'button';
-        head.className = 'group-head';
-        head.innerHTML = `<span class="group-head-left"><span>${grp.icon}</span><span>${tr[grp.titleKey]}</span><span class="group-count">${tr.count(grp.keys.length)}</span></span><span class="group-chev">▼</span>`;
+        head.className = 'section-head';
+        head.setAttribute('aria-expanded', String(!isCollapsed));
+        head.innerHTML = `<span class="section-title">${group.icon} ${t[group.titleKey]}</span><span class="section-head-right"><span class="section-badge">${t.countBadge(group.keys.length)}</span><span class="section-chevron" aria-hidden="true"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></span></span>`;
         head.addEventListener('click', () => {
-          collapsed[grp.id] = !collapsed[grp.id];
-          try { localStorage.setItem(COLLAPSED_KEY, JSON.stringify(collapsed)); } catch {}
-          card.classList.toggle('collapsed', collapsed[grp.id]);
+          const next = !collapsedGroups.has(group.id);
+          if (next) collapsedGroups.add(group.id);
+          else collapsedGroups.delete(group.id);
+          sec.classList.toggle('is-collapsed', next);
+          head.setAttribute('aria-expanded', String(!next));
+          try { localStorage.setItem(COLLAPSED_KEY, JSON.stringify(Array.from(collapsedGroups))); } catch {}
         });
-        card.appendChild(head);
+        sec.appendChild(head);
 
         const body = document.createElement('div');
-        body.className = 'group-body';
+        body.className = 'section-body';
 
-        for (const key of grp.keys) {
-          const spec = tr.items[key];
-          if (!spec) continue;
-          const [title, desc, opts] = spec;
-          const curVal = cfg[key];
+        for (const key of group.keys) {
+          const def = t.items[key];
+          if (!def) continue;
+          const [labelText, descText, options] = def;
+          const dimmed = isRowDimmed(key, cfg);
           const row = document.createElement('div');
-          const dimmed =
-            (key === 'effortAccent' && cfg.effortSliderStyle !== 'claude') ||
-            (key === 'performanceBackdrop' && cfg.effortSliderStyle !== 'liangwufeng');
-          if (!opts) {
-            row.className = 'row bool-row' + (dimmed ? ' dimmed' : '');
-            const info = document.createElement('div');
-            info.className = 'row-info';
-            info.innerHTML = `<div class="row-title">${title}</div><div class="row-desc">${desc}</div>`;
-            const sw = document.createElement('button');
-            sw.type = 'button';
-            sw.className = 'switch' + (curVal ? ' on' : '');
-            sw.setAttribute('aria-pressed', String(Boolean(curVal)));
-            sw.addEventListener('click', () => saveSetting(key, !curVal));
-            row.appendChild(info);
+          row.className = 'row' + (dimmed ? ' is-dimmed' : '');
+
+          const label = document.createElement('div');
+          label.className = 'row-label';
+          label.innerHTML = `<div class="row-name">${labelText}</div><div class="row-desc">${descText}</div>`;
+          row.appendChild(label);
+
+          if (!options) {
+            const sw = document.createElement('label');
+            sw.className = 'switch';
+            const cb = document.createElement('input');
+            cb.type = 'checkbox';
+            cb.checked =
+              key === 'glassEffect'
+                ? cfg[key] !== false
+                : key === 'mascot'
+                ? cfg[key] === 'crab'
+                : Boolean(cfg[key]);
+            cb.disabled = dimmed;
+            cb.addEventListener('change', () => saveOne(key, key === 'mascot' ? (cb.checked ? 'crab' : 'off') : cb.checked));
+            const track = document.createElement('span');
+            track.className = 'switch-track';
+            sw.appendChild(cb);
+            sw.appendChild(track);
             row.appendChild(sw);
           } else {
-            row.className = 'row' + (dimmed ? ' dimmed' : '');
-            const info = document.createElement('div');
-            info.className = 'row-info';
-            info.innerHTML = `<div class="row-title">${title}</div><div class="row-desc">${desc}</div>`;
-            const seg = document.createElement('div');
-            seg.className = 'seg';
-            for (const [val, label] of opts) {
-              const b = document.createElement('button');
-              b.type = 'button';
-              b.className = 'seg-btn' + (curVal === val ? ' active' : '');
-              b.textContent = label;
-              b.addEventListener('click', () => {
-                if (curVal !== val) saveSetting(key, val);
-              });
-              seg.appendChild(b);
+            const sel = document.createElement('select');
+            sel.disabled = dimmed;
+            for (const [val, text] of options) {
+              const opt = document.createElement('option');
+              opt.value = val;
+              opt.textContent = text;
+              if (cfg[key] === val) opt.selected = true;
+              sel.appendChild(opt);
             }
-            row.appendChild(info);
-            row.appendChild(seg);
+            sel.addEventListener('change', () => saveOne(key, sel.value));
+            row.appendChild(sel);
           }
           body.appendChild(row);
         }
 
-        if (grp.showMeta && state.status) {
-          const meta = document.createElement('div');
-          meta.className = 'meta-list';
-          const pages = state.status.cdp?.pages || [];
-          const winCount = pages.filter((p) => p.kind === 'window').length;
-          const swarmCount = pages.filter((p) => p.kind === 'swarm').length;
-          meta.innerHTML = `
-            <div class="meta-item"><span>${tr.targetsLabel}</span><span class="meta-val">${winCount} Main · ${swarmCount} Swarm</span></div>
-            <div class="meta-item"><span>${tr.capsuleLabel}</span><span class="meta-val">${formatCompanion(state.status.companions?.capsule, tr)}</span></div>
-            <div class="meta-item"><span>${tr.bridgeLabel}</span><span class="meta-val">${formatCompanion(state.status.companions?.bridge, tr)}</span></div>
-          `;
-          body.appendChild(meta);
+        if (group.showCompanions && lastStatus) {
+          const strip = document.createElement('div');
+          strip.className = 'companion-strip';
+          const pages = lastStatus.cdp?.pages || [];
+          const w = pages.filter((p) => p.kind === 'window').length;
+          const s = pages.filter((p) => p.kind === 'swarm').length;
+          const cap = lastStatus.companions?.capsule;
+          const br = lastStatus.companions?.bridge;
+          const chips = [
+            { text: t.chipTargets(w, s), on: w + s > 0 },
+            ...(cap?.installed ? [{ text: `agy-capsule${cap.version ? ' v' + cap.version : ''}`, on: cap.enabled }] : []),
+            ...(br?.installed ? [{ text: `bridge${br.version ? ' v' + br.version : ''}`, on: br.enabled }] : []),
+          ];
+          for (const c of chips) {
+            const el = document.createElement('span');
+            el.className = 'chip' + (c.on ? ' on' : '');
+            el.textContent = c.text;
+            strip.appendChild(el);
+          }
+          body.appendChild(strip);
         }
 
-        card.appendChild(body);
-        root.appendChild(card);
+        sec.appendChild(body);
+        container.appendChild(sec);
       }
     }
 
-    async function saveSetting(key, value) {
-      const tr = t();
+    async function saveOne(key, value) {
       try {
         const res = await apiFetch('/api/config', {
           method: 'POST',
           body: JSON.stringify({ key, value }),
         });
         const data = await res.json();
-        if (!res.ok || !data.ok) {
-          showToast(tr.fail(key, data?.error || 'invalid'), true);
-          return;
-        }
-        state.config = data.config || { ...state.config, [key]: value };
-        renderHeader();
-        renderGroups();
-        showToast(tr.saved(key));
+        if (data.config) currentConfig = data.config;
+        renderStaticChrome();
+        renderForm(currentConfig);
+        const t = getT();
+        showToast(data.ok ? t.savedToast(key) : t.invalidToast(key));
       } catch (err) {
-        showToast(tr.fail(key, err.message || String(err)), true);
+        showToast(getT().saveErrToast(err.message));
       }
     }
 
     async function refreshStatus() {
+      syncHostThemeAttr();
       try {
         const res = await apiFetch('/api/status', { method: 'GET' });
-        const data = await res.json();
-        if (data && data.ok) {
-          state.status = data;
-          state.config = data.config || state.config;
-          renderHeader();
-          renderGroups();
-        }
+        const st = await res.json();
+        lastStatus = st;
+        currentConfig = st.config || currentConfig;
+        renderStaticChrome();
+        renderForm(currentConfig);
       } catch (err) {
-        showToast(String(err.message || err), true);
+        document.getElementById('status-text').textContent = 'Error';
+        document.getElementById('meta-line').textContent = err.message;
       }
     }
 
-    async function postAction(endpoint, btnId) {
-      const tr = t();
-      const btn = document.getElementById(btnId);
-      const label = btn ? btn.textContent.replace(/^✦\s*/, '') : endpoint;
-      if (btn) btn.disabled = true;
+    async function postAction(endpoint, labelKey) {
+      const btns = document.querySelectorAll('.actions button');
+      btns.forEach((b) => (b.disabled = true));
       try {
         const res = await apiFetch(endpoint, { method: 'POST', body: '{}' });
         const data = await res.json();
-        if (!res.ok || !data.ok) {
-          showToast(tr.fail(label, data?.reason || data?.error || res.status), true);
-        } else {
-          if (data.config) state.config = data.config;
-          showToast(tr.ok(label));
-          await refreshStatus();
-        }
+        if (!res.ok) throw new Error(data.error || 'Error');
+        const t = getT();
+        showToast(t.actionOk(t[labelKey]));
+        await refreshStatus();
       } catch (err) {
-        showToast(tr.fail(label, err.message || String(err)), true);
+        const t = getT();
+        showToast(t.actionFail(t[labelKey], err.message));
       } finally {
+        btns.forEach((b) => (b.disabled = false));
+      }
+    }
+
+    async function triggerRelaunch() {
+      const btn = document.getElementById('btn-relaunch');
+      if (btn) btn.disabled = true;
+      try {
+        const res = await apiFetch('/api/relaunch', { method: 'POST', body: '{}' });
+        const data = await res.json();
+        if (!res.ok || !data?.ok) throw new Error(data?.reason || data?.error || 'Error');
+        showToast(getT().relaunching);
+      } catch (err) {
+        showToast(getT().actionFail(getT().btnRelaunch, err.message));
         if (btn) btn.disabled = false;
       }
     }
 
-    document.getElementById('btn-refresh').addEventListener('click', () => refreshStatus());
-    document.getElementById('btn-reinject').addEventListener('click', () => postAction('/api/reinject', 'btn-reinject'));
-    document.getElementById('btn-remove').addEventListener('click', () => postAction('/api/remove', 'btn-remove'));
-    document.getElementById('btn-reset').addEventListener('click', () => postAction('/api/reset', 'btn-reset'));
-    document.getElementById('btn-relaunch').addEventListener('click', () => postAction('/api/relaunch', 'btn-relaunch'));
+    window.addEventListener('message', (ev) => {
+      if (ev.data?.type === 'theme-change') {
+        const bg = ev.data?.payload?.cssVariables?.['--background'];
+        syncHostThemeAttr(bg);
+        if (typeof requestAnimationFrame === 'function') {
+          requestAnimationFrame(() => syncHostThemeAttr());
+        }
+      }
+    });
+    if (typeof window.matchMedia === 'function') {
+      try {
+        window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', () => syncHostThemeAttr());
+      } catch {}
+    }
 
+    document.getElementById('btn-reinject').addEventListener('click', () => postAction('/api/reinject', 'btnReinject'));
+    document.getElementById('btn-remove').addEventListener('click', () => postAction('/api/remove', 'btnRemove'));
+    document.getElementById('btn-reset').addEventListener('click', () => postAction('/api/reset', 'btnReset'));
+    document.getElementById('btn-refresh').addEventListener('click', refreshStatus);
+    document.getElementById('btn-relaunch').addEventListener('click', triggerRelaunch);
+
+    renderStaticChrome();
     refreshStatus();
-    setInterval(refreshStatus, 6000);
+    setInterval(() => {
+      if (document.visibilityState !== 'hidden') void refreshStatus();
+    }, 8000);
   </script>
 </body>
 </html>

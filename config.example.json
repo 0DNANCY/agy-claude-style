@@ -1,6 +1,7 @@
 {
   "language": "zh-CN",
   "palette": "obsidian",
+  "glassEffect": true,
   "homeLayout": "studio",
   "homeRipple": true,
   "composerRestyle": true,

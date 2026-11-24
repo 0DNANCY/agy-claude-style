@@ -221,6 +221,7 @@
       }
     }
 
+    html.setAttribute('data-ag-cs-glass', cfg.glassEffect === false ? 'off' : 'on');
     const perfBd = cfg.performanceBackdrop === 'page' || cfg.performanceBackdrop === 'off' ? cfg.performanceBackdrop : 'card';
     html.setAttribute('data-ag-cs-perf-backdrop', perfBd);
     if (perfBd !== 'page' || effortCore.normalizeEffortStyle(cfg.effortSliderStyle) !== 'liangwufeng') {
@@ -5944,6 +5945,7 @@
         for (const attr of [
           'data-ag-cs-style',
           'data-ag-cs-palette',
+          'data-ag-cs-glass',
           'data-ag-cs-home',
           'data-ag-cs-composer',
           'data-ag-cs-logo-ink',

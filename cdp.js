@@ -59,6 +59,7 @@ const CONFIG_FILE = CONFIG_FILE_ENV
 const DEFAULT_CONFIG = {
   language: 'zh-CN',
   palette: 'obsidian',
+  glassEffect: true,
   homeLayout: 'studio',
   homeRipple: true,
   composerRestyle: true,
@@ -90,6 +91,7 @@ const DEFAULT_CONFIG = {
 const CONFIG_VALIDATORS = {
   language: ['zh-CN', 'zh-TW', 'yue', 'en', 'ja'],
   palette: ['obsidian', 'claude', 'host'],
+  glassEffect: 'boolean',
   homeLayout: ['studio', 'classic', 'off'],
   homeRipple: 'boolean',
   composerRestyle: 'boolean',
@@ -444,6 +446,7 @@ const REMOVE_EXPRESSION = `(() => {
   delete globalThis.__agCsFeatures;
   const root = document.documentElement;
   if (root) {
+    root.removeAttribute('data-ag-cs-glass');
     root.removeAttribute('data-ag-cs-effort-accent');
     root.removeAttribute('data-ag-cs-perf-backdrop');
     root.removeAttribute('data-ag-cs-lang');
