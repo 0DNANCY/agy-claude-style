@@ -83,12 +83,23 @@
     if (!Number.isFinite(ms) || ms < 0) return '';
     if (ms < 1000) return `${(Math.max(100, Math.round(ms / 100) * 100) / 1000).toFixed(1)}s`;
     if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
-    return `${Math.floor(ms / 60000)}m ${Math.floor((ms % 60000) / 1000)}s`;
+    if (ms < 3600000) return `${Math.floor(ms / 60000)}m ${Math.floor((ms % 60000) / 1000)}s`;
+    return `${Math.floor(ms / 3600000)}h ${Math.floor((ms % 3600000) / 60000)}m`;
   }
 
   function formatClock(ms) {
     if (!Number.isFinite(ms) || ms < 0) return '';
-    return `${Math.floor(ms / 60000)}:${String(Math.floor((ms % 60000) / 1000)).padStart(2, '0')}`;
+    if (ms === 0) return '0s';
+    if (ms < 1000) return `${(Math.max(100, Math.round(ms / 100) * 100) / 1000).toFixed(1)}s`;
+    if (ms < 60000) return `${Math.floor(ms / 1000)}s`;
+    if (ms < 3600000) {
+      const m = Math.floor(ms / 60000);
+      const s = Math.floor((ms % 60000) / 1000);
+      return `${m}m ${s}s`;
+    }
+    const h = Math.floor(ms / 3600000);
+    const m = Math.floor((ms % 3600000) / 60000);
+    return `${h}h ${m}m`;
   }
 
   function tsToMs(ts) {
@@ -154,6 +165,10 @@
     let lastResponseMs = null;
     let lastCompletedStepMs = null;
     let activeResponseSinceMs = null;
+    let modelWaitTotalMs = 0;
+    let modelWaitLastMs = null;
+    let modelWaitSinceMs = null;
+    let modelWaitCount = 0;
 
     for (let i = 0; i < tail.length; i++) {
       const s = tail[i];
@@ -166,17 +181,23 @@
       if (completedMs || createdMs) lastStepAtMs = Math.max(lastStepAtMs || 0, completedMs || createdMs);
 
       if (sc === 'plannerresponse') {
-        if (createdMs && completedMs && completedMs >= createdMs) {
-          lastResponseMs = completedMs - createdMs;
+        const pStart = tsToMs(s?.metadata?.startedAt) || createdMs;
+        let pEnd = completedMs;
+        if (!pEnd && i + 1 < tail.length) {
+          pEnd = tsToMs(tail[i + 1]?.metadata?.createdAt) || tsToMs(tail[i + 1]?.createdAt);
+        }
+        if (pStart && pEnd && pEnd >= pStart && pEnd - pStart <= 600_000) {
+          const pDur = pEnd - pStart;
+          lastResponseMs = pDur;
+          modelWaitLastMs = pDur;
+          modelWaitTotalMs += pDur;
+          modelWaitCount++;
           activeResponseSinceMs = null;
-        } else if (createdMs && i + 1 < tail.length) {
-          const nextCreated = tsToMs(tail[i + 1]?.metadata?.createdAt) || tsToMs(tail[i + 1]?.createdAt);
-          if (nextCreated && nextCreated >= createdMs && nextCreated - createdMs <= 600_000) {
-            lastResponseMs = nextCreated - createdMs;
-            activeResponseSinceMs = null;
-          }
-        } else if (createdMs && turnStatus === 'running') {
-          activeResponseSinceMs = createdMs;
+          modelWaitSinceMs = null;
+        } else if (pStart && turnStatus === 'running') {
+          activeResponseSinceMs = pStart;
+          modelWaitSinceMs = pStart;
+          modelWaitCount++;
         }
       }
 
@@ -255,6 +276,10 @@
       }
     }
 
+    if (turnStatus === 'running' && !modelWaitSinceMs && !toolCalls.some((c) => c.status === 'running')) {
+      modelWaitSinceMs = lastStepAtMs || startedAtMs;
+    }
+
     return {
       toolCalls,
       checklist,
@@ -266,6 +291,10 @@
       lastResponseMs,
       lastCompletedStepMs,
       activeResponseSinceMs,
+      modelWaitTotalMs,
+      modelWaitLastMs,
+      modelWaitSinceMs,
+      modelWaitCount,
     };
   }
 
@@ -273,17 +302,38 @@
     const anchor =
       document.querySelector('[data-testid="agent-input-box"]') ||
       document.querySelector('[data-testid="conversation-view"]') ||
-      document.body;
-    if (!anchor) return null;
-    let node = getFiber(anchor);
-    let steps = 0;
-    while (node && steps < 360) {
-      steps++;
-      const v = node.memoizedProps?.value;
-      if (v && typeof v === 'object' && typeof v.navigate === 'function' && v.routesByPath) {
-        return v;
+      document.querySelector('[data-testid="sidebar-navigation-items"]');
+    if (anchor) {
+      let node = getFiber(anchor);
+      let steps = 0;
+      while (node && steps < 360) {
+        steps++;
+        const v = node.memoizedProps?.value;
+        if (v && typeof v === 'object' && typeof v.navigate === 'function' && v.routesByPath) {
+          return v;
+        }
+        node = node.return;
       }
-      node = node.return;
+    }
+    // Fallback: search downward from #root container
+    const rootEl = document.getElementById('root') || document.body?.firstElementChild;
+    const rootKey = rootEl && Object.keys(rootEl).find((k) => k.startsWith('__reactFiber$') || k.startsWith('__reactContainer$'));
+    if (rootKey && rootEl[rootKey]) {
+      const seen = new Set();
+      const stack = [rootEl[rootKey]];
+      let n = 0;
+      while (stack.length && n < 5000) {
+        n++;
+        const f = stack.pop();
+        if (!f || seen.has(f)) continue;
+        seen.add(f);
+        const v = f.memoizedProps?.value;
+        if (v && typeof v === 'object' && typeof v.navigate === 'function' && v.routesByPath) {
+          return v;
+        }
+        if (f.child) stack.push(f.child);
+        if (f.sibling) stack.push(f.sibling);
+      }
     }
     return null;
   }
@@ -291,24 +341,8 @@
   function jumpToConversation(targetId) {
     const id = String(targetId || '').trim();
     if (!id) return false;
-    // 1. Prefer native subagent card if currently mounted in the conversation DOM
-    const subNode = document.querySelector(`[data-testid="subagent-node"][data-cascade-id="${id}"]`);
-    if (subNode && typeof subNode.click === 'function') {
-      try { subNode.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch {}
-      subNode.click();
-      return true;
-    }
-    // 2. Check native sidebar conversation row or explicit tab/link
-    const sidebarOrLink =
-      document.querySelector(`[data-testid="conversation-row-sidebar"][data-cascade-id="${id}"]`) ||
-      document.querySelector(`[role="tab"][data-cascade-id="${id}"]`) ||
-      document.querySelector(`a[href*="/c/${id}"]`);
-    if (sidebarOrLink && typeof sidebarOrLink.click === 'function') {
-      try { sidebarOrLink.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch {}
-      sidebarOrLink.click();
-      return true;
-    }
-    // 3. Use Antigravity's native TanStack Router (works for Swarm workers & off-screen subagents!)
+    // 1. Prefer Antigravity's native TanStack Router directly — works reliably for parent chats,
+    //    Swarm workers, and off-screen subagents without clicking non-clickable wrapper divs.
     const router = findFiberRouter();
     if (router && typeof router.navigate === 'function') {
       try {
@@ -319,6 +353,22 @@
         });
         return true;
       } catch {}
+    }
+    // 2. Fallback: native subagent card if mounted in DOM
+    const subNode = document.querySelector(`[data-testid="subagent-node"][data-cascade-id="${id}"]`);
+    if (subNode && typeof subNode.click === 'function') {
+      try { subNode.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch {}
+      subNode.click();
+      return true;
+    }
+    // 3. Fallback: explicit clickable <a> link or tab
+    const clickableLink =
+      document.querySelector(`a[href*="/c/${id}"]`) ||
+      document.querySelector(`[role="tab"][data-cascade-id="${id}"]`);
+    if (clickableLink && typeof clickableLink.click === 'function') {
+      try { clickableLink.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch {}
+      clickableLink.click();
+      return true;
     }
     // 4. Fallback SPA navigation preserving current query (?project=...)
     try {
@@ -404,6 +454,10 @@
           let subChecklist = [];
           let subActivity = [];
           let subLastRunMs = null;
+          let subModelWaitTotalMs = 0;
+          let subModelWaitLastMs = null;
+          let subModelWaitSinceMs = null;
+          let subModelWaitCount = 0;
           try {
             const subState = agentStatesMap?.get?.(id)?.provider?.getState?.();
             const subSlice = Array.isArray(subState?.trajectorySlice?.stepsInSlice) ? subState.trajectorySlice.stepsInSlice : [];
@@ -414,6 +468,10 @@
               subLastRunMs = Number.isFinite(parsedSub.lastResponseMs)
                 ? parsedSub.lastResponseMs
                 : parsedSub.lastCompletedStepMs;
+              subModelWaitTotalMs = parsedSub.modelWaitTotalMs || 0;
+              subModelWaitLastMs = parsedSub.modelWaitLastMs;
+              subModelWaitSinceMs = parsedSub.modelWaitSinceMs;
+              subModelWaitCount = parsedSub.modelWaitCount || 0;
               const liveTool = subActivity.slice().reverse().find((c) => c.status === 'running');
               if (st === 'running' && liveTool) {
                 subPhase = isZh ? `执行：${liveTool.label}` : `Running: ${liveTool.label}`;
@@ -432,6 +490,10 @@
             createdMs,
             modifiedMs,
             lastRunMs: subLastRunMs,
+            modelWaitTotalMs: subModelWaitTotalMs,
+            modelWaitLastMs: subModelWaitLastMs,
+            modelWaitSinceMs: subModelWaitSinceMs,
+            modelWaitCount: subModelWaitCount,
             phaseLabel: subPhase,
             checklist: subChecklist.slice(0, 5),
             recentActivity: subActivity,
@@ -467,6 +529,10 @@
       lastResponseMs,
       lastCompletedStepMs,
       activeResponseSinceMs,
+      modelWaitTotalMs,
+      modelWaitLastMs,
+      modelWaitSinceMs,
+      modelWaitCount,
     } = summarizeSteps(tail, baseIdx, turnStatus, isZh);
 
     // Resolve Powertools-accurate current execution phase
@@ -541,6 +607,10 @@
       lastResponseMs,
       lastCompletedStepMs,
       activeResponseSinceMs,
+      modelWaitTotalMs,
+      modelWaitLastMs,
+      modelWaitSinceMs,
+      modelWaitCount,
       retryCount,
       retryReason,
       retryErrorRaw,
@@ -745,6 +815,29 @@
       return stepPart || totalPart || '';
     }
 
+    function formatModelWaitPair({ liveSinceMs, baseTotalMs, lastMs, totalStartMs, totalElapsedMs, nowMs, isZh }) {
+      const base = Number.isFinite(baseTotalMs) && baseTotalMs > 0 ? baseTotalMs : 0;
+      if (liveSinceMs && liveSinceMs > 0) {
+        const cur = Math.max(0, nowMs - liveSinceMs);
+        const turnTotal =
+          totalStartMs && totalStartMs > 0
+            ? Math.max(cur, nowMs - totalStartMs)
+            : Math.max(cur, base + cur);
+        return `${isZh ? '等待中' : 'Waiting'} ${formatStepDur(cur)} / ${formatClock(turnTotal)}`;
+      }
+      const stepMs = Number.isFinite(lastMs) && lastMs >= 0 ? lastMs : base > 0 ? base : null;
+      const stepPart = stepMs !== null ? formatStepDur(stepMs) : '';
+      const totalMs =
+        Number.isFinite(totalElapsedMs) && totalElapsedMs >= 0
+          ? totalElapsedMs
+          : base > 0
+          ? base
+          : null;
+      const totalPart = Number.isFinite(totalMs) && totalMs >= 0 ? formatClock(totalMs) : '';
+      if (stepPart && totalPart) return `${stepPart} / ${totalPart}`;
+      return stepPart || totalPart || '';
+    }
+
     function updateLiveClocks() {
       if (!cardEl || !lastInfo) return;
       const now = Date.now();
@@ -760,6 +853,20 @@
           respEl.textContent = formatStepDur(Math.max(0, now - since));
         }
       }
+      cardEl.querySelectorAll('[data-model-wait-since]').forEach((el) => {
+        const since = Number(el.getAttribute('data-model-wait-since'));
+        const base = Number(el.getAttribute('data-model-wait-base')) || 0;
+        const totalSince = Number(el.getAttribute('data-total-since')) || 0;
+        if (Number.isFinite(since) && since > 0) {
+          el.textContent = formatModelWaitPair({
+            liveSinceMs: since,
+            baseTotalMs: base,
+            totalStartMs: totalSince,
+            nowMs: now,
+            isZh,
+          });
+        }
+      });
       cardEl.querySelectorAll('[data-running-since]').forEach((el) => {
         const since = Number(el.getAttribute('data-running-since'));
         const totalSince = Number(el.getAttribute('data-total-since')) || 0;
@@ -928,6 +1035,8 @@
       const sig = JSON.stringify({
         docked,
         collapsed,
+        conversationId: info.conversationId,
+        parentConversationId: info.parentConversationId,
         status: info.status,
         phase: info.phase,
         baseHeadline,
@@ -937,7 +1046,8 @@
         percent: info.percent,
         checklist: info.checklist,
         recentActivity: info.recentActivity.map((a) => [a.id, a.label, a.status, a.durationMs]),
-        subagents: info.subagents.map((s) => [s.id, s.status, s.stepCount, s.phaseLabel, expandedSubIds.has(s.id)]),
+        modelWait: [info.modelWaitTotalMs, info.modelWaitLastMs, info.modelWaitCount, Boolean(info.modelWaitSinceMs)],
+        subagents: info.subagents.map((s) => [s.id, s.status, s.stepCount, s.phaseLabel, s.modelWaitTotalMs, expandedSubIds.has(s.id)]),
         toolCount: info.toolCount,
       });
       if (cardEl.getAttribute('data-sig') === sig) {
@@ -1017,11 +1127,50 @@
           body.appendChild(list);
         }
 
-        // 3. Recent tool activity timeline trail (Powertools .pt-trail) with stepRun / totalElapsed
-        if (info.recentActivity.length > 0) {
+        // 3. Recent tool activity timeline trail (Model Wait Time ALWAYS #1 first, then tool steps)
+        const hasModelWait = Boolean(
+          info.modelWaitSinceMs || info.modelWaitTotalMs > 0 || Number.isFinite(info.modelWaitLastMs)
+        );
+        if (hasModelWait || info.recentActivity.length > 0) {
           const trail = document.createElement('div');
           trail.className = 'ag-cs-trail';
           const pairTitle = isZh ? '本次运行时间 / 累计总消耗时间' : 'Step duration / Total elapsed';
+
+          if (hasModelWait) {
+            const isWaitLive = Boolean(info.running && info.modelWaitSinceMs);
+            const waitLabel =
+              info.modelWaitCount > 1
+                ? isZh
+                  ? `模型等待时间 · ${info.modelWaitCount}次`
+                  : `Model wait · ${info.modelWaitCount}×`
+                : isZh
+                ? '模型等待时间'
+                : 'Model wait';
+            const totalStart = info.startedAtMs || 0;
+            const waitDur = formatModelWaitPair({
+              liveSinceMs: isWaitLive ? info.modelWaitSinceMs : 0,
+              baseTotalMs: info.modelWaitTotalMs,
+              lastMs: info.modelWaitLastMs,
+              totalStartMs: totalStart,
+              totalElapsedMs: elapsedMs,
+              nowMs: now,
+              isZh,
+            });
+            const cumWaitHint = info.modelWaitTotalMs > 0 ? ` · ${isZh ? '累计模型等待' : 'Total model wait'} ${formatStepDur(info.modelWaitTotalMs)}` : '';
+            const waitTitle = isZh
+              ? `当前或上次模型等待 / 本轮总消耗时间 (${waitDur}${cumWaitHint})`
+              : `Current or last model wait / Turn total elapsed (${waitDur}${cumWaitHint})`;
+            const waitEl = document.createElement('div');
+            waitEl.className = `ag-cs-trail-node is-model-wait is-${isWaitLive ? 'running' : 'complete'}`;
+            waitEl.title = waitTitle;
+            waitEl.innerHTML = `
+              <span class="ag-cs-trail-dot-wrap" aria-hidden="true"><span class="ag-cs-trail-dot"></span></span>
+              <span class="ag-cs-trail-label">${escapeHtml(waitLabel)}</span>
+              ${waitDur ? `<span class="ag-cs-trail-dur" title="${escapeHtml(waitTitle)}"${isWaitLive ? ` data-model-wait-since="${info.modelWaitSinceMs}" data-model-wait-base="${info.modelWaitTotalMs || 0}" data-total-since="${totalStart}"` : ''}>${escapeHtml(waitDur)}</span>` : ''}
+            `;
+            trail.appendChild(waitEl);
+          }
+
           for (const call of info.recentActivity) {
             const runStart = call.status === 'running' ? (call.startedAtMs || info.phaseSinceMs || info.startedAtMs || 0) : 0;
             const totalStart = info.startedAtMs || 0;
@@ -1120,6 +1269,33 @@
               metaRow.innerHTML = `<span class="ag-cs-sub-phase">${escapeHtml(sub.phaseLabel)}</span>${subTimeHtml}`;
               detail.appendChild(metaRow);
 
+              const hasSubWait = Boolean(sub.modelWaitSinceMs || sub.modelWaitTotalMs > 0 || Number.isFinite(sub.modelWaitLastMs));
+              if (hasSubWait) {
+                const isSubWaitLive = Boolean(sub.status === 'running' && sub.modelWaitSinceMs);
+                const swLabel =
+                  sub.modelWaitCount > 1
+                    ? isZh
+                      ? `模型等待时间 · ${sub.modelWaitCount}次`
+                      : `Model wait · ${sub.modelWaitCount}×`
+                    : isZh
+                    ? '模型等待时间'
+                    : 'Model wait';
+                const subTotalStart = sub.createdMs || 0;
+                const swDur = formatModelWaitPair({
+                  liveSinceMs: isSubWaitLive ? sub.modelWaitSinceMs : 0,
+                  baseTotalMs: sub.modelWaitTotalMs,
+                  lastMs: sub.modelWaitLastMs,
+                  totalStartMs: subTotalStart,
+                  totalElapsedMs: sub.createdMs ? Math.max(0, (sub.status === 'running' ? now : sub.modifiedMs || now) - sub.createdMs) : null,
+                  nowMs: now,
+                  isZh,
+                });
+                const swRow = document.createElement('div');
+                swRow.className = `ag-cs-sub-step is-model-wait is-${isSubWaitLive ? 'running' : 'complete'}`;
+                swRow.innerHTML = `<span class="ag-cs-sub-step-lbl">${isSubWaitLive ? '●' : '◷'} ${escapeHtml(swLabel)}</span>${swDur ? `<span class="ag-cs-sub-dur" title="${isZh ? '模型单次等待 / 子任务总消耗时间' : 'Model wait / Subtask total elapsed'}"${isSubWaitLive ? ` data-model-wait-since="${sub.modelWaitSinceMs}" data-model-wait-base="${sub.modelWaitTotalMs || 0}" data-total-since="${subTotalStart}"` : ''}>${escapeHtml(swDur)}</span>` : ''}`;
+                detail.appendChild(swRow);
+              }
+
               if (sub.checklist.length > 0) {
                 for (const st of sub.checklist) {
                   const stCls = st.status === 'done' || st.status === 'complete' ? 'complete' : st.status === 'in_progress' || st.status === 'running' ? 'running' : 'pending';
@@ -1207,6 +1383,7 @@
     parseChecklist,
     classifyRetryReason,
     friendlyToolLabel,
+    summarizeSteps,
     formatStepDur,
     formatClock,
     jumpToConversation,

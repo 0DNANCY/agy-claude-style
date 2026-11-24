@@ -3661,12 +3661,18 @@ html[data-ag-cs-style][data-ag-cs-glass="on"] .ag-cs-file-menu {
   bottom: 22px;
   transform: translate(-50%, 10px);
   z-index: 2147483641;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: min(560px, calc(100vw - 32px));
   padding: 7px 14px;
   border-radius: 999px;
-  background: rgba(24, 25, 29, 0.94);
+  background: rgba(24, 25, 29, 0.96);
   color: #f4f5f8;
   border: 1px solid rgba(217, 119, 87, 0.55);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.34);
   font-size: 12px;
+  line-height: 1.4;
   opacity: 0;
   pointer-events: none;
   transition: opacity 150ms ease, transform 150ms ease;
@@ -3676,8 +3682,42 @@ html[data-ag-cs-style][data-ag-cs-glass="on"] .ag-cs-file-menu {
   transform: translate(-50%, 0);
 }
 .ag-cs-action-toast.is-err {
+  border-radius: 12px;
+  padding: 8px 12px;
   border-color: rgba(248, 113, 113, 0.7);
   color: #fca5a5;
+}
+.ag-cs-action-toast.is-err.is-show {
+  pointer-events: auto;
+  user-select: text;
+  -webkit-user-select: text;
+}
+.ag-cs-toast-msg {
+  flex: 1;
+  min-width: 0;
+  word-break: break-word;
+  user-select: text;
+  -webkit-user-select: text;
+}
+.ag-cs-toast-btn {
+  flex-shrink: 0;
+  border: 1px solid rgba(252, 165, 165, 0.38);
+  background: rgba(255, 255, 255, 0.08);
+  color: #fecaca;
+  font-size: 11px;
+  line-height: 1;
+  padding: 4px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background-color 140ms ease, border-color 140ms ease;
+}
+.ag-cs-toast-btn:hover {
+  background: rgba(255, 255, 255, 0.16);
+  border-color: rgba(252, 165, 165, 0.7);
+}
+.ag-cs-toast-close {
+  padding: 3px 6px;
+  font-size: 13px;
 }
 
 /* ── 15. Powertools-Style Task Progress Panel (.ag-cs-progress-card) ── */
@@ -4161,4 +4201,392 @@ html[data-ag-cs-style][data-ag-cs-glass="on"] .ag-cs-progress-card.is-floating {
   color: var(--muted-foreground, #888);
   font-variant-numeric: tabular-nums;
   padding-top: 2px;
+}
+
+/* ==========================================================================
+   16. Extensions Quick Dock (Top-Right Header Cluster + Left Sidebar Section)
+   ========================================================================== */
+.ag-cs-ext-header-bar {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-right: 2px;
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+.ag-cs-ext-hdr-btn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--secondary-foreground, var(--muted-foreground, #71717a));
+  cursor: pointer;
+  padding: 0;
+  transition: background-color 140ms ease, color 140ms ease, border-color 140ms ease;
+  -webkit-app-region: no-drag;
+}
+.ag-cs-ext-hdr-btn:hover {
+  background: color-mix(in srgb, var(--foreground, currentColor) 8%, transparent);
+  color: var(--foreground, inherit);
+}
+.ag-cs-ext-hdr-btn.is-aux-active,
+.ag-cs-ext-hdr-btn.is-main-active,
+.ag-cs-ext-hdr-btn.is-menu-open {
+  background: color-mix(in srgb, var(--ag-cs-accent, #d97757) 14%, transparent);
+  border-color: color-mix(in srgb, var(--ag-cs-accent, #d97757) 32%, transparent);
+  color: var(--ag-cs-accent, #d97757);
+}
+.ag-cs-ext-menu-btn {
+  margin: 0;
+}
+.ag-cs-ext-hdr-more {
+  width: auto;
+  min-width: 26px;
+  padding: 0 6px;
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.ag-cs-ext-ic {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.ag-cs-ext-logo-img {
+  display: block;
+  border-radius: 3px;
+  object-fit: contain;
+}
+.ag-cs-native-pin-btn {
+  margin-left: auto;
+  flex-shrink: 0;
+}
+.ag-cs-ext-dot {
+  position: absolute;
+  bottom: 3px;
+  width: 4px;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--ag-cs-accent, #d97757);
+}
+.ag-cs-ext-hdr-sep {
+  display: inline-block;
+  width: 1px;
+  height: 15px;
+  margin: 0 4px 0 3px;
+  background: color-mix(in srgb, var(--foreground, currentColor) 14%, transparent);
+  flex-shrink: 0;
+}
+
+/* Overflow / Header Secondary Menu Popover */
+.ag-cs-ext-popover {
+  position: fixed;
+  z-index: 99998;
+  min-width: 248px;
+  padding: 6px;
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, var(--foreground, currentColor) 12%, transparent);
+  background: color-mix(in srgb, var(--background, #18181b) 94%, transparent);
+  backdrop-filter: blur(18px) saturate(1.25);
+  -webkit-backdrop-filter: blur(18px) saturate(1.25);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.24);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.ag-cs-ext-pop-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 3px 7px 5px;
+  margin-bottom: 2px;
+  border-bottom: 1px solid color-mix(in srgb, var(--foreground, currentColor) 9%, transparent);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted-foreground, #888);
+}
+.ag-cs-ext-pop-hint {
+  font-size: 10px;
+  font-weight: 450;
+  opacity: 0.85;
+}
+.ag-cs-ext-star {
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted-foreground, #888);
+  cursor: pointer;
+  transition: color 140ms ease, background-color 140ms ease, opacity 140ms ease;
+}
+.ag-cs-ext-star:hover {
+  background: color-mix(in srgb, var(--foreground, currentColor) 10%, transparent);
+  color: var(--ag-cs-accent, #d97757);
+}
+.ag-cs-ext-star.is-pinned {
+  color: var(--ag-cs-accent, #d97757);
+}
+.ag-cs-ext-pop-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  border-radius: 8px;
+  padding: 2px;
+}
+.ag-cs-ext-pop-row:hover {
+  background: color-mix(in srgb, var(--foreground, currentColor) 6%, transparent);
+}
+.ag-cs-ext-pop-row.is-active .ag-cs-ext-pop-main {
+  color: var(--ag-cs-accent, #d97757);
+  font-weight: 550;
+}
+.ag-cs-ext-pop-main {
+  flex: 1;
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: none;
+  background: transparent;
+  color: var(--foreground, inherit);
+  font-size: 12px;
+  padding: 5px 6px;
+  border-radius: 6px;
+  cursor: pointer;
+  text-align: left;
+}
+.ag-cs-ext-pop-lbl {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ag-cs-ext-pop-full {
+  flex-shrink: 0;
+  border: 1px solid color-mix(in srgb, var(--foreground, currentColor) 14%, transparent);
+  background: transparent;
+  color: var(--muted-foreground, #888);
+  font-size: 10.5px;
+  padding: 2px 7px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 140ms ease;
+}
+.ag-cs-ext-pop-full:hover {
+  color: var(--ag-cs-accent, #d97757);
+  border-color: color-mix(in srgb, var(--ag-cs-accent, #d97757) 45%, transparent);
+  background: color-mix(in srgb, var(--ag-cs-accent, #d97757) 10%, transparent);
+}
+
+/* Unify native sidebar nav links (e.g. Customizations <a>) with button items (Automations <button>) */
+html[data-ag-cs-style][data-ag-cs-sidebar="on"] [data-testid="sidebar-navigation-items"] a.agy-button {
+  font-size: 13px !important;
+  font-weight: 500 !important;
+  line-height: 18.5714px !important;
+  height: 28px !important;
+}
+
+/* Left Sidebar Extensions Section (pixel-matched to native Antigravity sidebar) */
+.ag-cs-ext-sidebar-sec {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid color-mix(in srgb, var(--foreground, currentColor) 8%, transparent);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-family: inherit;
+}
+.ag-cs-ext-sb-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  height: 28px;
+  border: none;
+  background: transparent;
+  color: var(--secondary-foreground, inherit);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 18.5714px;
+  letter-spacing: normal;
+  padding: 6px 8px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: color 140ms ease, background-color 140ms ease;
+}
+.ag-cs-ext-sb-head-left {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.ag-cs-ext-sb-head:hover {
+  color: var(--foreground, inherit);
+  background: var(--sidebar-muted, color-mix(in srgb, var(--foreground, currentColor) 6%, transparent));
+}
+.ag-cs-ext-sb-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.ag-cs-ext-sb-count {
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted-foreground, rgb(112, 105, 107));
+  opacity: 0.72;
+}
+.ag-cs-ext-sb-chev {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted-foreground, rgb(112, 105, 107));
+  opacity: 0.72;
+  transition: transform 160ms ease;
+}
+.ag-cs-ext-sidebar-sec.is-collapsed .ag-cs-ext-sb-chev {
+  transform: rotate(-90deg);
+}
+.ag-cs-ext-sb-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-left: 10px;
+}
+.ag-cs-ext-sb-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  border-radius: 8px;
+  transition: background-color 140ms ease;
+}
+.ag-cs-ext-sb-row:hover {
+  background: var(--sidebar-muted, color-mix(in srgb, var(--foreground, currentColor) 7%, transparent));
+}
+.ag-cs-ext-sb-row.is-main-active {
+  background: color-mix(in srgb, var(--ag-cs-accent, #d97757) 14%, transparent);
+}
+.ag-cs-ext-sb-row.is-main-active .ag-cs-ext-sb-item {
+  color: var(--ag-cs-accent, #d97757);
+  font-weight: 500;
+}
+.ag-cs-ext-sb-item {
+  flex: 1;
+  min-width: 0;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border: none;
+  background: transparent;
+  color: var(--secondary-foreground, inherit);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 18.5714px;
+  letter-spacing: normal;
+  border-radius: 8px;
+  cursor: pointer;
+  text-align: left;
+  transition: color 140ms ease;
+}
+.ag-cs-ext-sb-row:hover .ag-cs-ext-sb-item {
+  color: var(--foreground, inherit);
+}
+.ag-cs-ext-sb-lbl {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ag-cs-ext-sb-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+  padding-right: 2px;
+  flex-shrink: 0;
+}
+.ag-cs-ext-sb-act {
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted-foreground, #888);
+  opacity: 0;
+  cursor: pointer;
+  transition: opacity 140ms ease, background-color 140ms ease, color 140ms ease;
+}
+.ag-cs-ext-sb-row:hover .ag-cs-ext-sb-act,
+.ag-cs-ext-sb-row:focus-within .ag-cs-ext-sb-act,
+.ag-cs-ext-sb-act.is-active {
+  opacity: 1;
+}
+.ag-cs-ext-sb-act.is-pinned {
+  opacity: 0.45;
+  color: var(--muted-foreground, #888);
+}
+.ag-cs-ext-sb-row:hover .ag-cs-ext-sb-act.is-pinned,
+.ag-cs-ext-sb-act.is-pinned:hover {
+  opacity: 1;
+  color: var(--ag-cs-accent, #d97757);
+}
+.ag-cs-ext-sb-act:hover {
+  background: color-mix(in srgb, var(--foreground, currentColor) 10%, transparent);
+  color: var(--foreground, inherit);
+}
+.ag-cs-ext-sb-act.is-active {
+  color: var(--ag-cs-accent, #d97757);
+}
+.ag-cs-trail-node.is-model-wait .ag-cs-trail-label,
+.ag-cs-sub-step.is-model-wait .ag-cs-sub-step-lbl {
+  font-weight: 550;
+  color: var(--foreground, inherit);
+}
+.ag-cs-ext-tooltip {
+  position: fixed;
+  z-index: 99999;
+  pointer-events: none;
+  padding: 6px 9px;
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--foreground, currentColor) 14%, transparent);
+  background: color-mix(in srgb, var(--popover, var(--background, #18181b)) 96%, transparent);
+  color: var(--foreground, #f4f4f5);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.22);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  max-width: 240px;
+  font-family: inherit;
+  line-height: 1.35;
+}
+.ag-cs-ext-tip-main {
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.ag-cs-ext-tip-sub {
+  margin-top: 2px;
+  font-size: 10.5px;
+  color: var(--muted-foreground, #888);
+  white-space: nowrap;
 }

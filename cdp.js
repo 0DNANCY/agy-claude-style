@@ -86,6 +86,12 @@ const DEFAULT_CONFIG = {
   messageEdit: true,
   fileContextMenu: true,
   taskProgressCard: true,
+  headerExtensionsBar: true,
+  sidebarExtensionsSection: true,
+  pinnedHeaderExtensions: [],
+  pinnedSidebarExtensions: [],
+  sidebarExtensionsExpanded: false,
+  hideOnClose: true,
   sshRemoteStats: false,
   sshHost: '',
   proxyEnabled: false,
@@ -128,6 +134,10 @@ const CONFIG_VALIDATORS = {
   messageEdit: 'boolean',
   fileContextMenu: 'boolean',
   taskProgressCard: 'boolean',
+  headerExtensionsBar: 'boolean',
+  sidebarExtensionsSection: 'boolean',
+  sidebarExtensionsExpanded: 'boolean',
+  hideOnClose: 'boolean',
   sshRemoteStats: 'boolean',
   proxyEnabled: 'boolean',
   proxyForceHttp1: 'boolean',
@@ -141,6 +151,13 @@ function validateConfigSetting(key, value) {
   }
   if (key === 'sshHost' || key === 'proxyUrl' || key === 'proxyBypass') {
     return typeof value === 'string' && value.length <= 512 && !/[\x00-\x1f\x7f]/.test(value);
+  }
+  if (key === 'pinnedHeaderExtensions' || key === 'pinnedSidebarExtensions') {
+    return (
+      Array.isArray(value) &&
+      value.length <= 32 &&
+      value.every((it) => typeof it === 'string' && it.length > 0 && it.length <= 128 && !/[\x00-\x1f\x7f]/.test(it))
+    );
   }
   if (!Object.prototype.hasOwnProperty.call(CONFIG_VALIDATORS, key)) return false;
   const rule = CONFIG_VALIDATORS[key];
@@ -317,10 +334,76 @@ function readCss() {
   return fs.readFileSync(path.join(__dirname, 'style.css'), 'utf8');
 }
 
-const RUNTIME_PARTS = ['i18n-locales.js', 'i18n-core.js', 'sidecar-core.js', 'usage-core.js', 'ripple-core.js', 'mascot-core.js', 'crab-assets.js', 'effort-core.js', 'perf-assets.js', 'ui-rewind.js', 'features/branch-edit.js', 'features/file-menu.js', 'features/task-progress.js', 'ui-runtime.js'];
+const RUNTIME_PARTS = ['i18n-locales.js', 'i18n-core.js', 'sidecar-core.js', 'usage-core.js', 'ripple-core.js', 'mascot-core.js', 'crab-assets.js', 'effort-core.js', 'perf-assets.js', 'ui-rewind.js', 'features/branch-edit.js', 'features/file-menu.js', 'features/task-progress.js', 'features/extensions-dock.js', 'features/hide-on-close.js', 'ui-runtime.js'];
 
 function readRuntimeBundle() {
   return RUNTIME_PARTS.map((f) => fs.readFileSync(path.join(__dirname, f), 'utf8')).join('\n');
+}
+
+const LOGO_MIME_BY_EXT = {
+  '.svg': 'image/svg+xml',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp',
+};
+
+function readInstalledSidecarLogos(opts = {}) {
+  const logos = {};
+  const home = opts.homeDir || os.homedir();
+  const roots = Array.isArray(opts.roots)
+    ? opts.roots
+    : [
+        path.join(home, '.gemini', 'config', 'plugins'),
+        path.join(home, '.gemini', 'antigravity', 'builtin', 'plugins'),
+      ];
+  const maxBytes = Number.isInteger(opts.maxBytes) ? opts.maxBytes : 65536;
+
+  for (const rootDir of roots) {
+    let entries;
+    try {
+      if (!fs.existsSync(rootDir)) continue;
+      entries = fs.readdirSync(rootDir);
+    } catch {
+      continue;
+    }
+    for (const dirName of entries) {
+      const pDir = path.join(rootDir, dirName);
+      const pjPath = path.join(pDir, 'plugin.json');
+      try {
+        if (!fs.existsSync(pjPath)) continue;
+        const meta = JSON.parse(fs.readFileSync(pjPath, 'utf8'));
+        const logoRel = typeof meta?.logo === 'string' ? meta.logo.trim() : '';
+        if (!logoRel || /^https?:\/\//i.test(logoRel) || path.isAbsolute(logoRel)) continue;
+        const ext = path.extname(logoRel).toLowerCase();
+        const mime = LOGO_MIME_BY_EXT[ext];
+        if (!mime) continue;
+        const resolvedPluginDir = fs.realpathSync(pDir);
+        const logoAbs = path.resolve(resolvedPluginDir, logoRel);
+        if (!logoAbs.startsWith(resolvedPluginDir + path.sep)) continue;
+        if (!fs.existsSync(logoAbs)) continue;
+        const stat = fs.statSync(logoAbs);
+        if (!stat.isFile() || stat.size <= 0 || stat.size > maxBytes) continue;
+        const dataUri = `data:${mime};base64,${fs.readFileSync(logoAbs).toString('base64')}`;
+
+        const scDir = path.join(resolvedPluginDir, 'sidecars');
+        const scNames = [];
+        if (fs.existsSync(scDir)) {
+          for (const sc of fs.readdirSync(scDir)) {
+            if (fs.existsSync(path.join(scDir, sc, 'sidecar.json'))) scNames.push(sc);
+          }
+        }
+        const pluginKeys = new Set([dirName, typeof meta?.name === 'string' ? meta.name.trim() : ''].filter(Boolean));
+        for (const pk of pluginKeys) {
+          for (const sc of scNames) {
+            const key = `${pk}/${sc}`;
+            if (!logos[key]) logos[key] = dataUri;
+          }
+        }
+      } catch {}
+    }
+  }
+  return logos;
 }
 
 function computeHash(str) {
@@ -337,6 +420,7 @@ function buildInjectExpression(customConfig) {
   const css = readCss();
   const bundle = readRuntimeBundle();
   const codeHash = computeHash(bundle);
+  const sidecarLogos = readInstalledSidecarLogos();
   return `(() => {
     const css = ${JSON.stringify(css)};
     const applyStyle = () => {
@@ -364,6 +448,7 @@ function buildInjectExpression(customConfig) {
           if (document.head) applyStyle();
           else document.addEventListener('DOMContentLoaded', applyStyle, { once: true });
         }
+        globalThis.__agCsSidecarLogos = ${JSON.stringify(sidecarLogos)};
         ${bundle}
         if (typeof globalThis.__agCsUiMain === 'function') {
           const baseCfg = ${JSON.stringify({ ...config, binding: SETTING_BINDING, codeHash })};
@@ -1146,6 +1231,23 @@ function activateAntigravityWindow(opts = {}) {
   return false;
 }
 
+function hideAntigravityWindow() {
+  if (IS_MAC) {
+    try {
+      const child = spawn(
+        '/usr/bin/osascript',
+        ['-e', 'tell application "System Events" to set visible of first application process whose name is "Antigravity" to false'],
+        { detached: true, stdio: 'ignore' }
+      );
+      child.unref();
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  return false;
+}
+
 function sanitizeAppLaunchEnv(baseEnv = process.env, extraEnv = {}) {
   const env = { ...(baseEnv || {}) };
   const stripExact = [
@@ -1559,6 +1661,7 @@ module.exports = {
   isLikelyWatcherProcess,
   removeStalePortFile,
   activateAntigravityWindow,
+  hideAntigravityWindow,
   sanitizeAppLaunchEnv,
   launchAntigravityWithCdp,
   scheduleDetachedRelaunch,
@@ -1568,6 +1671,7 @@ module.exports = {
   CdpSession,
   readCss,
   readRuntimeBundle,
+  readInstalledSidecarLogos,
   computeHash,
   buildInjectExpression,
   buildConfigScriptExpression,

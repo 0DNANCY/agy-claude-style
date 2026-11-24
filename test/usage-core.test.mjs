@@ -1028,3 +1028,68 @@ test('analyzeActiveConversation skips 0-token generatorMetadata startup stubs fr
   assert.equal(info.turnDetails[1].turn, 2);
   assert.equal(info.turnDetails[1].inProgress, true, 'Turn 2 with active thinking step (status=1) must have inProgress=true');
 });
+
+test('analyzeActiveConversation applies live post-compaction contextWindowUsage estimate until a newer billed request supersedes it', () => {
+  const baseSteps = [
+    { step: { case: 'userInput', value: { items: [{ item: { case: 'text', value: 'turn 1' } }] } } },
+    { step: { case: 'plannerResponse', value: { response: 'reply 1' } } },
+    { step: { case: 'checkpoint', value: {} } },
+  ];
+  const preCompactGm = {
+    stepIndices: [0, 1],
+    metadata: {
+      value: {
+        modelDisplayName: 'Gemini 3.8 Pro',
+        usage: { inputTokens: 12000, cacheReadTokens: 170000, outputTokens: 2000, responseOutputTokens: 1500 },
+        chatStartMetadata: { contextWindowMetadata: { estimatedTokensUsed: 185000, maxContextTokens: 512000 } },
+      },
+    },
+  };
+
+  // Right after /compact: AgentState emits estimatedAfterCompaction=true at generatorMetadataIndex=0
+  const postCompactTraj = {
+    steps: baseSteps,
+    generatorMetadata: [preCompactGm],
+    contextWindowUsage: {
+      generatorMetadataIndex: 0,
+      lastStepIndex: 2,
+      estimatedTokensUsed: 24600,
+      maxContextTokens: 512000,
+      estimatedAfterCompaction: true,
+      tokenGroups: [
+        { name: 'System Prompt', type: 1, numTokens: 4600, children: [] },
+        { name: 'Chat Messages', type: 7, numTokens: 20000, children: [] },
+      ],
+    },
+  };
+  const compacted = usageCore.analyzeActiveConversation(postCompactTraj, { cascadeId: 'post-compact-1' });
+  assert.equal(compacted.contextUsed, 24600, 'Must immediately reflect post-compaction estimate instead of stale 185k');
+  assert.equal(compacted.maxContextTokens, 512000);
+  assert.equal(compacted.sysTokens, 4600);
+  assert.equal(compacted.msgTokens, 20000);
+
+  // Once a newer billed request completes (gm index 1 > generatorMetadataIndex 0), real usage supersedes the estimate
+  const afterNextTurnTraj = {
+    steps: [
+      ...baseSteps,
+      { step: { case: 'userInput', value: { items: [{ item: { case: 'text', value: 'turn 2' } }] } } },
+      { step: { case: 'plannerResponse', value: { response: 'reply 2' } } },
+    ],
+    generatorMetadata: [
+      preCompactGm,
+      {
+        stepIndices: [3, 4],
+        metadata: {
+          value: {
+            modelDisplayName: 'Gemini 3.8 Pro',
+            usage: { inputTokens: 5000, cacheReadTokens: 26000, outputTokens: 1000, responseOutputTokens: 800 },
+            chatStartMetadata: { contextWindowMetadata: { estimatedTokensUsed: 31800, maxContextTokens: 512000 } },
+          },
+        },
+      },
+    ],
+    contextWindowUsage: postCompactTraj.contextWindowUsage,
+  };
+  const resumed = usageCore.analyzeActiveConversation(afterNextTurnTraj, { cascadeId: 'post-compact-1' });
+  assert.equal(resumed.contextUsed, 31800, 'Newer billed request must supersede previous compaction estimate');
+});

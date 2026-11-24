@@ -908,6 +908,7 @@
     let lastTtft = 0;
     let activeContextUsed = 0;
     let lastContextStepIdx = -1;
+    let lastContextGmIdx = -1;
     let prevCheckpointIdx = -1;
 
     for (let i = 0; i < gmList.length; i++) {
@@ -991,6 +992,7 @@
           callCtxUsed >= activeContextUsed
         ) {
           activeContextUsed = callCtxUsed;
+          lastContextGmIdx = i;
           if (arrIndices.length > 0) {
             lastContextStepIdx = arrIndices[arrIndices.length - 1];
           }
@@ -1052,17 +1054,53 @@
       if (arrIndices.length > 0) callArrIndicesMap.set(callObj, arrIndices);
     }
 
-    // Ingest AgentState.contextWindowUsage if present (live stream or remote future support)
+    // Ingest AgentState.contextWindowUsage if present (live stream or post-compaction estimate)
     const cwUsage = t.contextWindowUsage && typeof t.contextWindowUsage === 'object' ? t.contextWindowUsage : null;
+    let appliedCompactionEstimate = false;
+    let compactionLastStepArrIdx = -1;
     if (cwUsage) {
-      if (!latestCwMaxTokens && Number(cwUsage.maxContextTokens || 0) > 0) {
-        latestCwMaxTokens = Number(cwUsage.maxContextTokens);
+      const cwEstTokens = Number(cwUsage.estimatedTokensUsed || 0);
+      const cwMaxTokens = Number(cwUsage.maxContextTokens || 0);
+      const hasCwGmIdx =
+        cwUsage.generatorMetadataIndex !== undefined &&
+        cwUsage.generatorMetadataIndex !== null &&
+        Number.isFinite(Number(cwUsage.generatorMetadataIndex));
+      const cwGmIdx = hasCwGmIdx ? Number(cwUsage.generatorMetadataIndex) : -1;
+      const hasCwLastStep =
+        cwUsage.lastStepIndex !== undefined &&
+        cwUsage.lastStepIndex !== null &&
+        Number.isFinite(Number(cwUsage.lastStepIndex));
+      const cwLastStepIdx = hasCwLastStep ? Number(cwUsage.lastStepIndex) : -1;
+      const isPostCompactionActive =
+        cwUsage.estimatedAfterCompaction === true &&
+        cwEstTokens > 0 &&
+        (!hasCwGmIdx || lastContextGmIdx < 0 || lastContextGmIdx <= cwGmIdx);
+
+      if (cwMaxTokens > 0 && (!latestCwMaxTokens || isPostCompactionActive)) {
+        latestCwMaxTokens = cwMaxTokens;
       }
-      if (!latestCwUsed && Number(cwUsage.estimatedTokensUsed || 0) > 0) {
-        latestCwUsed = Number(cwUsage.estimatedTokensUsed);
-      }
-      if (!latestBreakdown && Array.isArray(cwUsage.tokenGroups) && cwUsage.tokenGroups.length > 0) {
-        latestBreakdown = { groups: cwUsage.tokenGroups };
+      if (isPostCompactionActive) {
+        activeContextUsed = cwEstTokens;
+        latestCwUsed = cwEstTokens;
+        appliedCompactionEstimate = true;
+        if (cwLastStepIdx >= 0) {
+          compactionLastStepArrIdx = resolveArrIdx(cwLastStepIdx);
+          if (compactionLastStepArrIdx >= 0) {
+            lastContextStepIdx = Math.max(lastContextStepIdx, compactionLastStepArrIdx);
+          }
+        }
+        if (Array.isArray(cwUsage.tokenGroups) && cwUsage.tokenGroups.length > 0) {
+          latestBreakdown = { groups: cwUsage.tokenGroups };
+        } else {
+          latestBreakdown = null;
+        }
+      } else {
+        if (!latestCwUsed && cwEstTokens > 0) {
+          latestCwUsed = cwEstTokens;
+        }
+        if (!latestBreakdown && Array.isArray(cwUsage.tokenGroups) && cwUsage.tokenGroups.length > 0) {
+          latestBreakdown = { groups: cwUsage.tokenGroups };
+        }
       }
     }
 
@@ -1191,13 +1229,17 @@
             return arr && arr.length ? Math.max(mx, ...arr) : mx;
           }, -1)
         : steps.length - 1;
-    let lastMeasuredStepIdx = lastCoveredArrIdx;
+    let lastMeasuredStepIdx = appliedCompactionEstimate
+      ? Math.max(lastCoveredArrIdx, compactionLastStepArrIdx >= 0 ? compactionLastStepArrIdx : steps.length - 1)
+      : lastCoveredArrIdx;
 
-    for (let idx = lastCoveredArrIdx + 1; idx < steps.length; idx++) {
+    for (let idx = lastMeasuredStepIdx + 1; idx < steps.length; idx++) {
       const st = steps[idx];
       if (!st) continue;
       if (st.step?.case === 'checkpoint') {
         activeContextUsed = 0;
+        latestCwUsed = 0;
+        latestBreakdown = null;
         lastMeasuredStepIdx = idx;
         continue;
       }

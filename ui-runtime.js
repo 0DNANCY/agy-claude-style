@@ -92,7 +92,7 @@
         } catch {}
         const merged = { ...saved };
         for (const key of Object.keys(cleanBase)) {
-          if (prevBase[key] !== cleanBase[key]) {
+          if (JSON.stringify(prevBase[key]) !== JSON.stringify(cleanBase[key])) {
             merged[key] = cleanBase[key];
           }
         }
@@ -563,6 +563,30 @@
     };
   }
 
+  function attachLiveContextWindowUsage(res, liveState) {
+    const liveCw = liveState?.contextWindowUsage;
+    if (!res || !liveCw || typeof liveCw !== 'object') return res;
+    if (res.response?.trajectory && typeof res.response.trajectory === 'object') {
+      return {
+        ...res,
+        response: {
+          ...res.response,
+          trajectory: { ...res.response.trajectory, contextWindowUsage: liveCw },
+        },
+      };
+    }
+    if (res.trajectory && typeof res.trajectory === 'object') {
+      return {
+        ...res,
+        trajectory: { ...res.trajectory, contextWindowUsage: liveCw },
+      };
+    }
+    if (typeof res === 'object') {
+      return { ...res, contextWindowUsage: liveCw };
+    }
+    return res;
+  }
+
   async function resolveTrajectoryPayload(cascadeId, sum, h, opts = {}) {
     if (!cascadeId) return null;
     const isCloud = Boolean(sum?.cloud === true || cloudOnlyCascadeIds.has(cascadeId));
@@ -594,7 +618,7 @@
             (Array.isArray(traj?.generatorMetadata) && traj.generatorMetadata.length > 0) ||
             !hasUsableAgentState(liveState))
         ) {
-          return res;
+          return attachLiveContextWindowUsage(res, liveState);
         }
       } catch (err) {
         if (isCloudOnlyTrajectoryError(err)) {
@@ -2228,14 +2252,15 @@
     const sum = sumEntry?.summary || sumEntry || {};
     const isCloud = Boolean(sum?.cloud === true || cloudOnlyCascadeIds.has(cascadeId));
     const liveState = liveProv ? liveProv.getState?.() || null : null;
-    if (liveProv && isCloud) {
+    if (liveProv) {
       watchAgentStateProvider(cascadeId, liveProv);
     }
     const liveSlice = liveState?.trajectorySlice || null;
     const liveSteps = Array.isArray(liveSlice?.stepsInSlice) ? liveSlice.stepsInSlice : [];
     const liveLastStep = liveSteps.length > 0 ? liveSteps[liveSteps.length - 1] : null;
+    const liveCw = liveState?.contextWindowUsage || null;
     const liveSig = liveState
-      ? `${liveSlice?.totalStepsLength || liveSteps.length}:${liveSteps.length}:${liveState.status || 0}:${liveState.fullyIdle ? 1 : 0}:${liveLastStep?.status || 0}:${liveLastStep?.metadata?.modelUsage?.outputTokens || 0}:${liveLastStep?.step?.value?.thinking?.length || 0}:${liveLastStep?.step?.value?.response?.length || 0}:${liveState.contextWindowUsage?.estimatedTokensUsed || 0}`
+      ? `${liveSlice?.totalStepsLength || liveSteps.length}:${liveSteps.length}:${liveState.status || 0}:${liveState.fullyIdle ? 1 : 0}:${liveLastStep?.status || 0}:${liveLastStep?.metadata?.modelUsage?.outputTokens || 0}:${liveLastStep?.step?.value?.thinking?.length || 0}:${liveLastStep?.step?.value?.response?.length || 0}:${liveCw?.estimatedTokensUsed || 0}:${liveCw?.estimatedAfterCompaction ? 1 : 0}:${liveCw?.generatorMetadataIndex ?? -1}:${liveCw?.lastStepIndex ?? -1}`
       : '';
     const stepCount = Math.max(
       Number(sum?.stepCount || 0),
@@ -2330,7 +2355,7 @@
         const res = await resolveTrajectoryPayload(cascadeId, sum, h, {
           scopeEl,
           allowTempStream: !liveProv,
-          watchLive: isCloud,
+          watchLive: Boolean(liveProv),
           timeoutMs: 3500,
         });
         if (!res) return entry.data;
@@ -5388,11 +5413,12 @@
   // Self-contained features live in ui-<feature>.js and register on
   // globalThis.__agCsFeatures.<name> = { create(ctx) }. Each instance may expose
   // sync(), onClick(ev), onKeyDown(ev) -> boolean (consumed), onEscape(ev, info), destroy().
-  const FEATURE_ORDER = ['rewind', 'branchEdit', 'fileMenu', 'taskProgress'];
+  const FEATURE_ORDER = ['rewind', 'branchEdit', 'fileMenu', 'taskProgress', 'extensionsDock', 'hideOnClose'];
   const featureCtx = {
     getCfg: () => cfg,
     getUi: () => uiText(getLang()),
     isDestroyed: () => destroyed,
+    saveSetting,
   };
   const features = [];
   for (const name of FEATURE_ORDER) {

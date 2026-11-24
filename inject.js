@@ -464,6 +464,12 @@ async function createWatchController({
               .catch((err) => log(`[!] 文件操作失败: ${err && err.message ? err.message : err}`));
             return;
           }
+          if (key === '__windowAction' && value === 'hide') {
+            if (typeof cdpApi.hideAntigravityWindow === 'function') {
+              cdpApi.hideAntigravityWindow();
+            }
+            return;
+          }
           if (cdpApi.updateConfigSetting(key, value)) {
             currentConfig = cdpApi.readConfig();
             log(`[⚙] 设置已保存: ${key} = ${JSON.stringify(value)}`);

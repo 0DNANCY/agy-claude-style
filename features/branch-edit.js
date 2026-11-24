@@ -145,7 +145,7 @@
       if (!svc && (typeof v.forkConversation === 'function' || typeof v.getCascadeTrajectory === 'function' || typeof v.revertToCascadeStep === 'function')) {
         svc = v;
       }
-      if (!router && typeof v.navigate === 'function') {
+      if (!router && typeof v.navigate === 'function' && v.routesByPath) {
         router = v;
       }
       if (!cascadeId) {
@@ -153,11 +153,121 @@
         if (typeof cid === 'string' && cid.length > 6) cascadeId = cid;
       }
     }
+    if (!router) {
+      // Fallback: search downward from #root for TanStack Router
+      const rootEl = document.getElementById('root') || document.body?.firstElementChild;
+      const rootKey = rootEl && Object.keys(rootEl).find((k) => k.startsWith('__reactFiber$') || k.startsWith('__reactContainer$'));
+      if (rootKey && rootEl[rootKey]) {
+        const seen = new Set();
+        const stack = [rootEl[rootKey]];
+        let n = 0;
+        while (stack.length && n < 5000) {
+          n++;
+          const f = stack.pop();
+          if (!f || seen.has(f)) continue;
+          seen.add(f);
+          const v = f.memoizedProps?.value;
+          if (v && typeof v === 'object' && typeof v.navigate === 'function' && v.routesByPath) {
+            router = v;
+            break;
+          }
+          if (f.child) stack.push(f.child);
+          if (f.sibling) stack.push(f.sibling);
+        }
+      }
+    }
+    if (!router && typeof window !== 'undefined' && window.__TSR_ROUTER__ && typeof window.__TSR_ROUTER__.navigate === 'function') {
+      router = window.__TSR_ROUTER__;
+    }
     if (!cascadeId && typeof location !== 'undefined') {
       const m = String(location.pathname || location.href || '').match(/\/c\/([a-zA-Z0-9_-]{8,})/);
       if (m) cascadeId = m[1];
     }
     return { svc, router, cascadeId };
+  }
+
+  function extractStepIndexFromFiber(respEl) {
+    let node = getFiber(respEl);
+    let sliceSteps = null;
+    for (let i = 0; node && i < 60; i++, node = node.return) {
+      const mp = node.memoizedProps;
+      if (!mp || typeof mp !== 'object') continue;
+      if (mp.step && typeof mp.step === 'object') {
+        const idx = mp.step?.metadata?.sourceTrajectoryStepInfo?.stepIndex;
+        if (Number.isInteger(idx) && idx >= 0) return idx;
+      }
+      if (Number.isInteger(mp.stepIndex) && mp.stepIndex >= 0) return mp.stepIndex;
+      if (!sliceSteps && Array.isArray(mp.trajectorySteps) && mp.trajectorySteps.length) {
+        sliceSteps = mp.trajectorySteps;
+      } else if (!sliceSteps && Array.isArray(mp.steps) && mp.steps.length) {
+        sliceSteps = mp.steps;
+      }
+    }
+    if (!sliceSteps) return -1;
+
+    // Map this specific [data-testid="agent-response"] to its own plannerResponse step in sliceSteps
+    const responseSteps = [];
+    for (let i = 0; i < sliceSteps.length; i++) {
+      const st = sliceSteps[i];
+      const c = String(st?.step?.case || st?.type || '').toLowerCase();
+      if (c.includes('plannerresponse') || c.includes('planner_response') || c.includes('assistant')) {
+        const respText = String(st?.step?.value?.response || st?.step?.value?.modifiedResponse || '').trim();
+        if (respText) {
+          const realIdx = st?.metadata?.sourceTrajectoryStepInfo?.stepIndex;
+          responseSteps.push({
+            stepIndex: Number.isInteger(realIdx) && realIdx >= 0 ? realIdx : i,
+            cleanText: respText.replace(/\s+/g, ' ').slice(0, 60),
+          });
+        }
+      }
+    }
+    if (!responseSteps.length) {
+      const last = sliceSteps[sliceSteps.length - 1]?.metadata?.sourceTrajectoryStepInfo?.stepIndex;
+      return Number.isInteger(last) && last >= 0 ? last : -1;
+    }
+
+    const domClean = preserveText(extractDomPromptText(respEl)).replace(/\s+/g, ' ').slice(0, 40);
+    const allResp = Array.from(document.querySelectorAll('[data-testid="agent-response"]'));
+    const domIdx = allResp.indexOf(respEl);
+    if (domIdx >= 0) {
+      const fromEnd = allResp.length - 1 - domIdx;
+      const expected = responseSteps[responseSteps.length - 1 - fromEnd];
+      if (expected) {
+        if (!domClean || expected.cleanText.includes(domClean.slice(0, 20)) || domClean.includes(expected.cleanText.slice(0, 20))) {
+          return expected.stepIndex;
+        }
+      }
+    }
+    if (domClean.length >= 8) {
+      const needle = domClean.slice(0, 24);
+      for (let i = responseSteps.length - 1; i >= 0; i--) {
+        if (responseSteps[i].cleanText.includes(needle) || domClean.includes(responseSteps[i].cleanText.slice(0, 24))) {
+          return responseSteps[i].stepIndex;
+        }
+      }
+    }
+    if (domIdx >= 0) {
+      const fromEnd = allResp.length - 1 - domIdx;
+      const fallback = responseSteps[responseSteps.length - 1 - fromEnd];
+      if (fallback) return fallback.stepIndex;
+    }
+    return responseSteps[responseSteps.length - 1].stepIndex;
+  }
+
+  function buildForkPayload(cascadeId, stepIndex, targetForkWorkspace = 1) {
+    const payload = {
+      sourceCascadeId: String(cascadeId || '').trim(),
+      targetForkWorkspace,
+    };
+    if (Number.isInteger(stepIndex) && stepIndex >= 0) {
+      payload.forkAtStepIndex = stepIndex;
+    }
+    return payload;
+  }
+
+  function isSubagentForkUnsupportedError(err) {
+    const msg = String(err?.rawMessage || err?.message || err || '').toLowerCase();
+    return msg.includes('subagent') && (msg.includes('not supported') || msg.includes('fork'));
   }
 
   function insertTextIntoComposer(text) {
@@ -211,6 +321,35 @@
     return false;
   }
 
+  function copyTextFallback(text) {
+    const str = String(text || '');
+    if (!str) return Promise.resolve(false);
+    if (typeof navigator !== 'undefined' && navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+      return navigator.clipboard
+        .writeText(str)
+        .then(() => true)
+        .catch(() => execCopy(str));
+    }
+    return Promise.resolve(execCopy(str));
+  }
+
+  function execCopy(str) {
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = str;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      ta.style.pointerEvents = 'none';
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand('copy');
+      ta.remove();
+      return Boolean(ok);
+    } catch {
+      return false;
+    }
+  }
+
   function showToast(msg, isErr = false) {
     let toast = document.querySelector('.ag-cs-action-toast');
     if (!toast) {
@@ -219,13 +358,57 @@
       toast.setAttribute('data-ag-no-i18n', '');
       document.body?.appendChild(toast);
     }
-    toast.textContent = msg;
-    toast.classList.toggle('is-err', Boolean(isErr));
-    toast.classList.add('is-show');
     clearTimeout(toast._t);
-    toast._t = setTimeout(() => {
-      toast.classList.remove('is-show');
-    }, 2400);
+    toast.innerHTML = '';
+    toast.classList.toggle('is-err', Boolean(isErr));
+
+    const textSpan = document.createElement('span');
+    textSpan.className = 'ag-cs-toast-msg';
+    textSpan.textContent = String(msg || '');
+    toast.appendChild(textSpan);
+
+    if (isErr) {
+      const copyBtn = document.createElement('button');
+      copyBtn.type = 'button';
+      copyBtn.className = 'ag-cs-toast-btn';
+      copyBtn.textContent = '复制';
+      copyBtn.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        copyTextFallback(String(msg || '')).then((ok) => {
+          copyBtn.textContent = ok ? '已复制 ✓' : '复制失败';
+          setTimeout(() => {
+            if (copyBtn.isConnected) copyBtn.textContent = '复制';
+          }, 1400);
+        });
+      });
+
+      const closeBtn = document.createElement('button');
+      closeBtn.type = 'button';
+      closeBtn.className = 'ag-cs-toast-btn ag-cs-toast-close';
+      closeBtn.setAttribute('aria-label', '关闭');
+      closeBtn.textContent = '×';
+      closeBtn.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        clearTimeout(toast._t);
+        toast.classList.remove('is-show');
+      });
+
+      toast.appendChild(copyBtn);
+      toast.appendChild(closeBtn);
+    }
+
+    const hideMs = isErr ? 8500 : 2400;
+    const scheduleHide = () => {
+      clearTimeout(toast._t);
+      toast._t = setTimeout(() => {
+        toast.classList.remove('is-show');
+      }, hideMs);
+    };
+    toast.onmouseenter = isErr ? () => clearTimeout(toast._t) : null;
+    toast.onmouseleave = isErr ? scheduleHide : null;
+
+    toast.classList.add('is-show');
+    scheduleHide();
   }
 
   function create(ctx) {
@@ -245,50 +428,81 @@
         showToast(ui.branchUnavailable || '当前客户端未暴露原生分支会话接口', true);
         return false;
       }
-      let stepIndex = -1;
-      try {
-        if (typeof svc.getCascadeTrajectory === 'function') {
-          const trajRes = await svc.getCascadeTrajectory({ cascadeId });
-          const steps = trajRes?.trajectory?.steps || trajRes?.steps || [];
-          const allResp = Array.from(document.querySelectorAll('[data-testid="agent-response"]'));
-          const domIdx = allResp.indexOf(respEl);
-          const responseStepIndices = [];
-          for (let i = 0; i < steps.length; i++) {
-            const c = String(steps[i]?.step?.case || steps[i]?.type || '').toLowerCase();
-            if (c.includes('plannerresponse') || c.includes('planner_response') || c.includes('assistant')) {
-              const respText = steps[i]?.step?.value?.response || steps[i]?.step?.value?.modifiedResponse || '';
-              if (String(respText).trim()) responseStepIndices.push(i);
+      let stepIndex = extractStepIndexFromFiber(respEl);
+      if (stepIndex < 0) {
+        try {
+          if (typeof svc.getCascadeTrajectory === 'function') {
+            const trajRes = await svc.getCascadeTrajectory({ cascadeId });
+            const steps = trajRes?.trajectory?.steps || trajRes?.steps || [];
+            const allResp = Array.from(document.querySelectorAll('[data-testid="agent-response"]'));
+            const domIdx = allResp.indexOf(respEl);
+            const responseStepIndices = [];
+            for (let i = 0; i < steps.length; i++) {
+              const c = String(steps[i]?.step?.case || steps[i]?.type || '').toLowerCase();
+              if (c.includes('plannerresponse') || c.includes('planner_response') || c.includes('assistant')) {
+                const respText = steps[i]?.step?.value?.response || steps[i]?.step?.value?.modifiedResponse || '';
+                if (String(respText).trim()) {
+                  const realIdx = steps[i]?.metadata?.sourceTrajectoryStepInfo?.stepIndex;
+                  responseStepIndices.push(Number.isInteger(realIdx) && realIdx >= 0 ? realIdx : i);
+                }
+              }
+            }
+            if (domIdx >= 0 && responseStepIndices.length > 0) {
+              const fromEnd = allResp.length - 1 - domIdx;
+              const mapped = responseStepIndices[responseStepIndices.length - 1 - fromEnd];
+              if (Number.isInteger(mapped)) stepIndex = mapped;
             }
           }
-          if (domIdx >= 0 && responseStepIndices.length > 0) {
-            const fromEnd = allResp.length - 1 - domIdx;
-            const mapped = responseStepIndices[responseStepIndices.length - 1 - fromEnd];
-            if (Number.isInteger(mapped)) stepIndex = mapped;
-          }
-        }
-      } catch {}
+        } catch {}
+      }
 
       try {
-        const payload = stepIndex >= 0 ? { cascadeId, stepIndex } : { cascadeId };
+        const payload = buildForkPayload(cascadeId, stepIndex, 1);
         const res = await svc.forkConversation(payload);
-        const newId = res?.cascadeId || res?.conversationId || (typeof res === 'string' ? res : '');
+        const newId = res?.newCascadeId || res?.cascadeId || res?.conversationId || (typeof res === 'string' ? res : '');
         if (newId) {
           showToast(ui.branchCreated || '已创建会话分支');
+          const nextSearch = (prev) => ({
+            ...(prev && typeof prev === 'object' ? prev : {}),
+            ...(res?.newProjectId ? { project: res.newProjectId } : {}),
+          });
           if (router && typeof router.navigate === 'function') {
             try {
-              await router.navigate({ to: '/c/$conversationId', params: { conversationId: newId } });
+              await router.navigate({
+                to: '/c/$cascadeId',
+                params: { cascadeId: newId },
+                search: nextSearch,
+              });
+              return true;
             } catch {
               try {
-                await router.navigate(`/c/${newId}`);
+                await router.navigate({ to: `/c/${encodeURIComponent(newId)}` });
+                return true;
               } catch {}
             }
           }
+          try {
+            const nextUrl = `/c/${encodeURIComponent(newId)}${window.location.search || ''}`;
+            window.history.pushState({}, '', nextUrl);
+            window.dispatchEvent(new PopStateEvent('popstate'));
+          } catch {}
           return true;
         }
         showToast(ui.branchCreated || '已发起分支会话');
         return true;
       } catch (err) {
-        showToast(`${ui.branchFailed || '分支会话失败'}: ${err?.message || err}`, true);
+        if (isSubagentForkUnsupportedError(err)) {
+          const isZh = String(ctx.getCfg?.().language || 'zh-CN') !== 'en';
+          showToast(
+            isZh
+              ? '无法创建分支：该会话曾调用过子智能体 / Swarm，Antigravity 后端暂不支持分支此类对话'
+              : 'Cannot fork: Antigravity backend does not support forking conversations that invoked subagents',
+            true
+          );
+          return false;
+        }
+        const detail = err?.rawMessage || err?.message || String(err);
+        showToast(`${ui.branchFailed || '分支会话失败'}: ${detail}`, true);
         return false;
       }
     }
@@ -511,5 +725,8 @@
     preserveText,
     extractDomPromptText,
     matchTurnIndex,
+    buildForkPayload,
+    extractStepIndexFromFiber,
+    isSubagentForkUnsupportedError,
   };
 });
