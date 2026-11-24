@@ -181,13 +181,29 @@
       if (completedMs || createdMs) lastStepAtMs = Math.max(lastStepAtMs || 0, completedMs || createdMs);
 
       if (sc === 'plannerresponse') {
-        const pStart = tsToMs(s?.metadata?.startedAt) || createdMs;
-        let pEnd = completedMs;
+        // Antigravity sets plannerResponse.metadata.startedAt === completedAt (when generation finishes),
+        // while metadata.createdAt marks when the model request actually began. Always prefer createdAt
+        // (or the earliest timestamp) so completed model wait isn't collapsed to 0ms -> 0.1s.
+        const rawStartedMs = tsToMs(s?.metadata?.startedAt);
+        const pStart =
+          createdMs && rawStartedMs
+            ? Math.min(createdMs, rawStartedMs)
+            : createdMs || rawStartedMs;
+        let pEnd = completedMs || tsToMs(s?.metadata?.finishedGeneratingAt);
         if (!pEnd && i + 1 < tail.length) {
           pEnd = tsToMs(tail[i + 1]?.metadata?.createdAt) || tsToMs(tail[i + 1]?.createdAt);
         }
-        if (pStart && pEnd && pEnd >= pStart && pEnd - pStart <= 600_000) {
-          const pDur = pEnd - pStart;
+        let pDur = pStart && pEnd && pEnd >= pStart && pEnd - pStart <= 600_000 ? pEnd - pStart : null;
+        if ((pDur === null || pDur === 0) && val?.thinkingDuration) {
+          const td = val.thinkingDuration;
+          if (typeof td === 'object' && td.seconds != null) {
+            const tdMs = Number(td.seconds) * 1000 + Math.floor(Number(td.nanos || 0) / 1e6);
+            if (Number.isFinite(tdMs) && tdMs > 0 && tdMs <= 600_000) pDur = tdMs;
+          } else if (typeof td === 'number' && Number.isFinite(td) && td > 0) {
+            pDur = td > 1000 ? td : Math.round(td * 1000);
+          }
+        }
+        if (pDur !== null && (pEnd || pDur > 0)) {
           lastResponseMs = pDur;
           modelWaitLastMs = pDur;
           modelWaitTotalMs += pDur;

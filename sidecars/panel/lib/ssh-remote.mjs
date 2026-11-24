@@ -104,8 +104,8 @@ export async function fetchSshRemoteRequests(host, { force = false, timeoutMs = 
     try {
       child = spawnFn(
         'ssh',
-        ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=5', '-T', safeHost, 'node', '-e', REMOTE_LOADER],
-        { stdio: ['pipe', 'pipe', 'pipe'] }
+        ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=5', '-T', safeHost, `node -e '${REMOTE_LOADER}'`],
+        { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true }
       );
     } catch (err) {
       finish({ ok: false, host: safeHost, requests: [], error: err?.message || String(err) });

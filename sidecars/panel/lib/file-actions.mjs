@@ -45,7 +45,11 @@ export async function openLocalFile(rawUri, { platform = process.platform, execF
   if (platform === 'darwin') {
     await execFn('/usr/bin/open', [info.path], { timeout: 5000 });
   } else if (platform === 'win32') {
-    await execFn('cmd.exe', ['/c', 'start', '', info.path], { timeout: 5000 });
+    await execFn(
+      'powershell.exe',
+      ['-NoProfile', '-NonInteractive', '-Command', 'Start-Process -FilePath $env:AGY_FILE_PATH'],
+      { timeout: 5000, windowsHide: true, env: { ...process.env, AGY_FILE_PATH: info.path } }
+    );
   } else {
     await execFn('xdg-open', [info.path], { timeout: 5000 });
   }
@@ -58,7 +62,16 @@ export async function revealLocalFile(rawUri, { platform = process.platform, exe
   if (platform === 'darwin') {
     await execFn('/usr/bin/open', ['-R', info.path], { timeout: 5000 });
   } else if (platform === 'win32') {
-    await execFn('explorer.exe', [`/select,${info.path}`], { timeout: 5000 });
+    await execFn(
+      'powershell.exe',
+      [
+        '-NoProfile',
+        '-NonInteractive',
+        '-Command',
+        'Start-Process -FilePath explorer.exe -ArgumentList ("/select,`"" + $env:AGY_FILE_PATH + "`"")',
+      ],
+      { timeout: 5000, windowsHide: true, env: { ...process.env, AGY_FILE_PATH: info.path } }
+    );
   } else {
     const dir = info.isDirectory ? info.path : dirname(info.path);
     await execFn('xdg-open', [dir], { timeout: 5000 });
@@ -75,8 +88,8 @@ export async function copyLocalFileToClipboard(rawUri, { platform = process.plat
   } else if (platform === 'win32') {
     await execFn(
       'powershell.exe',
-      ['-NoProfile', '-Command', 'Set-Clipboard -LiteralPath $args[0]', info.path],
-      { timeout: 5000 }
+      ['-STA', '-NoProfile', '-NonInteractive', '-Command', 'Set-Clipboard -LiteralPath $env:AGY_FILE_PATH'],
+      { timeout: 5000, windowsHide: true, env: { ...process.env, AGY_FILE_PATH: info.path } }
     );
   } else {
     throw new Error('Copy file object to clipboard is supported on macOS and Windows');

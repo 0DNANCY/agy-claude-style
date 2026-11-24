@@ -4590,3 +4590,56 @@ html[data-ag-cs-style][data-ag-cs-sidebar="on"] [data-testid="sidebar-navigation
   color: var(--muted-foreground, #888);
   white-space: nowrap;
 }
+
+/* ── 16. Compact Chat Prose Layout (Codex-like density, preserves font size) ── */
+html[data-ag-cs-style][data-ag-cs-compact-chat="on"] [data-testid="user-input-step"] {
+  padding-top: 12px !important;
+}
+html[data-ag-cs-style][data-ag-cs-compact-chat="on"] [data-testid="user-message"] {
+  margin-bottom: 2px !important;
+}
+html[data-ag-cs-style][data-ag-cs-compact-chat="on"] [data-testid="agent-response"] .leading-relaxed {
+  line-height: 1.46 !important;
+}
+html[data-ag-cs-style][data-ag-cs-compact-chat="on"] [data-testid="agent-response"] p {
+  margin-top: 0.28em !important;
+  margin-bottom: 0.28em !important;
+}
+html[data-ag-cs-style][data-ag-cs-compact-chat="on"] [data-testid="agent-response"] ul,
+html[data-ag-cs-style][data-ag-cs-compact-chat="on"] [data-testid="agent-response"] ol {
+  margin-top: 0.22em !important;
+  margin-bottom: 0.28em !important;
+  row-gap: 0.14em !important;
+}
+html[data-ag-cs-style][data-ag-cs-compact-chat="on"] [data-testid="agent-response"] li {
+  line-height: 1.44 !important;
+  margin-top: 0.1em !important;
+  margin-bottom: 0.1em !important;
+}
+html[data-ag-cs-style][data-ag-cs-compact-chat="on"] [data-testid="agent-response"] h1,
+html[data-ag-cs-style][data-ag-cs-compact-chat="on"] [data-testid="agent-response"] h2,
+html[data-ag-cs-style][data-ag-cs-compact-chat="on"] [data-testid="agent-response"] h3,
+html[data-ag-cs-style][data-ag-cs-compact-chat="on"] [data-testid="agent-response"] h4 {
+  margin-top: 0.58em !important;
+  margin-bottom: 0.24em !important;
+  line-height: 1.32 !important;
+}
+html[data-ag-cs-style][data-ag-cs-compact-chat="on"] [data-testid="agent-response"] pre {
+  margin-top: 0.32em !important;
+  margin-bottom: 0.32em !important;
+}
+html[data-ag-cs-style][data-ag-cs-compact-chat="on"] [data-testid="turn-cards-container"] {
+  gap: 4px !important;
+  margin-top: 2px !important;
+  margin-bottom: 2px !important;
+}
+
+/* ── 17. Native Worked-For Inline Summary Meta ── */
+.ag-cs-stage-meta-inline {
+  flex-shrink: 0;
+  font: inherit;
+  letter-spacing: inherit;
+  color: var(--muted-foreground);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}

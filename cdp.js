@@ -67,10 +67,12 @@ const DEFAULT_CONFIG = {
   logoInk: 'accent',
   inlineStats: true,
   ringMode: 'context',
+  quotaCycleMode: 'auto',
   turnBadges: true,
   hudTopBar: false,
   hudBottomBar: false,
   hudRimProgress: false,
+  hudRimSource: 'auto',
   hudFooterChip: false,
   hudCompact: false,
   effortSliderStyle: 'claude',
@@ -79,6 +81,9 @@ const DEFAULT_CONFIG = {
   smoothCaret: true,
   sidebarRestyle: true,
   sidebarCompact: false,
+  compactChatLayout: false,
+  stageCollapse: true,
+  windowUnreadTitle: true,
   placeholderStyle: 'studio',
   rewindPanel: true,
   undoConfirmMode: 'picker',
@@ -98,6 +103,7 @@ const DEFAULT_CONFIG = {
   proxyUrl: '',
   proxyBypass: 'localhost,127.0.0.1,::1',
   proxyForceHttp1: false,
+  proxyColdStartAlert: true,
   autoRelaunchWithCdp: true,
   exitOnHostClose: false,
   pollIntervalMs: 2500,
@@ -115,10 +121,12 @@ const CONFIG_VALIDATORS = {
   logoInk: ['accent', 'foreground'],
   inlineStats: 'boolean',
   ringMode: ['context', 'quota', 'both'],
+  quotaCycleMode: ['auto', 'weekly', '5h'],
   turnBadges: 'boolean',
   hudTopBar: 'boolean',
   hudBottomBar: 'boolean',
   hudRimProgress: 'boolean',
+  hudRimSource: ['auto', 'context', 'quota'],
   hudFooterChip: 'boolean',
   hudCompact: 'boolean',
   effortSliderStyle: ['claude', 'chatgpt', 'liangwufeng'],
@@ -127,6 +135,9 @@ const CONFIG_VALIDATORS = {
   smoothCaret: 'boolean',
   sidebarRestyle: 'boolean',
   sidebarCompact: 'boolean',
+  compactChatLayout: 'boolean',
+  stageCollapse: 'boolean',
+  windowUnreadTitle: 'boolean',
   placeholderStyle: ['studio', 'host'],
   rewindPanel: 'boolean',
   undoConfirmMode: ['picker', 'prompt', 'auto_both', 'auto_chat'],
@@ -141,6 +152,7 @@ const CONFIG_VALIDATORS = {
   sshRemoteStats: 'boolean',
   proxyEnabled: 'boolean',
   proxyForceHttp1: 'boolean',
+  proxyColdStartAlert: 'boolean',
   autoRelaunchWithCdp: 'boolean',
   exitOnHostClose: 'boolean',
 };
@@ -174,7 +186,27 @@ function writeFileAtomic(filePath, content) {
   const tmpPath = path.join(dir, `.${path.basename(filePath)}.tmp.${process.pid}.${Date.now()}`);
   try {
     fs.writeFileSync(tmpPath, content, 'utf8');
-    fs.renameSync(tmpPath, filePath);
+    let lastRenameErr = null;
+    const maxAttempts = IS_WIN ? 3 : 1;
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      try {
+        fs.renameSync(tmpPath, filePath);
+        lastRenameErr = null;
+        break;
+      } catch (err) {
+        lastRenameErr = err;
+        const code = String(err?.code || '').toUpperCase();
+        if (!IS_WIN || (code !== 'EPERM' && code !== 'EACCES' && code !== 'EBUSY')) {
+          throw err;
+        }
+        try {
+          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25 * (attempt + 1));
+        } catch {}
+      }
+    }
+    if (lastRenameErr) {
+      throw lastRenameErr;
+    }
   } catch (err) {
     try {
       if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
@@ -334,7 +366,7 @@ function readCss() {
   return fs.readFileSync(path.join(__dirname, 'style.css'), 'utf8');
 }
 
-const RUNTIME_PARTS = ['i18n-locales.js', 'i18n-core.js', 'sidecar-core.js', 'usage-core.js', 'ripple-core.js', 'mascot-core.js', 'crab-assets.js', 'effort-core.js', 'perf-assets.js', 'ui-rewind.js', 'features/branch-edit.js', 'features/file-menu.js', 'features/task-progress.js', 'features/extensions-dock.js', 'features/hide-on-close.js', 'ui-runtime.js'];
+const RUNTIME_PARTS = ['i18n-locales.js', 'i18n-core.js', 'sidecar-core.js', 'usage-core.js', 'ripple-core.js', 'mascot-core.js', 'crab-assets.js', 'effort-core.js', 'perf-assets.js', 'ui-rewind.js', 'features/branch-edit.js', 'features/file-menu.js', 'features/task-progress.js', 'features/extensions-dock.js', 'features/hide-on-close.js', 'features/unread-title.js', 'features/stage-collapse.js', 'ui-runtime.js'];
 
 function readRuntimeBundle() {
   return RUNTIME_PARTS.map((f) => fs.readFileSync(path.join(__dirname, f), 'utf8')).join('\n');
@@ -426,6 +458,8 @@ function buildInjectExpression(customConfig) {
     const applyStyle = () => {
       const targetParent = document.head || document.documentElement;
       if (!targetParent) return;
+      const conflictingStudio = document.getElementById('ag-claude-studio-css');
+      if (conflictingStudio) conflictingStudio.remove();
       let style = document.getElementById(${JSON.stringify(STYLE_ID)});
       if (!style) {
         style = document.createElement('style');
@@ -436,6 +470,7 @@ function buildInjectExpression(customConfig) {
         targetParent.appendChild(style);
       }
     };
+    globalThis.__agCsEnsureStyle = applyStyle;
 
     let status = 'ok';
     let mounted = false;
@@ -565,6 +600,86 @@ const REMOVE_EXPRESSION = `(() => {
   return { removed: nodes.length };
 })()`;
 
+function parseWin32AntigravityProcesses(rawInput) {
+  let items = [];
+  if (Array.isArray(rawInput)) {
+    items = rawInput;
+  } else if (rawInput && typeof rawInput === 'object') {
+    items = [rawInput];
+  } else if (typeof rawInput === 'string') {
+    const trimmed = rawInput.trim();
+    if (!trimmed) {
+      return { allPids: [], mainPids: [], exePath: null, hasCdpFlag: false, processes: [] };
+    }
+    try {
+      const parsed = JSON.parse(trimmed);
+      items = Array.isArray(parsed) ? parsed : parsed && typeof parsed === 'object' ? [parsed] : [];
+    } catch {
+      return { allPids: [], mainPids: [], exePath: null, hasCdpFlag: false, processes: [] };
+    }
+  }
+
+  const allPids = [];
+  const mainPids = [];
+  const processes = [];
+  let exePath = null;
+  let mainHasCdpFlag = false;
+  let anyNonSidecarHasCdpFlag = false;
+
+  for (const item of items) {
+    if (!item || typeof item !== 'object') continue;
+    const pid = Number(item.ProcessId);
+    if (!Number.isInteger(pid) || pid <= 0) continue;
+    const cmd = typeof item.CommandLine === 'string' ? item.CommandLine.trim() : '';
+    const exe = typeof item.ExecutablePath === 'string' ? item.ExecutablePath.trim() : '';
+    const isElectronChild = /(?:^|\s)--type=/i.test(cmd);
+    const isRunAsNodeHelper =
+      /(?:sidecar_sdk[\\\/]register_loader\.js|--import=[^\s]*sidecar_sdk|(?:^|\s)(?:-e|--eval)(?:\s|$))/i.test(cmd);
+    const isMain = !isElectronChild && !isRunAsNodeHelper;
+    const hasCdp = /--remote-debugging-port(?:=|\s|$)/i.test(cmd);
+
+    allPids.push(pid);
+    if (isMain) {
+      mainPids.push(pid);
+      if (hasCdp) mainHasCdpFlag = true;
+    }
+    if (!isRunAsNodeHelper && hasCdp) {
+      anyNonSidecarHasCdpFlag = true;
+    }
+    if (!exePath && exe) {
+      exePath = exe;
+    }
+    processes.push({ pid, cmd, exePath: exe || null, isMain, isElectronChild, isRunAsNodeHelper, hasCdp });
+  }
+
+  return {
+    allPids,
+    mainPids,
+    exePath,
+    hasCdpFlag: mainHasCdpFlag || anyNonSidecarHasCdpFlag,
+    processes,
+  };
+}
+
+function queryWin32AntigravityProcesses() {
+  const out = execFileSync(
+    'powershell.exe',
+    [
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      "$p = @(Get-CimInstance Win32_Process -Filter \"Name='Antigravity.exe'\" | Select-Object ProcessId, ParentProcessId, ExecutablePath, CommandLine); if ($p.Count -gt 0) { $p | ConvertTo-Json -Compress }",
+    ],
+    {
+      encoding: 'utf8',
+      timeout: 4000,
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }
+  );
+  return parseWin32AntigravityProcesses(out);
+}
+
 function detectAntigravityProcess() {
   try {
     if (IS_MAC) {
@@ -592,6 +707,10 @@ function detectAntigravityProcess() {
       return { running: pids.length > 0, pids };
     }
     if (IS_WIN) {
+      try {
+        const winInfo = queryWin32AntigravityProcesses();
+        return { running: winInfo.mainPids.length > 0, pids: winInfo.mainPids };
+      } catch {}
       const out = execFileSync(
         'tasklist',
         ['/FI', 'IMAGENAME eq Antigravity.exe', '/FO', 'CSV', '/NH'],
@@ -651,6 +770,8 @@ function findAntigravityExecutable() {
     const progFilesX86 = process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)';
     const candidates = [
       path.join(localAppData, 'Programs', 'antigravity', 'Antigravity.exe'),
+      path.join(localAppData, 'Programs', 'Google', 'Antigravity', 'Antigravity.exe'),
+      path.join(localAppData, 'Antigravity', 'Antigravity.exe'),
       path.join(progFiles, 'Antigravity', 'Antigravity.exe'),
       path.join(progFilesX86, 'Antigravity', 'Antigravity.exe'),
     ];
@@ -687,25 +808,8 @@ function resolveRunningAntigravityPath(pids = []) {
       return null;
     }
     if (IS_WIN) {
-      const out = execFileSync(
-        'powershell.exe',
-        [
-          '-NoProfile',
-          '-NonInteractive',
-          '-Command',
-          "Get-CimInstance Win32_Process -Filter \"Name='Antigravity.exe'\" | Select-Object -ExpandProperty ExecutablePath",
-        ],
-        {
-          encoding: 'utf8',
-          timeout: 3000,
-          windowsHide: true,
-          stdio: ['ignore', 'pipe', 'ignore'],
-        }
-      );
-      for (const rawLine of out.split(/\r?\n/)) {
-        const exePath = rawLine.trim();
-        if (exePath && fs.existsSync(exePath)) return exePath;
-      }
+      const winInfo = queryWin32AntigravityProcesses();
+      if (winInfo.exePath && fs.existsSync(winInfo.exePath)) return winInfo.exePath;
       return null;
     }
     for (const pid of validPids) {
@@ -733,22 +837,13 @@ function hasRemoteDebuggingFlag(pids = []) {
       return /--remote-debugging-port(?:=|\s|$)/i.test(out);
     }
     if (IS_WIN) {
-      const out = execFileSync(
-        'powershell.exe',
-        [
-          '-NoProfile',
-          '-NonInteractive',
-          '-Command',
-          "Get-CimInstance Win32_Process -Filter \"Name='Antigravity.exe'\" | Select-Object -ExpandProperty CommandLine",
-        ],
-        {
-          encoding: 'utf8',
-          timeout: 3000,
-          windowsHide: true,
-          stdio: ['ignore', 'pipe', 'ignore'],
-        }
-      );
-      return /--remote-debugging-port(?:=|\s|$)/i.test(out);
+      const winInfo = queryWin32AntigravityProcesses();
+      const pidSet = new Set(validPids);
+      const matched = winInfo.processes.filter((p) => !p.isRunAsNodeHelper && pidSet.has(p.pid));
+      if (matched.length > 0) {
+        return matched.some((p) => p.hasCdp);
+      }
+      return winInfo.hasCdpFlag;
     }
     for (const pid of validPids) {
       try {
@@ -1093,7 +1188,7 @@ function evaluateWatcherOwnership(rawInfo, targetDir = __dirname, targetPlatform
     return NODE_DISALLOWED_ENTRY_FLAGS.has(firstFlag) ? 'foreign' : 'unknown';
   }
 
-  const normRest = targetPlatform === 'win32' ? rest.toLowerCase() : rest;
+  const normRest = targetPlatform === 'win32' ? rest.toLowerCase().replace(/\//g, '\\') : rest;
   const rawUnquotedRest = normRest.replace(/^["']/, '');
   const unquotedRest =
     targetPlatform === 'darwin'
@@ -1214,60 +1309,92 @@ function removeStalePortFile() {
   } catch {}
 }
 
+function runWin32WindowAction(action, opts = {}) {
+  const spawnFn = typeof opts.spawn === 'function' ? opts.spawn : spawn;
+  const script =
+    action === 'minimize'
+      ? "$t = Add-Type -MemberDefinition '[DllImport(\"user32.dll\")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);' -Name 'AgyWinMin' -Namespace 'AgyCs' -PassThru; $p = Get-Process -Name Antigravity -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1; if ($p) { [void]$t::ShowWindow($p.MainWindowHandle, 6) }"
+      : "$t = Add-Type -MemberDefinition '[DllImport(\"user32.dll\")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow); [DllImport(\"user32.dll\")] public static extern bool SetForegroundWindow(IntPtr hWnd); [DllImport(\"user32.dll\")] public static extern bool IsIconic(IntPtr hWnd);' -Name 'AgyWinAct' -Namespace 'AgyCs' -PassThru; $p = Get-Process -Name Antigravity -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1; if ($p) { if ($t::IsIconic($p.MainWindowHandle)) { [void]$t::ShowWindow($p.MainWindowHandle, 9) }; [void]$t::SetForegroundWindow($p.MainWindowHandle) }";
+  try {
+    const child = spawnFn(
+      'powershell.exe',
+      ['-NoProfile', '-NonInteractive', '-Command', script],
+      { detached: true, stdio: 'ignore', windowsHide: true }
+    );
+    if (child && typeof child.unref === 'function') child.unref();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function activateAntigravityWindow(opts = {}) {
   if (IS_MAC) {
     try {
+      const spawnFn = typeof opts.spawn === 'function' ? opts.spawn : spawn;
       const appTarget = opts.appPath || findAntigravityExecutable() || 'Antigravity';
-      const child = spawn('/usr/bin/open', ['-a', appTarget], {
+      const child = spawnFn('/usr/bin/open', ['-a', appTarget], {
         detached: true,
         stdio: 'ignore',
       });
-      child.unref();
+      if (child && typeof child.unref === 'function') child.unref();
       return true;
     } catch {
       return false;
     }
   }
+  if (IS_WIN) {
+    return runWin32WindowAction('activate', opts);
+  }
   return false;
 }
 
-function hideAntigravityWindow() {
+function hideAntigravityWindow(opts = {}) {
   if (IS_MAC) {
     try {
-      const child = spawn(
+      const spawnFn = typeof opts.spawn === 'function' ? opts.spawn : spawn;
+      const child = spawnFn(
         '/usr/bin/osascript',
         ['-e', 'tell application "System Events" to set visible of first application process whose name is "Antigravity" to false'],
         { detached: true, stdio: 'ignore' }
       );
-      child.unref();
+      if (child && typeof child.unref === 'function') child.unref();
       return true;
     } catch {
       return false;
     }
+  }
+  if (IS_WIN) {
+    // On Windows there is no Dock icon to restore SW_HIDE windows without a tray icon;
+    // minimize cleanly to the taskbar instead so clicking the taskbar restores without reload.
+    return runWin32WindowAction('minimize', opts);
   }
   return false;
 }
 
 function sanitizeAppLaunchEnv(baseEnv = process.env, extraEnv = {}) {
   const env = { ...(baseEnv || {}) };
-  const stripExact = [
+  const stripExactUpper = new Set([
     'ELECTRON_RUN_AS_NODE',
     'ELECTRON_NO_ATTACH_CONSOLE',
     'NODE_OPTIONS',
     'NODE_PATH',
     'AGY_RELAUNCH_SPEC',
+    'AGY_RELAUNCH_CODE',
+    'AGY_RELAUNCH_STAGE2',
     'AG_CDP_PORT',
     'PLUGIN_DATA',
-  ];
-  for (const k of stripExact) delete env[k];
+    'ANTIGRAVITY_SOURCE_METADATA',
+    'ANTIGRAVITY_EXECUTABLE_DATA_DIR',
+    'ANTIGRAVITY_NODE_PATH',
+  ]);
   for (const k of Object.keys(env)) {
+    const upper = k.toUpperCase();
     if (
-      k.startsWith('ANTIGRAVITY_SIDECAR_') ||
-      k.startsWith('ANTIGRAVITY_LS_') ||
-      k.startsWith('ANTIGRAVITY_HOST_BRIDGE_') ||
-      k === 'ANTIGRAVITY_SOURCE_METADATA' ||
-      k === 'ANTIGRAVITY_EXECUTABLE_DATA_DIR' ||
-      k === 'ANTIGRAVITY_NODE_PATH'
+      stripExactUpper.has(upper) ||
+      upper.startsWith('ANTIGRAVITY_SIDECAR_') ||
+      upper.startsWith('ANTIGRAVITY_LS_') ||
+      upper.startsWith('ANTIGRAVITY_HOST_BRIDGE_')
     ) {
       delete env[k];
     }
@@ -1433,6 +1560,8 @@ function scheduleDetachedRelaunch({
   };
   // Runs completely outside Antigravity's process tree so killing Antigravity
   // does not terminate the relauncher before it can spawn the new instance.
+  // On Windows, stage 1 immediately spawns stage 2 and exits so stage 2's ParentProcessId
+  // is orphaned and cannot be killed by `taskkill /T` walking Antigravity's process tree.
   // Crucially strips ELECTRON_RUN_AS_NODE & ANTIGRAVITY_SIDECAR_* before spawning Antigravity
   // (when invoked from an Electron Helper sidecar, process.env contains ELECTRON_RUN_AS_NODE=1!).
   const helperScript = `
@@ -1443,35 +1572,69 @@ const cfg = JSON.parse(process.env.AGY_RELAUNCH_SPEC || '{}');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const alive = (p) => { try { process.kill(p, 0); return true; } catch (e) { return e && e.code === 'EPERM'; } };
 const log = (m) => { try { if (cfg.logFile) { fs.mkdirSync(path.dirname(cfg.logFile), { recursive: true }); fs.appendFileSync(cfg.logFile, '[' + new Date().toISOString() + '] ' + m + '\\n'); } } catch {} };
+if (cfg.isWin && !process.env.AGY_RELAUNCH_STAGE2 && process.env.AGY_RELAUNCH_CODE) {
+  try {
+    const stage2 = spawn(process.execPath, ['-e', process.env.AGY_RELAUNCH_CODE], {
+      detached: true,
+      stdio: 'ignore',
+      windowsHide: true,
+      env: { ...process.env, AGY_RELAUNCH_STAGE2: '1' },
+    });
+    stage2.unref();
+  } catch (e) {
+    log('stage2 spawn error: ' + (e && e.message || e));
+  }
+  process.exit(0);
+}
 (async () => {
   if (cfg.delayMs > 0) await sleep(cfg.delayMs);
-  const pids = Array.isArray(cfg.pids) ? cfg.pids : [];
+  const pids = (Array.isArray(cfg.pids) ? cfg.pids : []).filter((p) => Number.isInteger(p) && p > 0 && p !== process.pid);
   log('terminating pids=' + JSON.stringify(pids));
+  const waitMs = cfg.waitMs || 8000;
+  const deadline = Date.now() + waitMs;
   if (cfg.isWin) {
     for (const p of pids) {
-      try { execFileSync('taskkill', ['/PID', String(p), '/T'], { timeout: 4000, windowsHide: true, stdio: 'ignore' }); } catch {}
+      try { execFileSync('taskkill', ['/PID', String(p)], { timeout: 4000, windowsHide: true, stdio: 'ignore' }); } catch {}
     }
-    if (pids.length === 0) {
-      try { execFileSync('taskkill', ['/IM', 'Antigravity.exe'], { timeout: 4000, windowsHide: true, stdio: 'ignore' }); } catch {}
+    const softDeadline = Date.now() + Math.min(2500, Math.floor(waitMs / 2));
+    while (Date.now() < softDeadline && pids.some(alive)) {
+      await sleep(200);
+    }
+    const stubborn = pids.filter(alive);
+    if (stubborn.length > 0) {
+      log('escalating force taskkill for pids=' + JSON.stringify(stubborn));
+      for (const p of stubborn) {
+        try { execFileSync('taskkill', ['/F', '/PID', String(p), '/T'], { timeout: 4000, windowsHide: true, stdio: 'ignore' }); } catch {}
+      }
+    }
+    while (Date.now() < deadline && pids.some(alive)) {
+      await sleep(200);
     }
   } else {
     for (const p of pids) {
       try { process.kill(p, 'SIGTERM'); } catch {}
     }
+    while (Date.now() < deadline && pids.some(alive)) {
+      await sleep(200);
+    }
   }
-  const deadline = Date.now() + (cfg.waitMs || 8000);
-  while (Date.now() < deadline && pids.some(alive)) {
-    await sleep(200);
+  const remaining = pids.filter(alive);
+  if (remaining.length > 0) {
+    log('abort: target pids still alive=' + JSON.stringify(remaining));
+    return;
   }
   try { if (cfg.portFile && fs.existsSync(cfg.portFile)) fs.unlinkSync(cfg.portFile); } catch {}
   await sleep(800);
   const extraEnv = cfg.extraEnv && typeof cfg.extraEnv === 'object' ? cfg.extraEnv : {};
   const env = { ...process.env };
-  for (const k of ['ELECTRON_RUN_AS_NODE', 'ELECTRON_NO_ATTACH_CONSOLE', 'NODE_OPTIONS', 'NODE_PATH', 'AGY_RELAUNCH_SPEC', 'AG_CDP_PORT', 'PLUGIN_DATA']) {
-    delete env[k];
-  }
+  const stripExactUpper = new Set([
+    'ELECTRON_RUN_AS_NODE', 'ELECTRON_NO_ATTACH_CONSOLE', 'NODE_OPTIONS', 'NODE_PATH',
+    'AGY_RELAUNCH_SPEC', 'AGY_RELAUNCH_CODE', 'AGY_RELAUNCH_STAGE2', 'AG_CDP_PORT', 'PLUGIN_DATA',
+    'ANTIGRAVITY_SOURCE_METADATA', 'ANTIGRAVITY_EXECUTABLE_DATA_DIR', 'ANTIGRAVITY_NODE_PATH'
+  ]);
   for (const k of Object.keys(env)) {
-    if (k.startsWith('ANTIGRAVITY_SIDECAR_') || k.startsWith('ANTIGRAVITY_LS_') || k.startsWith('ANTIGRAVITY_HOST_BRIDGE_') || k === 'ANTIGRAVITY_SOURCE_METADATA' || k === 'ANTIGRAVITY_EXECUTABLE_DATA_DIR' || k === 'ANTIGRAVITY_NODE_PATH') {
+    const u = k.toUpperCase();
+    if (stripExactUpper.has(u) || u.startsWith('ANTIGRAVITY_SIDECAR_') || u.startsWith('ANTIGRAVITY_LS_') || u.startsWith('ANTIGRAVITY_HOST_BRIDGE_')) {
       delete env[k];
     }
   }
@@ -1485,7 +1648,6 @@ const log = (m) => { try { if (cfg.logFile) { fs.mkdirSync(path.dirname(cfg.logF
       log('spawning macBin=' + macBin + ' args=' + JSON.stringify(cfg.launchArgs || []) + ' proxy=' + Boolean(env.HTTPS_PROXY) + ' electronRunAsNode=' + String(env.ELECTRON_RUN_AS_NODE));
       const child = spawn(macBin, cfg.launchArgs || [], { detached: true, stdio: 'ignore', env });
       child.unref();
-      // Wait briefly for CDP DevToolsActivePort and bring Antigravity to the foreground automatically.
       const readyDeadline = Date.now() + 6000;
       while (Date.now() < readyDeadline) {
         if (cfg.portFile && fs.existsSync(cfg.portFile)) break;
@@ -1503,11 +1665,17 @@ const log = (m) => { try { if (cfg.logFile) { fs.mkdirSync(path.dirname(cfg.logF
       child.unref();
     }
   } else if (cfg.appPath) {
-    log('spawning appPath=' + cfg.appPath + ' proxy=' + Boolean(env.HTTPS_PROXY));
+    log('spawning appPath=' + cfg.appPath + ' args=' + JSON.stringify(cfg.launchArgs || []) + ' proxy=' + Boolean(env.HTTPS_PROXY));
     const child = spawn(cfg.appPath, cfg.launchArgs || [], {
       detached: true, stdio: 'ignore', windowsHide: false, env
     });
     child.unref();
+    const readyDeadline = Date.now() + 6000;
+    while (Date.now() < readyDeadline) {
+      if (cfg.portFile && fs.existsSync(cfg.portFile)) break;
+      await sleep(250);
+    }
+    log('cdpPortReady=' + Boolean(cfg.portFile && fs.existsSync(cfg.portFile)));
   }
 })().catch((e) => log('error: ' + (e && e.message || e)));
 `.trim();
@@ -1516,7 +1684,11 @@ const log = (m) => { try { if (cfg.logFile) { fs.mkdirSync(path.dirname(cfg.logF
     detached: true,
     stdio: 'ignore',
     windowsHide: true,
-    env: { ...process.env, AGY_RELAUNCH_SPEC: JSON.stringify(payload) },
+    env: {
+      ...process.env,
+      AGY_RELAUNCH_SPEC: JSON.stringify(payload),
+      AGY_RELAUNCH_CODE: helperScript,
+    },
   });
   if (child && typeof child.unref === 'function') child.unref();
   return true;
@@ -1534,31 +1706,26 @@ async function relaunchAntigravityWithCdp(opts = {}) {
   const killFn =
     typeof opts.terminate === 'function'
       ? opts.terminate
-      : (pids) => {
+      : (pids, { force = false } = {}) => {
           if (IS_WIN) {
             const validWinPids = Array.isArray(pids) ? pids.filter((p) => Number.isInteger(p) && p > 0 && p !== process.pid) : [];
             if (validWinPids.length > 0) {
               for (const pid of validWinPids) {
                 try {
-                  execFileSync('taskkill', ['/PID', String(pid), '/T'], {
+                  const args = force ? ['/F', '/PID', String(pid), '/T'] : ['/PID', String(pid)];
+                  execFileSync('taskkill', args, {
                     timeout: 4000,
                     windowsHide: true,
                     stdio: 'ignore',
                   });
                 } catch {}
               }
-            } else {
-              execFileSync('taskkill', ['/IM', 'Antigravity.exe'], {
-                timeout: 4000,
-                windowsHide: true,
-                stdio: 'ignore',
-              });
             }
           } else {
             for (const pid of pids) {
               if (pid > 0 && pid !== process.pid) {
                 try {
-                  process.kill(pid, 'SIGTERM');
+                  process.kill(pid, force ? 'SIGKILL' : 'SIGTERM');
                 } catch {}
               }
             }
@@ -1590,12 +1757,20 @@ async function relaunchAntigravityWithCdp(opts = {}) {
   }
 
   try {
-    killFn(initialPids);
+    killFn(initialPids, { force: false });
   } catch {}
 
   const deadline = Date.now() + waitMs;
+  const forceAfter = Date.now() + Math.min(2500, Math.floor(waitMs / 2));
+  let escalated = false;
   while (Date.now() < deadline) {
     if (!detectFn().running) break;
+    if (IS_WIN && !escalated && typeof opts.terminate !== 'function' && Date.now() >= forceAfter) {
+      escalated = true;
+      try {
+        killFn(initialPids, { force: true });
+      } catch {}
+    }
     await new Promise((r) => setTimeout(r, 200));
   }
   if (detectFn().running) {
@@ -1648,6 +1823,7 @@ module.exports = {
   isInjectableTarget,
   listPages,
   detectAntigravityProcess,
+  parseWin32AntigravityProcesses,
   findAntigravityExecutable,
   resolveRunningAntigravityPath,
   hasRemoteDebuggingFlag,

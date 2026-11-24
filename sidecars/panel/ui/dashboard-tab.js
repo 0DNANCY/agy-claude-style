@@ -65,6 +65,88 @@
       return cleaned || String(name || '');
     }
 
+    function renderPricingMeta(meta) {
+      const btn = document.getElementById('btn-dash-pricing');
+      const costEl = document.getElementById('kpi-cost');
+      if (!btn) return;
+      if (!meta || meta.source !== 'online') {
+        btn.classList.remove('is-synced');
+        btn.textContent = '$ 单价';
+        btn.title = meta?.lastError
+          ? `当前使用内置参考单价（上次同步失败：${meta.lastError}），点击重试在线同步`
+          : '当前使用内置参考单价，点击在线同步官方 API 参考单价';
+        if (costEl) costEl.title = '内置参考单价';
+        return;
+      }
+      btn.classList.add('is-synced');
+      btn.textContent = '$ 官方';
+      const syncTime = meta.updatedAtMs ? fmtDateTime(meta.updatedAtMs) : '';
+      const tip = `已同步 ${meta.sourceName || '官方单价'}（${meta.modelCount || 0} 模型${syncTime ? ` · ${syncTime}` : ''}），点击手动刷新`;
+      btn.title = tip;
+      if (costEl) costEl.title = tip;
+    }
+
+    function renderModelHealth(health) {
+      const listEl = document.getElementById('health-list');
+      const badgeEl = document.getElementById('health-summary');
+      if (!listEl || !badgeEl) return;
+      const models = Array.isArray(health?.models) ? health.models : [];
+      if (models.length === 0) {
+        badgeEl.textContent = '暂无数据';
+        listEl.innerHTML = '<div style="text-align:center;color:var(--muted-fg);padding:10px 0;font-size:11px;">当前时间范围内无模型请求</div>';
+        return;
+      }
+      const errModels = models.filter((m) => m.overallStatus === 'err').length;
+      const warnModels = models.filter((m) => m.overallStatus === 'warn').length;
+      badgeEl.textContent =
+        errModels > 0
+          ? `${errModels} 异常 · ${models.length} 模型`
+          : warnModels > 0
+          ? `${warnModels} 波动 · ${models.length} 模型`
+          : `全部正常 · ${models.length} 模型`;
+
+      listEl.innerHTML = '';
+      for (const m of models) {
+        const row = document.createElement('div');
+        row.className = 'health-row';
+        const ttftTxt = Number.isFinite(m.avgTtftMs) ? `首字 ${fmtDuration(m.avgTtftMs)}` : '';
+        const errTag = m.errorCount > 0 ? `<span class="health-pill is-err">报错 ${m.errorCount}${m.topError ? ` (${escapeHtml(m.topError)})` : ''}</span>` : '';
+        const dropTag = m.anomalyCount > 0 ? `<span class="health-pill is-warn">掉缓存 ${m.anomalyCount}</span>` : '';
+        const slotsHtml = (m.slots || [])
+          .map((s) => {
+            const win = `${fmtDateTime(s.startMs).slice(0, 11)} ~ ${fmtDateTime(s.endMs).slice(6, 11)}`;
+            const detail =
+              s.count > 0
+                ? `${win} · ${s.count} 次${s.errors ? ` · 报错 ${s.errors}` : ''}${s.anomalies ? ` · 掉缓存 ${s.anomalies}` : ''}${Number.isFinite(s.avgTtftMs) ? ` · 首字 ${fmtDuration(s.avgTtftMs)}` : ''}`
+                : `${win} · 无请求`;
+            return `<span class="health-slot is-${escapeHtml(s.status)}" title="${escapeHtml(detail)}"></span>`;
+          })
+          .join('');
+        row.innerHTML = `
+          <div class="health-top">
+            <button type="button" class="health-model-btn" title="点击按该模型筛选下方请求记录">
+              <span class="health-dot is-${escapeHtml(m.overallStatus)}"></span>
+              <span class="health-name">${escapeHtml(m.model)}</span>
+            </button>
+            <span class="health-rate">${m.successRatePct}% · ${m.requests}次</span>
+          </div>
+          <div class="health-slots">${slotsHtml}</div>
+          <div class="health-meta">
+            ${ttftTxt ? `<span>${escapeHtml(ttftTxt)}</span>` : ''}
+            ${errTag}${dropTag}
+          </div>
+        `;
+        row.querySelector('.health-model-btn').addEventListener('click', () => {
+          const sel = document.getElementById('dash-model');
+          if (!sel) return;
+          sel.value = sel.value === m.model ? '' : m.model;
+          loadedLimit = PAGE_SIZE;
+          void refresh({ syncSsh: false, preserveScroll: false });
+        });
+        listEl.appendChild(row);
+      }
+    }
+
     function renderWeeklyQuotaCard(wq) {
       const poolsEl = document.getElementById('kpi-weekly-pools');
       const subEl = document.getElementById('kpi-weekly-sub');
@@ -323,6 +405,8 @@
 
         lastTodaySummary = d.todaySummary || null;
         lastWeeklyQuota = d.weeklyQuota || null;
+        renderPricingMeta(d.pricing || null);
+        renderModelHealth(d.modelHealth || null);
         renderWeeklyQuotaCard(lastWeeklyQuota);
         const todayText = document.getElementById('heat-today-text');
         const filterTodayBtn = document.getElementById('btn-filter-today');
@@ -509,6 +593,34 @@
     document.getElementById('heat-head').addEventListener('click', () => {
       document.getElementById('sec-heatmap').classList.toggle('collapsed');
     });
+    const healthHead = document.getElementById('health-head');
+    if (healthHead) {
+      healthHead.addEventListener('click', () => {
+        document.getElementById('sec-health').classList.toggle('collapsed');
+      });
+    }
+    const pricingBtn = document.getElementById('btn-dash-pricing');
+    if (pricingBtn) {
+      pricingBtn.addEventListener('click', async () => {
+        pricingBtn.disabled = true;
+        pricingBtn.textContent = '同步中…';
+        try {
+          const res = await app.apiFetch('/api/pricing/refresh', { method: 'POST', body: '{}' });
+          const d = await res.json();
+          if (d.ok) {
+            app.showToast(`已同步官方单价（${d.modelCount || 0} 个模型）`);
+            await refresh({ syncSsh: false, preserveScroll: true });
+          } else {
+            app.showToast(`单价同步失败，继续使用内置单价：${d.error || '网络异常'}`);
+            renderPricingMeta(d);
+          }
+        } catch (err) {
+          app.showToast(`单价同步异常：${err.message}`);
+        } finally {
+          pricingBtn.disabled = false;
+        }
+      });
+    }
     document.getElementById('heatmap-wrap').addEventListener('scroll', hideHeatTooltip, { passive: true });
 
     syncAutoButton();

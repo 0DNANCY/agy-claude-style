@@ -177,13 +177,19 @@ export function lookupModelPrice(model = '') {
   return DEFAULT_PRICE;
 }
 
-export function estimateRequestCost({ model = '', inputTokens = 0, cacheReadTokens = 0, outputTokens = 0 } = {}) {
-  const price = lookupModelPrice(model);
+export function estimateRequestCost(
+  { model = '', inputTokens = 0, cacheReadTokens = 0, outputTokens = 0 } = {},
+  priceLookup = lookupModelPrice
+) {
+  const price = typeof priceLookup === 'function' ? priceLookup(model) : lookupModelPrice(model);
+  const inRate = Number(price?.inputPerM ?? price?.input ?? 1.5);
+  const cacheRate = Number(price?.cacheReadPerM ?? price?.cacheRead ?? 0.3);
+  const outRate = Number(price?.outputPerM ?? price?.output ?? 6.0);
   const totalIn = Math.max(0, Number(inputTokens) || 0);
   const cached = Math.min(totalIn, Math.max(0, Number(cacheReadTokens) || 0));
   const freshIn = Math.max(0, totalIn - cached);
   const out = Math.max(0, Number(outputTokens) || 0);
-  return (freshIn * price.input + cached * price.cacheRead + out * price.output) / 1_000_000;
+  return (freshIn * inRate + cached * cacheRate + out * outRate) / 1_000_000;
 }
 
 export function extractUserTitle(rawContent = '') {
@@ -501,10 +507,181 @@ export function readLocalBrainRequests({
   return all;
 }
 
+function classifyHealthErrorTag(raw = '') {
+  const s = String(raw || '').trim();
+  if (!s) return 'error';
+  if (/unexpected\s+eof|\beof\b|connection\s+reset|broken\s+pipe/i.test(s)) return 'EOF';
+  if (/\b429\b|rate\s*limit|resource_exhausted|quota/i.test(s)) return '429';
+  if (/\b503\b|\b502\b|\b504\b|unavailable|overloaded|capacity/i.test(s)) return '503';
+  if (/timeout|timed\s*out|deadline/i.test(s)) return '超时';
+  if (/\b403\b|permission|region|forbidden/i.test(s)) return '403';
+  return s.slice(0, 18);
+}
+
+export function buildModelHealth(requests = [], { range = '7d', selectedDate = '', nowMs = Date.now(), slotCount = 12 } = {}) {
+  const slotsN = Math.max(6, Math.min(24, Number(slotCount) || 12));
+  let windowEndMs = nowMs;
+  let windowStartMs = nowMs - 7 * DAY_MS;
+
+  if (selectedDate && /^\d{4}-\d{2}-\d{2}$/.test(selectedDate)) {
+    const d0 = new Date(`${selectedDate}T00:00:00`);
+    windowStartMs = d0.getTime();
+    windowEndMs = windowStartMs + DAY_MS;
+  } else if (range === 'today') {
+    const d0 = new Date(nowMs);
+    d0.setHours(0, 0, 0, 0);
+    windowStartMs = d0.getTime();
+    windowEndMs = Math.max(nowMs, windowStartMs + 60 * 60 * 1000);
+  } else if (range === '24h') {
+    windowStartMs = nowMs - DAY_MS;
+  } else if (range === '7d') {
+    windowStartMs = nowMs - 7 * DAY_MS;
+  } else if (range === '30d') {
+    windowStartMs = nowMs - 30 * DAY_MS;
+  } else {
+    let minTs = Infinity;
+    let maxTs = 0;
+    for (const r of requests) {
+      if (r.timestampMs > 0) {
+        if (r.timestampMs < minTs) minTs = r.timestampMs;
+        if (r.timestampMs > maxTs) maxTs = r.timestampMs;
+      }
+    }
+    if (Number.isFinite(minTs) && maxTs > minTs) {
+      windowStartMs = minTs;
+      windowEndMs = maxTs + 1000;
+    } else {
+      windowStartMs = nowMs - 7 * DAY_MS;
+    }
+  }
+
+  const spanMs = Math.max(60_000, windowEndMs - windowStartMs);
+  const bucketMs = spanMs / slotsN;
+  const byModel = new Map();
+
+  for (const r of requests) {
+    const mName = r.model || 'unknown';
+    let entry = byModel.get(mName);
+    if (!entry) {
+      entry = {
+        model: mName,
+        requests: 0,
+        errorCount: 0,
+        anomalyCount: 0,
+        ttftSum: 0,
+        ttftCount: 0,
+        errorTags: new Map(),
+        slots: Array.from({ length: slotsN }, (_, idx) => ({
+          idx,
+          startMs: Math.round(windowStartMs + idx * bucketMs),
+          endMs: Math.round(windowStartMs + (idx + 1) * bucketMs),
+          count: 0,
+          errors: 0,
+          anomalies: 0,
+          ttftSum: 0,
+          ttftCount: 0,
+        })),
+      };
+      byModel.set(mName, entry);
+    }
+
+    entry.requests += 1;
+    const isErr = r.status === 'error';
+    const isAnom = Boolean(r.anomaly);
+    if (isErr) {
+      entry.errorCount += 1;
+      const tag = classifyHealthErrorTag(r.errorText);
+      entry.errorTags.set(tag, (entry.errorTags.get(tag) || 0) + 1);
+    }
+    if (isAnom) entry.anomalyCount += 1;
+    if (Number.isFinite(r.ttftMs) && r.ttftMs >= 0) {
+      entry.ttftSum += r.ttftMs;
+      entry.ttftCount += 1;
+    }
+
+    if (r.timestampMs >= windowStartMs && r.timestampMs <= windowEndMs) {
+      const rawIdx = Math.floor((r.timestampMs - windowStartMs) / bucketMs);
+      const sIdx = Math.max(0, Math.min(slotsN - 1, rawIdx));
+      const slot = entry.slots[sIdx];
+      slot.count += 1;
+      if (isErr) slot.errors += 1;
+      if (isAnom) slot.anomalies += 1;
+      if (Number.isFinite(r.ttftMs) && r.ttftMs >= 0) {
+        slot.ttftSum += r.ttftMs;
+        slot.ttftCount += 1;
+      }
+    }
+  }
+
+  const models = Array.from(byModel.values())
+    .map((m) => {
+      const avgTtftMs = m.ttftCount > 0 ? Math.round(m.ttftSum / m.ttftCount) : null;
+      const successRatePct = m.requests > 0 ? Number((((m.requests - m.errorCount) / m.requests) * 100).toFixed(1)) : 100;
+      const cacheDropRatePct = m.requests > 0 ? Number(((m.anomalyCount / m.requests) * 100).toFixed(1)) : 0;
+      let topError = '';
+      let topErrorCount = 0;
+      for (const [tag, cnt] of m.errorTags.entries()) {
+        if (cnt > topErrorCount) {
+          topError = tag;
+          topErrorCount = cnt;
+        }
+      }
+      const slots = m.slots.map((s) => {
+        const sAvgTtft = s.ttftCount > 0 ? Math.round(s.ttftSum / s.ttftCount) : null;
+        let status = 'empty';
+        if (s.count > 0) {
+          if (s.errors > 0) status = 'err';
+          else if (s.anomalies > 0 || (sAvgTtft !== null && sAvgTtft >= 15000)) status = 'warn';
+          else status = 'ok';
+        }
+        return {
+          startMs: s.startMs,
+          endMs: s.endMs,
+          count: s.count,
+          errors: s.errors,
+          anomalies: s.anomalies,
+          avgTtftMs: sAvgTtft,
+          status,
+        };
+      });
+
+      const errRate = m.requests > 0 ? m.errorCount / m.requests : 0;
+      const overallStatus =
+        errRate >= 0.1 || m.errorCount >= 3
+          ? 'err'
+          : m.errorCount > 0 || cacheDropRatePct >= 15 || (avgTtftMs !== null && avgTtftMs >= 15000)
+          ? 'warn'
+          : 'ok';
+
+      return {
+        model: m.model,
+        requests: m.requests,
+        errorCount: m.errorCount,
+        anomalyCount: m.anomalyCount,
+        successRatePct,
+        cacheDropRatePct,
+        avgTtftMs,
+        topError,
+        overallStatus,
+        slots,
+      };
+    })
+    .sort((a, b) => b.requests - a.requests || b.errorCount - a.errorCount)
+    .slice(0, 8);
+
+  return {
+    windowStartMs: Math.round(windowStartMs),
+    windowEndMs: Math.round(windowEndMs),
+    slotCount: slotsN,
+    models,
+  };
+}
+
 export function queryTelemetryDashboard({
   brainDir,
   conversationsDir,
   extraRequests = [],
+  priceLookup = null,
   range = '7d',
   date = '',
   conversationId = '',
@@ -521,6 +698,7 @@ export function queryTelemetryDashboard({
 
   const enriched = combined.map((r) => ({
     ...r,
+    costUsd: typeof priceLookup === 'function' ? estimateRequestCost(r, priceLookup) : r.costUsd,
     anomaly: anomalies.get(r.id) || null,
   }));
 
@@ -640,6 +818,13 @@ export function queryTelemetryDashboard({
     }))
     .sort((a, b) => b.costUsd - a.costUsd || b.requests - a.requests);
 
+  const modelHealth = buildModelHealth(rangeRows, {
+    range,
+    selectedDate,
+    nowMs,
+    slotCount: 12,
+  });
+
   return {
     ok: true,
     range,
@@ -662,6 +847,7 @@ export function queryTelemetryDashboard({
     },
     availableModels: Array.from(modelSet).sort(),
     modelsBreakdown,
+    modelHealth,
     heatmap,
     pagination: {
       totalFiltered,

@@ -361,7 +361,18 @@ test('hasRemoteDebuggingFlag detects --remote-debugging-port on running processe
 test('cdp exports STARTUP_GRACE_SECONDS = 90 and safe activateAntigravityWindow helper', () => {
   assert.equal(cdp.STARTUP_GRACE_SECONDS, 90);
   assert.equal(typeof cdp.activateAntigravityWindow, 'function');
-  if (process.platform !== 'darwin') {
+  if (process.platform === 'win32') {
+    let seen = null;
+    const ok = cdp.activateAntigravityWindow({
+      spawn: (cmd, args, opts) => {
+        seen = { cmd, args, opts };
+        return { unref() {} };
+      },
+    });
+    assert.equal(ok, true);
+    assert.equal(seen.cmd, 'powershell.exe');
+    assert.equal(seen.opts.windowsHide, true);
+  } else if (process.platform !== 'darwin') {
     assert.equal(cdp.activateAntigravityWindow(), false);
   }
 });

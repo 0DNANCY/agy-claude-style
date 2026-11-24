@@ -667,7 +667,11 @@ async function createWatchController({
 
   const cfgDir = path.dirname(cdpApi.CONFIG_FILE);
   const cfgBase = path.basename(cdpApi.CONFIG_FILE);
-  if (path.resolve(cfgDir) !== path.resolve(__dirname)) {
+  const sameConfigDir =
+    process.platform === 'win32'
+      ? path.resolve(cfgDir).toLowerCase() === path.resolve(__dirname).toLowerCase()
+      : path.resolve(cfgDir) === path.resolve(__dirname);
+  if (!sameConfigDir) {
     try {
       if (!fs.existsSync(cfgDir)) fs.mkdirSync(cfgDir, { recursive: true });
       configDirWatcher = fs.watch(cfgDir, (_, filename) => {

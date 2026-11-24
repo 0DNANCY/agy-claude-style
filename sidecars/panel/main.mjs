@@ -7,9 +7,15 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { dispatchFileAction } from './lib/file-actions.mjs';
 import { queryTelemetryDashboard } from './lib/telemetry-db.mjs';
+import { createPricingStore } from './lib/pricing.mjs';
 import { createQuotaTracker } from './lib/quota-tracker.mjs';
 import { fetchSshRemoteRequests, listConfiguredSshHosts } from './lib/ssh-remote.mjs';
-import { buildProxyLaunchOptions, normalizeProxyUrl, testProxyConnectivity } from './lib/proxy.mjs';
+import {
+  buildProxyLaunchOptions,
+  detectHostProxyRuntime,
+  normalizeProxyUrl,
+  testProxyConnectivity,
+} from './lib/proxy.mjs';
 
 const require = createRequire(import.meta.url);
 const cdp = require('../../cdp.js');
@@ -123,6 +129,14 @@ async function getPanelStatus() {
       capsule: inspectCompanionPlugin('agy-capsule'),
       bridge: inspectCompanionPlugin('agy-claude-capsule-bridge'),
     },
+    conflicts: {
+      studio: inspectCompanionPlugin('agy-claude-studio'),
+    },
+    proxyRuntime: detectHostProxyRuntime({
+      proxyEnabled: Boolean(config.proxyEnabled),
+      proxyUrl: config.proxyUrl,
+      proxyForceHttp1: Boolean(config.proxyForceHttp1),
+    }),
   };
 }
 
@@ -252,6 +266,11 @@ async function startPanelSidecar() {
   }), 'POST');
 
   let lastSshSync = { ok: false, host: '', requests: [], count: 0, error: '' };
+  const pricingStore = createPricingStore({
+    cachePath: join(cdp.STATE_DIR, 'pricing-cache.json'),
+  });
+  void pricingStore.refresh({ force: false });
+
   const quotaTracker = createQuotaTracker({
     filePath: join(cdp.STATE_DIR, 'quota-daily.json'),
   });
@@ -260,6 +279,10 @@ async function startPanelSidecar() {
     void quotaTracker.sampleNow({ force: false });
   }, 60_000);
   if (typeof quotaTimer.unref === 'function') quotaTimer.unref();
+
+  app.api('/api/pricing/refresh', guardApi(async () => {
+    return await pricingStore.refresh({ force: true });
+  }), 'POST');
 
   app.api('/api/telemetry', guardApi(async (data) => {
     const cfg = cdp.readConfig();
@@ -290,6 +313,7 @@ async function startPanelSidecar() {
           offset,
           limit,
           extraRequests,
+          priceLookup: pricingStore.lookupPrice,
         })
       ),
       quotaTracker.sampleNow({ force: Boolean(data?.syncSsh) }),
@@ -297,6 +321,7 @@ async function startPanelSidecar() {
     return {
       ...dash,
       weeklyQuota,
+      pricing: pricingStore.getMeta(),
       ssh: {
         enabled: includeSsh,
         host: cfg.sshHost || '',
@@ -392,7 +417,12 @@ function safeRealpath(filePath) {
 
 const invokedPath = process.argv[1] ? safeRealpath(process.argv[1]) : '';
 const currentPath = safeRealpath(fileURLToPath(import.meta.url));
-if (invokedPath && invokedPath === currentPath) {
+const isMainEntry =
+  Boolean(invokedPath) &&
+  (process.platform === 'win32'
+    ? invokedPath.toLowerCase() === currentPath.toLowerCase()
+    : invokedPath === currentPath);
+if (isMainEntry) {
   startPanelSidecar().catch((err) => {
     console.error('[agy-claude-style panel sidecar] failed:', err?.message || err);
     process.exit(1);

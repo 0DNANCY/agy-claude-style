@@ -33,8 +33,11 @@
     if (!isMac && hasCtrl && !hasMeta && !hasAlt && (key === 'r' || code === 'keyr')) return 'allow-unload';
     if (key === 'f5' || code === 'f5') return 'allow-unload';
 
-    // Window Close shortcut (Cmd+W on macOS)
+    // Window Close shortcut (Cmd+W on macOS, Ctrl+W on Windows/Linux)
     if (isMac && hasMeta && !hasCtrl && !hasAlt && !hasShift && (key === 'w' || code === 'keyw')) {
+      return 'hide-window';
+    }
+    if (!isMac && hasCtrl && !hasMeta && !hasAlt && !hasShift && (key === 'w' || code === 'keyw')) {
       return 'hide-window';
     }
     return 'none';
@@ -96,6 +99,12 @@
           return true;
         }
       } catch {}
+      if (!isMac && typeof send === 'function') {
+        try {
+          send(JSON.stringify({ key: '__windowAction', value: 'hide' }));
+          return true;
+        } catch {}
+      }
       return false;
     }
 

@@ -23,12 +23,29 @@
     if (!/^file:\/\//i.test(s)) return s.split('#')[0];
     const clean = s.split('#')[0].split('?')[0];
     let p = clean.replace(/^file:\/\//i, '');
-    if (/^\/[a-zA-Z]:\//.test(p)) p = p.slice(1);
     try {
-      return decodeURIComponent(p);
-    } catch {
-      return p;
+      p = decodeURIComponent(p);
+    } catch {}
+    if (/^\/[a-zA-Z]:\//.test(p)) p = p.slice(1);
+    return p;
+  }
+
+  function toFileUri(rawPath) {
+    const s = String(rawPath || '').trim();
+    if (!s) return '';
+    if (/^file:\/\//i.test(s)) return s;
+    if (/^[a-zA-Z]:[\\/]/.test(s)) {
+      const normalized = s.replace(/\\/g, '/');
+      return `file:///${encodeURI(normalized).replace(/#/g, '%23').replace(/\?/g, '%3F')}`;
     }
+    if (/^\\\\[^\\]+\\/.test(s)) {
+      const normalized = s.replace(/\\/g, '/').replace(/^\/+/, '');
+      return `file://${encodeURI(normalized).replace(/#/g, '%23').replace(/\?/g, '%3F')}`;
+    }
+    if (s.startsWith('/')) {
+      return `file://${encodeURI(s).replace(/#/g, '%23').replace(/\?/g, '%3F')}`;
+    }
+    return '';
   }
 
   function extractFileUriFromTarget(target) {
@@ -48,9 +65,9 @@
         steps++;
         const p = node.memoizedProps;
         const cand = p?.uri || p?.fileUri || p?.item?.uri || p?.node?.uri || p?.path || p?.filePath;
-        if (typeof cand === 'string' && (cand.startsWith('file://') || cand.startsWith('/'))) {
-          const uri = cand.startsWith('file://') ? cand : `file://${encodeURI(cand)}`;
-          return { uri, el: treeItem };
+        if (typeof cand === 'string') {
+          const uri = toFileUri(cand);
+          if (uri) return { uri, el: treeItem };
         }
         node = node.return;
       }
@@ -238,6 +255,7 @@
   return {
     create,
     decodeFileUri,
+    toFileUri,
     extractFileUriFromTarget,
   };
 });

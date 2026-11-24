@@ -7,10 +7,30 @@
       document.getElementById('ssh-badge').textContent = cfg.sshRemoteStats ? '已开启' : '关闭';
 
       document.getElementById('sw-proxy-enabled').checked = Boolean(cfg.proxyEnabled);
+      const coldAlertEl = document.getElementById('sw-proxy-cold-alert');
+      if (coldAlertEl) coldAlertEl.checked = cfg.proxyColdStartAlert !== false;
       document.getElementById('inp-proxy-url').value = cfg.proxyUrl || '';
       document.getElementById('inp-proxy-bypass').value = cfg.proxyBypass || 'localhost,127.0.0.1,::1';
       document.getElementById('sw-proxy-h1').checked = Boolean(cfg.proxyForceHttp1);
       document.getElementById('proxy-badge').textContent = cfg.proxyEnabled ? '已开启' : '关闭';
+
+      const box = document.getElementById('proxy-runtime-box');
+      const pr = app.getLastStatus?.()?.proxyRuntime;
+      if (box) {
+        if (!pr || !pr.inspected || (!pr.configured && !pr.active)) {
+          box.style.display = 'none';
+        } else if (pr.coldStartMismatch) {
+          box.style.display = 'block';
+          box.className = 'proxy-runtime-box is-warn';
+          box.textContent = `⚠ ${pr.reason}。请点击下方「带代理与 CDP 重启 Antigravity」使其生效。`;
+        } else if (pr.active) {
+          box.style.display = 'block';
+          box.className = 'proxy-runtime-box is-ok';
+          box.textContent = `✓ 当前进程已生效独立代理：${pr.activeProxyMasked}${pr.forceHttp1Active ? ' · HTTP/1.1' : ''}`;
+        } else {
+          box.style.display = 'none';
+        }
+      }
     }
 
     async function loadSshHosts() {
@@ -44,6 +64,10 @@
     });
 
     document.getElementById('sw-proxy-enabled').addEventListener('change', (ev) => app.saveOne('proxyEnabled', ev.target.checked));
+    const swColdAlert = document.getElementById('sw-proxy-cold-alert');
+    if (swColdAlert) {
+      swColdAlert.addEventListener('change', (ev) => app.saveOne('proxyColdStartAlert', ev.target.checked));
+    }
     document.getElementById('sw-proxy-h1').addEventListener('change', (ev) => app.saveOne('proxyForceHttp1', ev.target.checked));
     document.getElementById('btn-proxy-save').addEventListener('click', () =>
       app.saveUpdates({

@@ -2229,11 +2229,61 @@
   }
 
   // Compute remaining-usage telemetry for the bottom-right circular ring (.ag-cs-context-ring).
+  function resolveQuotaCycle(quotaInfo, quotaCycleMode = 'auto') {
+    if (!quotaInfo) return { pct: null, cycle: quotaCycleMode || 'auto' };
+    const mode = quotaCycleMode === 'weekly' || quotaCycleMode === '5h' ? quotaCycleMode : 'auto';
+    const b5h = quotaInfo.b5h && !quotaInfo.b5h.disabled && typeof quotaInfo.b5h.remainingPct === 'number'
+      ? quotaInfo.b5h
+      : null;
+    const bWeek = quotaInfo.bWeek && typeof quotaInfo.bWeek.remainingPct === 'number'
+      ? quotaInfo.bWeek
+      : null;
+    const fallback = typeof quotaInfo.effectiveRemainingPct === 'number' ? quotaInfo.effectiveRemainingPct : null;
+
+    if (mode === 'weekly') {
+      const raw = bWeek ? bWeek.remainingPct : fallback;
+      return {
+        pct: raw === null ? null : Math.max(0, Math.min(100, raw)),
+        cycle: bWeek ? 'weekly' : 'auto',
+      };
+    }
+    if (mode === '5h') {
+      const raw = b5h ? b5h.remainingPct : bWeek ? bWeek.remainingPct : fallback;
+      return {
+        pct: raw === null ? null : Math.max(0, Math.min(100, raw)),
+        cycle: b5h ? '5h' : bWeek ? 'weekly' : 'auto',
+      };
+    }
+    // auto: lowest remaining across active windows
+    let raw = fallback;
+    let cycle = 'auto';
+    if (b5h && bWeek) {
+      if (b5h.remainingPct <= bWeek.remainingPct) {
+        raw = b5h.remainingPct;
+        cycle = '5h';
+      } else {
+        raw = bWeek.remainingPct;
+        cycle = 'weekly';
+      }
+    } else if (b5h) {
+      raw = b5h.remainingPct;
+      cycle = '5h';
+    } else if (bWeek) {
+      raw = bWeek.remainingPct;
+      cycle = 'weekly';
+    }
+    return {
+      pct: raw === null ? null : Math.max(0, Math.min(100, raw)),
+      cycle,
+    };
+  }
+
   function computeRingTelemetry({
     activeInfo = null,
     quotaInfo = null,
     draftTokens = 0,
     ringMode = 'context',
+    quotaCycleMode = 'auto',
     knownLimits = null,
   } = {}) {
     const maxTokens =
@@ -2248,17 +2298,25 @@
     const contextRemainingPct =
       maxTokens > 0 ? Math.max(0, Math.min(100, (remainingTokens / maxTokens) * 100)) : 100;
 
-    const quotaRemainingPct =
-      quotaInfo && typeof quotaInfo.effectiveRemainingPct === 'number'
-        ? Math.max(0, Math.min(100, quotaInfo.effectiveRemainingPct))
-        : null;
+    const resolvedQuota = resolveQuotaCycle(quotaInfo, quotaCycleMode);
+    const quotaRemainingPct = resolvedQuota.pct;
+    const quotaLevel =
+      quotaRemainingPct === null
+        ? 'ok'
+        : quotaRemainingPct <= 10
+        ? 'danger'
+        : quotaRemainingPct <= 30
+        ? 'warn'
+        : 'ok';
+    const quotaColor =
+      quotaLevel === 'danger' ? '#dc3c3d' : quotaLevel === 'warn' ? '#fbb315' : '#257de0';
 
     let mode = ringMode === 'quota' ? 'quota' : 'context';
     let pct = contextRemainingPct;
     let level;
     if (mode === 'quota' && quotaRemainingPct !== null) {
       pct = quotaRemainingPct;
-      level = pct <= 10 ? 'danger' : pct <= 30 ? 'warn' : 'ok';
+      level = quotaLevel;
     } else {
       mode = 'context';
       pct = contextRemainingPct;
@@ -2282,6 +2340,10 @@
       contextUsedPct,
       contextRemainingPct,
       quotaRemainingPct,
+      quotaCycleMode: quotaCycleMode || 'auto',
+      quotaCycleUsed: resolvedQuota.cycle,
+      quotaLevel,
+      quotaColor,
     };
   }
 
@@ -2392,6 +2454,7 @@
     attachSubagentSummaries,
     normalizeQuotaData,
     getActiveQuotaInfo,
+    resolveQuotaCycle,
     computeRingTelemetry,
     buildTelemetryReport,
   };

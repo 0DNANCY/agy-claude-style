@@ -9,6 +9,15 @@
 
   const VERSION = 2;
   const CODE_HASH = initialConfig?.codeHash || '';
+  if (window.__agClaudeStudio) {
+    try {
+      window.__agClaudeStudio.destroy();
+    } catch {}
+    delete window.__agClaudeStudio;
+  }
+  const studioStyleEl = document.getElementById('ag-claude-studio-css');
+  if (studioStyleEl) studioStyleEl.remove();
+
   if (window.__agTokenHud) {
     try {
       window.__agTokenHud.destroy();
@@ -198,6 +207,7 @@
     html.setAttribute('data-ag-cs-logo-ink', cfg.logoInk === 'foreground' ? 'foreground' : 'accent');
     html.setAttribute('data-ag-cs-sidebar', cfg.sidebarRestyle === false ? 'off' : 'on');
     html.setAttribute('data-ag-cs-sidebar-compact', cfg.sidebarCompact === true ? 'on' : 'off');
+    html.setAttribute('data-ag-cs-compact-chat', cfg.compactChatLayout === true ? 'on' : 'off');
     html.setAttribute('data-ag-cs-hud-compact', cfg.hudCompact === true ? 'on' : 'off');
     html.setAttribute('data-ag-cs-effort-accent', cfg.effortAccent === false ? 'off' : 'on');
     html.setAttribute('data-ag-cs-lang', lang);
@@ -1626,6 +1636,7 @@
           quotaInfo: activeQuota,
           draftTokens: draftEst.tokens,
           ringMode: cfg.ringMode || 'context',
+          quotaCycleMode: cfg.quotaCycleMode || 'auto',
           knownLimits: knownMax > 0 ? { maxContextTokens: knownMax } : null,
         }),
         draftEst,
@@ -3269,9 +3280,23 @@
     // 3. Rim Progress Border (data-ag-cs-rim on composerShell + proportional .ag-cs-hud-rim-progress)
     let rimBar = card.querySelector('.ag-cs-hud-rim-progress');
     if (cfg.hudRimProgress === true) {
+      const rimSrc = cfg.hudRimSource || 'auto';
+      const useQuotaRim =
+        ring.quotaRemainingPct !== null &&
+        (rimSrc === 'quota' || (rimSrc === 'auto' && ring.mode === 'quota'));
+      const rimColor = useQuotaRim
+        ? ring.quotaColor || ring.color
+        : ring.contextRemainingPct <= 10
+        ? '#dc3c3d'
+        : ring.contextRemainingPct <= 30
+        ? '#fbb315'
+        : '#257de0';
+      const rimFillPct = useQuotaRim
+        ? Math.max(2, Math.min(100, ring.quotaRemainingPct))
+        : Math.max(2, Math.min(100, ring.contextUsedPct));
       if (composerShell) {
         composerShell.setAttribute('data-ag-cs-rim', '1');
-        composerShell.style.setProperty('--ag-cs-rim-color', ring.color);
+        composerShell.style.setProperty('--ag-cs-rim-color', rimColor);
       }
       const rimHost = card.querySelector(':scope > div.relative.w-full') || card;
       if (rimHost) {
@@ -3288,9 +3313,8 @@
         }
         const fill = rimBar.firstElementChild;
         if (fill) {
-          const usedPct = Math.max(2, Math.min(100, 100 - ring.pct));
-          fill.style.width = `${usedPct.toFixed(1)}%`;
-          fill.style.background = ring.color;
+          fill.style.width = `${rimFillPct.toFixed(1)}%`;
+          fill.style.background = rimColor;
         }
       }
     } else {
@@ -4789,6 +4813,7 @@
       const needQuotaPoll =
         cfg.ringMode === 'quota' ||
         cfg.ringMode === 'both' ||
+        (cfg.hudRimProgress === true && cfg.hudRimSource === 'quota') ||
         cfg.hudBottomBar === true ||
         Boolean(openPopover && openPopover.isConnected && activeHudTab === 'quotas');
       if (needQuotaPoll) {
@@ -4931,7 +4956,16 @@
       const qVal = qPct !== null ? qPct : 0;
       const qLabel = qPct !== null ? `${Math.round(qPct)}%` : '--';
       const qColor = qPct === null ? 'var(--muted-foreground)' : qPct <= 10 ? '#dc3c3d' : qPct <= 30 ? '#fbb315' : '#257de0';
-      const qTitle = qPct !== null ? `${ui.optRingQuota || 'Quota Rem %'}: ${qPct.toFixed(1)}% · ${ringTitle}` : ringTitle;
+      const qCycleTag =
+        ring.quotaCycleUsed === '5h'
+          ? '5h'
+          : ring.quotaCycleUsed === 'weekly'
+          ? (lang !== 'en' ? '周限额' : 'Weekly')
+          : '';
+      const qTitle =
+        qPct !== null
+          ? `${ui.optRingQuota || 'Quota Rem %'}${qCycleTag ? ` (${qCycleTag})` : ''}: ${qPct.toFixed(1)}% · ${ringTitle}`
+          : ringTitle;
       syncRingBtn('ag-cs-quota-ring', {
         pctVal: qVal,
         labelText: qLabel,
@@ -5413,7 +5447,7 @@
   // Self-contained features live in ui-<feature>.js and register on
   // globalThis.__agCsFeatures.<name> = { create(ctx) }. Each instance may expose
   // sync(), onClick(ev), onKeyDown(ev) -> boolean (consumed), onEscape(ev, info), destroy().
-  const FEATURE_ORDER = ['rewind', 'branchEdit', 'fileMenu', 'taskProgress', 'extensionsDock', 'hideOnClose'];
+  const FEATURE_ORDER = ['rewind', 'branchEdit', 'fileMenu', 'taskProgress', 'extensionsDock', 'hideOnClose', 'unreadTitle', 'stageCollapse'];
   const featureCtx = {
     getCfg: () => cfg,
     getUi: () => uiText(getLang()),
@@ -5465,6 +5499,11 @@
 
   function runSync() {
     if (destroyed) return;
+    if (!document.getElementById('ag-claude-style-css') && typeof globalThis.__agCsEnsureStyle === 'function') {
+      try {
+        globalThis.__agCsEnsureStyle();
+      } catch {}
+    }
     if (openPopover && (!openPopover.isConnected || !openPopoverAnchor || !openPopoverAnchor.isConnected)) {
       closeContextPopover();
     }
@@ -5963,7 +6002,7 @@
       });
       document
         .querySelectorAll(
-          '.ag-cs-inline-stats, .ag-cs-quota-ring, .ag-cs-context-ring, .ag-cs-hud-top-bar, .ag-cs-hud-bottom-bar, .ag-cs-hud-rim-progress, .ag-cs-hud-footer-chip, .ag-cs-perf-backdrop, .ag-cs-rewind-bar, .ag-cs-rewind-notice, .ag-cs-rewind-backdrop, .ag-cs-branch-btn, .ag-cs-edit-btn, .ag-cs-inline-edit, .ag-cs-file-menu, .ag-cs-progress-card, .ag-cs-action-toast, #' + SETTINGS_SEC_ID
+          '.ag-cs-inline-stats, .ag-cs-quota-ring, .ag-cs-context-ring, .ag-cs-hud-top-bar, .ag-cs-hud-bottom-bar, .ag-cs-hud-rim-progress, .ag-cs-hud-footer-chip, .ag-cs-perf-backdrop, .ag-cs-rewind-bar, .ag-cs-rewind-notice, .ag-cs-rewind-backdrop, .ag-cs-branch-btn, .ag-cs-edit-btn, .ag-cs-inline-edit, .ag-cs-file-menu, .ag-cs-progress-card, .ag-cs-action-toast, .ag-cs-stage-bar, .ag-cs-stage-badge, #' + SETTINGS_SEC_ID
         )
         .forEach((el) => el.remove());
       const html = document.documentElement;
@@ -5977,6 +6016,7 @@
           'data-ag-cs-logo-ink',
           'data-ag-cs-sidebar',
           'data-ag-cs-sidebar-compact',
+          'data-ag-cs-compact-chat',
           'data-ag-cs-hud-compact',
           'data-ag-cs-effort-accent',
           'data-ag-cs-perf-backdrop',

@@ -353,6 +353,26 @@ test('task-progress: summarizeSteps computes cumulative and live model wait time
   assert.equal(liveSum.modelWaitTotalMs, 2500);
   assert.equal(liveSum.modelWaitSinceMs, t0 + 3000);
 
+  // Regression: Antigravity sets plannerResponse.metadata.startedAt === completedAt (finish time) while createdAt is request start.
+  const sameStartEndSum = taskProgress.summarizeSteps(
+    [
+      {
+        step: { case: 'plannerResponse', value: { thinking: 'real wait' } },
+        metadata: {
+          createdAt: new Date(t0).toISOString(),
+          startedAt: new Date(t0 + 18502).toISOString(),
+          completedAt: new Date(t0 + 18502).toISOString(),
+        },
+        status: 3,
+      },
+    ],
+    0,
+    'complete',
+    true
+  );
+  assert.equal(sameStartEndSum.modelWaitLastMs, 18502);
+  assert.equal(sameStartEndSum.modelWaitTotalMs, 18502);
+
   assert.equal(taskProgress.formatClock(0), '0s');
   assert.equal(taskProgress.formatClock(420), '0.4s');
   assert.equal(taskProgress.formatClock(14800), '14s');
@@ -370,6 +390,8 @@ test('hide-on-close: classifies Cmd+W vs Cmd+Q/Reload and respects hidden state'
 
   assert.equal(hideOnClose.classifyShortcut({ metaKey: true, key: 'w' }, true), 'hide-window');
   assert.equal(hideOnClose.classifyShortcut({ metaKey: true, shiftKey: true, key: 'w' }, true), 'none');
+  assert.equal(hideOnClose.classifyShortcut({ ctrlKey: true, key: 'w' }, false), 'hide-window');
+  assert.equal(hideOnClose.classifyShortcut({ ctrlKey: true, shiftKey: true, key: 'w' }, false), 'none');
   assert.equal(hideOnClose.classifyShortcut({ metaKey: true, key: 'q' }, true), 'allow-unload');
   assert.equal(hideOnClose.classifyShortcut({ metaKey: true, key: 'r' }, true), 'allow-unload');
   assert.equal(hideOnClose.classifyShortcut({ altKey: true, key: 'F4' }, false), 'allow-unload');
@@ -544,4 +566,469 @@ test('control-tab: every group key and dropdown option value matches cdp.js CONF
       }
     }
   }
+});
+
+test('usage-core: quotaCycleMode selects auto (min), weekly, or 5h bucket accurately', () => {
+  const usageCore = require('../usage-core.js');
+  const quotaInfo = {
+    effectiveRemainingPct: 40,
+    b5h: { window: '5h', remainingPct: 40, disabled: false },
+    bWeek: { window: 'weekly', remainingPct: 82 },
+  };
+  const activeInfo = { contextUsed: 50000, maxContextTokens: 200000 };
+
+  const autoRing = usageCore.computeRingTelemetry({ activeInfo, quotaInfo, ringMode: 'quota', quotaCycleMode: 'auto' });
+  assert.equal(autoRing.quotaRemainingPct, 40);
+  assert.equal(autoRing.quotaCycleUsed, '5h');
+  assert.equal(autoRing.pct, 40);
+
+  const weekRing = usageCore.computeRingTelemetry({ activeInfo, quotaInfo, ringMode: 'quota', quotaCycleMode: 'weekly' });
+  assert.equal(weekRing.quotaRemainingPct, 82);
+  assert.equal(weekRing.quotaCycleUsed, 'weekly');
+  assert.equal(weekRing.pct, 82);
+
+  const h5Ring = usageCore.computeRingTelemetry({ activeInfo, quotaInfo, ringMode: 'quota', quotaCycleMode: '5h' });
+  assert.equal(h5Ring.quotaRemainingPct, 40);
+  assert.equal(h5Ring.quotaCycleUsed, '5h');
+
+  // Fallback to weekly when 5h bucket is absent
+  const weekOnly = { effectiveRemainingPct: 68, b5h: null, bWeek: { window: 'weekly', remainingPct: 68 } };
+  const fallback5h = usageCore.computeRingTelemetry({ activeInfo, quotaInfo: weekOnly, ringMode: 'quota', quotaCycleMode: '5h' });
+  assert.equal(fallback5h.quotaRemainingPct, 68);
+  assert.equal(fallback5h.quotaCycleUsed, 'weekly');
+});
+
+test('unread-title: strips/formats badge prefixes and classifies trajectory states', () => {
+  const unread = require('../features/unread-title.js');
+  assert.equal(unread.stripTitleBadge('(3) My Project - Antigravity'), 'My Project - Antigravity');
+  assert.equal(unread.stripTitleBadge('● (2) My Project - Antigravity'), 'My Project - Antigravity');
+  assert.equal(unread.formatUnreadTitle('My Project', 0, 0), 'My Project');
+  assert.equal(unread.formatUnreadTitle('My Project', 2, 0), '(2) My Project');
+  assert.equal(unread.formatUnreadTitle('(1) My Project', 1, 2), '● (3) My Project');
+  assert.equal(unread.classifyTrajectoryState({ status: 'CASCADE_RUN_STATUS_RUNNING' }), 'running');
+  assert.equal(unread.classifyTrajectoryState({ status: 'WAITING_FOR_USER' }), 'waiting');
+  assert.equal(unread.classifyTrajectoryState({ status: 'IDLE' }), 'idle');
+});
+
+test('stage-collapse: formats badges and detects approval prompts safely', () => {
+  const stage = require('../features/stage-collapse.js');
+  assert.equal(stage.formatStageBadge({ toolCount: 3, thinkCount: 2 }, true), '3 步工具 · 2 次思考');
+  assert.equal(stage.formatStageBadge({ updateCount: 2, toolCount: 3, thinkCount: 1 }, true), '2 条进度 · 3 步工具 · 1 次思考');
+  assert.equal(stage.formatStageBadge({ updateCount: 1, toolCount: 1, thinkCount: 1 }, false), '1 update · 1 tool · 1 thought');
+  assert.equal(stage.formatStageBadge({ toolCount: 1, thinkCount: 1 }, false), '1 tool · 1 thought');
+  assert.equal(stage.formatStageBadge({ toolCount: 0, thinkCount: 0 }, true), '');
+
+  const fakeApprovalResp = {
+    querySelector: (sel) => (sel.includes('approval') ? {} : null),
+    querySelectorAll: () => [],
+  };
+  assert.equal(stage.hasApprovalPrompt(fakeApprovalResp), true);
+
+  const fakeNormalResp = {
+    querySelector: () => null,
+    querySelectorAll: () => [{ closest: () => null, textContent: 'Copy' }],
+  };
+  assert.equal(stage.hasApprovalPrompt(fakeNormalResp), false);
+
+  // Never collapse while running or when worked-for-collapsible is hidden (display:none)
+  assert.equal(
+    stage.shouldAutoCollapseTurn({
+      turnIsRunning: true,
+      workedVisible: true,
+      expanded: true,
+      userToggled: false,
+      autoCollapsed: false,
+      hasApproval: false,
+      seenRunning: true,
+      isLast: true,
+      hasFinalAnswer: false,
+    }),
+    false
+  );
+  assert.equal(
+    stage.shouldAutoCollapseTurn({
+      turnIsRunning: false,
+      workedVisible: false,
+      expanded: true,
+      userToggled: false,
+      autoCollapsed: false,
+      hasApproval: false,
+      seenRunning: true,
+      isLast: true,
+      hasFinalAnswer: true,
+    }),
+    false
+  );
+  assert.equal(
+    stage.shouldAutoCollapseTurn({
+      turnIsRunning: false,
+      workedVisible: true,
+      expanded: true,
+      userToggled: false,
+      autoCollapsed: false,
+      hasApproval: false,
+      seenRunning: true,
+      isLast: true,
+      hasFinalAnswer: true,
+    }),
+    true
+  );
+
+  // Native prompt-driven stage updates config helper (agy-powertools style with protobuf-es v2 $typeName)
+  const enabledCfg = stage.applyStageUpdateConfig(
+    {
+      $typeName: 'exa.cortex_pb.CascadeConfig',
+      plannerConfig: {
+        $typeName: 'exa.cortex_pb.CascadePlannerConfig',
+        promptSectionCustomizationConfig: {
+          $typeName: 'exa.cortex_pb.PromptSectionCustomizationConfig',
+          removePromptSections: [],
+          addPromptSections: [],
+          replacePromptSections: [],
+          templateOverrides: {},
+          appendPromptSections: [{ $typeName: 'exa.cortex_pb.PromptSection', title: 'custom', content: 'keep' }],
+        },
+      },
+    },
+    true
+  );
+  assert.equal(enabledCfg.plannerConfig.noToolExplanation, false);
+  assert.equal(enabledCfg.plannerConfig.noToolSummary, false);
+  const pCfg = enabledCfg.plannerConfig.promptSectionCustomizationConfig;
+  assert.equal(pCfg.$typeName, 'exa.cortex_pb.PromptSectionCustomizationConfig');
+  assert.ok(Array.isArray(pCfg.removePromptSections));
+  assert.equal(pCfg.appendPromptSections.length, 2);
+  assert.equal(pCfg.appendPromptSections[1].$typeName, 'exa.cortex_pb.PromptSection');
+  assert.equal(pCfg.appendPromptSections[1].title, stage.STAGE_PROMPT_TITLE);
+  const disabledCfg = stage.applyStageUpdateConfig(enabledCfg, false);
+  assert.equal(disabledCfg.plannerConfig.promptSectionCustomizationConfig.appendPromptSections.length, 1);
+  assert.equal(disabledCfg.plannerConfig.promptSectionCustomizationConfig.appendPromptSections[0].title, 'custom');
+
+  // Native segment render transform (agy-powertools style): inline while running, folded on completion
+  const stageUpdateStep = {
+    type: 'step',
+    step: { step: { case: 'plannerResponse', value: { response: '正在检查配置文件…' } } },
+  };
+  const toolGroupStep = {
+    type: 'toolGroupCollapsible',
+    key: 'tools-10',
+    debugMode: false,
+    steps: [
+      { id: 1, metadata: { sourceTrajectoryStepInfo: { stepIndex: 10 } } },
+      { id: 2, metadata: { sourceTrajectoryStepInfo: { stepIndex: 11 } } },
+    ],
+  };
+  const finalTailStep = {
+    type: 'step',
+    step: { step: { case: 'plannerResponse', value: { response: '已修复完成。' } } },
+  };
+  const runningResult = stage.transformStageSegmentResult(
+    {
+      leadingSteps: [stageUpdateStep],
+      body: { type: 'collapsible', isActive: true, defaultExpanded: true, triggerVisible: false, content: { groups: [toolGroupStep] } },
+      tailSteps: [],
+    },
+    { isRunning: true, isLastTurn: true, segment: { isLatest: true } }
+  );
+  assert.equal(runningResult.body.type, 'inline');
+  assert.deepEqual(runningResult.leadingSteps, [stageUpdateStep]);
+
+  const completedResult = stage.transformStageSegmentResult(
+    {
+      leadingSteps: [stageUpdateStep],
+      body: { type: 'collapsible', isActive: false, defaultExpanded: true, triggerVisible: true, content: { groups: [toolGroupStep] } },
+      tailSteps: [finalTailStep],
+    },
+    { isRunning: false, isLastTurn: true, segment: { isLatest: true } }
+  );
+  assert.equal(completedResult.body.type, 'collapsible');
+  assert.equal(completedResult.body.defaultExpanded, false);
+  assert.equal(completedResult.body.isActive, false);
+  assert.equal(completedResult.body.triggerVisible, true);
+  assert.deepEqual(completedResult.leadingSteps, []);
+  // Nested toolGroupCollapsible ("Explored / 已探索") is flattened into direct steps for single-click expansion
+  assert.equal(completedResult.body.content.groups.length, 3);
+  assert.deepEqual(completedResult.body.content.groups[0], stageUpdateStep);
+  assert.equal(completedResult.body.content.groups[1].type, 'step');
+  assert.equal(completedResult.body.content.groups[1].key, 'step-10');
+  assert.equal(completedResult.body.content.groups[2].type, 'step');
+  assert.equal(completedResult.body.content.groups[2].key, 'step-11');
+  assert.deepEqual(completedResult.tailSteps, [finalTailStep]);
+
+  // Native protobuf bindings path
+  const mockSchemas = {
+    CascadeConfigSchema: 'CC',
+    CascadePlannerConfigSchema: 'CPC',
+    PromptSectionCustomizationConfigSchema: 'PSCC',
+    PromptSectionSchema: 'PS',
+  };
+  const nativeBindings = {
+    schemas: mockSchemas,
+    cloneProto: (_schema, obj) => structuredClone(obj),
+    createProto: (schema, init) => ({ $typeName: schema, ...init }),
+  };
+  const nativeCfg = stage.applyStageUpdateConfig({ $typeName: 'CC' }, true, nativeBindings);
+  assert.equal(nativeCfg.plannerConfig.$typeName, 'CPC');
+  assert.equal(nativeCfg.plannerConfig.noToolExplanation, false);
+  assert.equal(nativeCfg.plannerConfig.promptSectionCustomizationConfig.$typeName, 'PSCC');
+  assert.equal(nativeCfg.plannerConfig.promptSectionCustomizationConfig.appendPromptSections[0].$typeName, 'PS');
+});
+
+test('telemetry-db: buildModelHealth aggregates 12-slot timelines, error tags, and dynamic pricing', () => {
+  const now = 1_760_000_000_000;
+  const reqs = [
+    {
+      id: '1',
+      model: 'claude-sonnet-4-6',
+      status: 'done',
+      timestampMs: now - 3600_000,
+      inputTokens: 100_000,
+      cacheReadTokens: 80_000,
+      outputTokens: 5_000,
+      ttftMs: 2200,
+      errorText: '',
+      anomaly: null,
+    },
+    {
+      id: '2',
+      model: 'claude-sonnet-4-6',
+      status: 'error',
+      timestampMs: now - 1800_000,
+      inputTokens: 10_000,
+      cacheReadTokens: 0,
+      outputTokens: 0,
+      ttftMs: null,
+      errorText: 'unexpected EOF',
+      anomaly: null,
+    },
+  ];
+  const dash = telemetry.queryTelemetryDashboard({
+    brainDir: '/nonexistent-dir-for-test',
+    extraRequests: reqs,
+    range: '24h',
+    nowMs: now,
+    priceLookup: () => ({ inputPerM: 10, cacheReadPerM: 1, outputPerM: 20 }),
+  });
+  assert.equal(dash.modelHealth.slotCount, 12);
+  assert.equal(dash.modelHealth.models.length, 1);
+  const m = dash.modelHealth.models[0];
+  assert.equal(m.model, 'claude-sonnet-4-6');
+  assert.equal(m.errorCount, 1);
+  assert.equal(m.topError, 'EOF');
+  assert.equal(m.overallStatus, 'err');
+  assert.equal(m.slots.length, 12);
+  assert.ok(m.slots.some((s) => s.status === 'err'));
+  // Dynamic pricing applied: (20k*10 + 80k*1 + 5k*20)/1e6 + (10k*10)/1e6 = 0.38 + 0.10 = 0.48
+  assert.ok(Math.abs(dash.summary.totalCostUsd - 0.48) < 0.001);
+});
+
+test('pricing: parses LiteLLM JSON, syncs to cache, and falls back gracefully on network failure', async () => {
+  const pricing = await import('../sidecars/panel/lib/pricing.mjs');
+  const parsed = pricing.parseLiteLlmPricingJson({
+    'claude-sonnet-4-6': {
+      input_cost_per_token: 0.000003,
+      output_cost_per_token: 0.000015,
+      cache_read_input_token_cost: 0.0000003,
+    },
+    'anthropic/claude-opus-4-6': {
+      input_cost_per_token: 0.000015,
+      output_cost_per_token: 0.000075,
+      cache_read_input_token_cost: 0.0000015,
+    },
+    'unrelated-model': { input_cost_per_token: 1, output_cost_per_token: 1 },
+  });
+  assert.equal(parsed['claude-sonnet-4-6'].inputPerM, 3);
+  assert.equal(parsed['claude-sonnet-4-6'].outputPerM, 15);
+  assert.equal(parsed['claude-opus-4-6'].cacheReadPerM, 1.5);
+  assert.equal(parsed['unrelated-model'], undefined);
+
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-cs-pricing-'));
+  const cachePath = path.join(tmpDir, 'pricing-cache.json');
+  try {
+    const store = pricing.createPricingStore({
+      cachePath,
+      sources: [{ name: 'Mock', url: 'https://mock.local/prices.json' }],
+      fetchFn: async () => ({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          'gemini-3-pro': {
+            input_cost_per_token: 0.000002,
+            output_cost_per_token: 0.000012,
+            cache_read_input_token_cost: 0.0000005,
+          },
+        }),
+      }),
+    });
+    const res = await store.refresh({ force: true });
+    assert.equal(res.ok, true);
+    assert.equal(res.source, 'online');
+    assert.equal(res.modelCount, 1);
+    assert.equal(store.lookupPrice('gemini-3-pro').inputPerM, 2);
+    assert.ok(fs.existsSync(cachePath));
+
+    // Re-load from disk cache with failing fetchFn -> stays online from cache
+    const store2 = pricing.createPricingStore({
+      cachePath,
+      sources: [{ name: 'Fail', url: 'https://mock.local/fail.json' }],
+      fetchFn: async () => {
+        throw new Error('offline');
+      },
+    });
+    assert.equal(store2.getMeta().source, 'online');
+    assert.equal(store2.lookupPrice('gemini-3-pro').outputPerM, 12);
+    const failRes = await store2.refresh({ force: true });
+    assert.equal(failRes.ok, false);
+    assert.ok(failRes.error.includes('offline'));
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('proxy: detects cold-start proxy mismatch vs active proxy and GODEBUG HTTP/1.1', async () => {
+  const proxyLib = await import('../sidecars/panel/lib/proxy.mjs');
+  const parsed = proxyLib.parseHostProxyFromCommandLine(
+    '/Applications/Antigravity.app/Contents/MacOS/Antigravity --remote-debugging-port=0 --proxy-server=http://127.0.0.1:7897 --proxy-bypass-list=localhost;127.0.0.1;[::1]'
+  );
+  assert.equal(parsed.activeProxyUrl, 'http://127.0.0.1:7897');
+
+  const activeOk = proxyLib.detectHostProxyRuntime(
+    { proxyEnabled: true, proxyUrl: 'http://127.0.0.1:7897', proxyForceHttp1: false },
+    {
+      platform: 'darwin',
+      env: {},
+      execFileSyncFn: () =>
+        '94473 1 /Applications/Antigravity.app/Contents/MacOS/Antigravity --remote-debugging-port=0 --proxy-server=http://127.0.0.1:7897\n',
+    }
+  );
+  assert.equal(activeOk.inspected, true);
+  assert.equal(activeOk.matchesConfig, true);
+  assert.equal(activeOk.coldStartMismatch, false);
+
+  const coldStart = proxyLib.detectHostProxyRuntime(
+    { proxyEnabled: true, proxyUrl: 'http://127.0.0.1:7897', proxyForceHttp1: false },
+    {
+      platform: 'darwin',
+      env: {},
+      execFileSyncFn: () => '94473 1 /Applications/Antigravity.app/Contents/MacOS/Antigravity\n',
+    }
+  );
+  assert.equal(coldStart.inspected, true);
+  assert.equal(coldStart.active, false);
+  assert.equal(coldStart.coldStartMismatch, true);
+  assert.ok(coldStart.reason.includes('冷启动'));
+
+  const missingH1 = proxyLib.detectHostProxyRuntime(
+    { proxyEnabled: true, proxyUrl: 'http://127.0.0.1:7897', proxyForceHttp1: true },
+    {
+      platform: 'darwin',
+      env: {},
+      execFileSyncFn: (_cmd, args) =>
+        args[0] === 'eww'
+          ? '94473 /Applications/Antigravity.app/Contents/MacOS/Antigravity HOME=/Users/test\n'
+          : '94473 1 /Applications/Antigravity.app/Contents/MacOS/Antigravity --proxy-server=http://127.0.0.1:7897\n',
+    }
+  );
+  assert.equal(missingH1.coldStartMismatch, true);
+  assert.ok(missingH1.reason.includes('HTTP/1.1'));
+
+  // Windows: inspect Antigravity.exe main process via CIM JSON, skipping sidecars and --type= children
+  const winCimActive = JSON.stringify([
+    {
+      ProcessId: 15680,
+      CommandLine: '"C:\\Users\\dev\\AppData\\Local\\Programs\\antigravity\\Antigravity.exe" --import=file:///C:/Users/dev/.gemini/antigravity/lib/node_modules/sidecar_sdk/register_loader.js main.mjs',
+    },
+    {
+      ProcessId: 26504,
+      CommandLine: '"C:\\Users\\dev\\AppData\\Local\\Programs\\antigravity\\Antigravity.exe" --type=renderer --remote-debugging-port=0',
+    },
+    {
+      ProcessId: 18660,
+      CommandLine: '"C:\\Users\\dev\\AppData\\Local\\Programs\\antigravity\\Antigravity.exe" --remote-debugging-port=0 --proxy-server=http://127.0.0.1:7897 --proxy-bypass-list=localhost;127.0.0.1;[::1]',
+    },
+  ]);
+  const winActive = proxyLib.detectHostProxyRuntime(
+    { proxyEnabled: true, proxyUrl: 'http://127.0.0.1:7897', proxyForceHttp1: false },
+    { platform: 'win32', env: {}, execFileSyncFn: () => winCimActive }
+  );
+  assert.equal(winActive.inspected, true);
+  assert.equal(winActive.hostPid, 18660);
+  assert.equal(winActive.active, true);
+  assert.equal(winActive.matchesConfig, true);
+  assert.equal(winActive.coldStartMismatch, false);
+
+  const winCold = proxyLib.detectHostProxyRuntime(
+    { proxyEnabled: true, proxyUrl: 'http://127.0.0.1:7897', proxyForceHttp1: false },
+    {
+      platform: 'win32',
+      env: {},
+      execFileSyncFn: () =>
+        JSON.stringify({
+          ProcessId: 18660,
+          CommandLine: '"C:\\Users\\dev\\AppData\\Local\\Programs\\antigravity\\Antigravity.exe" --remote-debugging-port=0',
+        }),
+    }
+  );
+  assert.equal(winCold.inspected, true);
+  assert.equal(winCold.hostPid, 18660);
+  assert.equal(winCold.active, false);
+  assert.equal(winCold.coldStartMismatch, true);
+});
+
+test('windows compatibility: parseWin32AntigravityProcesses excludes sidecars/children and sanitizeAppLaunchEnv strips case-insensitively', () => {
+  const cdp = require('../cdp.js');
+  const parsed = cdp.parseWin32AntigravityProcesses(
+    JSON.stringify([
+      {
+        ProcessId: 15680,
+        ExecutablePath: 'C:\\Users\\dev\\AppData\\Local\\Programs\\antigravity\\Antigravity.exe',
+        CommandLine: '"C:\\Users\\dev\\AppData\\Local\\Programs\\antigravity\\Antigravity.exe" --import=file:///C:/Users/dev/.gemini/antigravity/lib/node_modules/sidecar_sdk/register_loader.js main.mjs',
+      },
+      {
+        ProcessId: 18660,
+        ExecutablePath: 'C:\\Users\\dev\\AppData\\Local\\Programs\\antigravity\\Antigravity.exe',
+        CommandLine: '"C:\\Users\\dev\\AppData\\Local\\Programs\\antigravity\\Antigravity.exe" --remote-debugging-port=0',
+      },
+      {
+        ProcessId: 26504,
+        ExecutablePath: 'C:\\Users\\dev\\AppData\\Local\\Programs\\antigravity\\Antigravity.exe',
+        CommandLine: '"C:\\Users\\dev\\AppData\\Local\\Programs\\antigravity\\Antigravity.exe" --type=gpu-process',
+      },
+      {
+        ProcessId: 27612,
+        ExecutablePath: 'C:\\Users\\dev\\AppData\\Local\\Programs\\antigravity\\Antigravity.exe',
+        CommandLine: '"C:\\Users\\dev\\AppData\\Local\\Programs\\antigravity\\Antigravity.exe" -e "console.log(1)"',
+      },
+    ])
+  );
+  assert.deepEqual(parsed.mainPids, [18660]);
+  assert.equal(parsed.hasCdpFlag, true);
+  assert.equal(parsed.exePath, 'C:\\Users\\dev\\AppData\\Local\\Programs\\antigravity\\Antigravity.exe');
+
+  // Forward-slash Windows mcp-host cmdline is recognized as owned
+  assert.equal(
+    cdp.evaluateWatcherOwnership(
+      'node C:/Users/dev/.gemini/config/plugins/agy-claude-style/plugin/mcp-host.js',
+      'C:\\Users\\dev\\.gemini\\config\\plugins\\agy-claude-style',
+      'win32'
+    ),
+    'owned'
+  );
+
+  // Case-insensitive env stripping for Windows
+  const cleanEnv = cdp.sanitizeAppLaunchEnv(
+    {
+      Path: 'C:\\Windows',
+      electron_run_as_node: '1',
+      antigravity_sidecar_ui_token: 'secret',
+      AGY_RELAUNCH_CODE: 'x',
+      AGY_RELAUNCH_STAGE2: '1',
+    },
+    { HTTPS_PROXY: 'http://127.0.0.1:7897' }
+  );
+  assert.equal(cleanEnv.electron_run_as_node, undefined);
+  assert.equal(cleanEnv.antigravity_sidecar_ui_token, undefined);
+  assert.equal(cleanEnv.AGY_RELAUNCH_CODE, undefined);
+  assert.equal(cleanEnv.AGY_RELAUNCH_STAGE2, undefined);
+  assert.equal(cleanEnv.HTTPS_PROXY, 'http://127.0.0.1:7897');
 });
