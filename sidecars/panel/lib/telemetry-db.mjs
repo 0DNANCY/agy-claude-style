@@ -2,8 +2,146 @@
 // Parses ~/.gemini/antigravity/brain/*/.system_generated/logs/transcript.jsonl with mtime caching,
 // computes reference USD cost, detects short-interval cache-drop anomalies, and builds a 53-week heatmap.
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+
+const require = createRequire(import.meta.url);
+let _DatabaseSync = undefined;
+function getDatabaseSync() {
+  if (_DatabaseSync !== undefined) return _DatabaseSync;
+  try {
+    _DatabaseSync = require('node:sqlite').DatabaseSync || null;
+  } catch {
+    _DatabaseSync = null;
+  }
+  return _DatabaseSync;
+}
+
+function readPbVarint(buf, offset) {
+  let result = 0n;
+  let shift = 0n;
+  let pos = offset;
+  while (pos < buf.length) {
+    const b = buf[pos++];
+    result |= BigInt(b & 0x7f) << shift;
+    if ((b & 0x80) === 0) return [Number(result), pos];
+    shift += 7n;
+    if (shift > 63n) break;
+  }
+  return [Number(result), pos];
+}
+
+function parsePbMap(buf) {
+  const map = new Map();
+  if (!buf || !buf.length) return map;
+  let pos = 0;
+  while (pos < buf.length) {
+    const [tag, nextPos] = readPbVarint(buf, pos);
+    pos = nextPos;
+    const field = tag >>> 3;
+    const wire = tag & 7;
+    if (!field) break;
+    let val;
+    if (wire === 0) {
+      [val, pos] = readPbVarint(buf, pos);
+    } else if (wire === 1) {
+      pos += 8;
+      continue;
+    } else if (wire === 2) {
+      const [len, dataPos] = readPbVarint(buf, pos);
+      if (len < 0 || dataPos + len > buf.length) break;
+      val = buf.subarray(dataPos, dataPos + len);
+      pos = dataPos + len;
+    } else if (wire === 5) {
+      if (pos + 4 > buf.length) break;
+      val = buf.readUInt32LE(pos);
+      pos += 4;
+    } else {
+      break;
+    }
+    let arr = map.get(field);
+    if (!arr) {
+      arr = [];
+      map.set(field, arr);
+    }
+    arr.push(val);
+  }
+  return map;
+}
+
+export function parseGenMetadataTtft(rawData) {
+  if (!rawData || !rawData.length) return null;
+  const buf = Buffer.isBuffer(rawData) ? rawData : Buffer.from(rawData);
+  const top = parsePbMap(buf);
+  if (!top.has(1)) return null;
+  const stepIndices = [];
+  for (const v of top.get(2) || []) {
+    if (typeof v === 'number') {
+      stepIndices.push(v);
+    } else if (v && v.length) {
+      let off = 0;
+      while (off < v.length) {
+        const [idx, next] = readPbVarint(v, off);
+        stepIndices.push(idx);
+        off = next;
+      }
+    }
+  }
+  const m1 = parsePbMap(top.get(1)[0]);
+  if (!m1.has(11)) return null;
+  const dur = parsePbMap(m1.get(11)[0]);
+  const sec = Number(dur.get(1)?.[0] || 0);
+  const nanos = Number(dur.get(2)?.[0] || 0);
+  const ttftMs = Math.round((sec + nanos / 1e9) * 1000);
+  if (!Number.isFinite(ttftMs) || ttftMs < 0 || ttftMs > 600_000) return null;
+  return { stepIndices, ttftMs };
+}
+
+const dbTtftCache = new Map();
+
+export function readConversationTtftMap(dbPath) {
+  const DatabaseSync = getDatabaseSync();
+  if (!DatabaseSync || !dbPath || !existsSync(dbPath)) return null;
+  let mtimeKey = '';
+  try {
+    const st = statSync(dbPath);
+    const walPath = `${dbPath}-wal`;
+    const walSt = existsSync(walPath) ? statSync(walPath) : null;
+    mtimeKey = `${st.mtimeMs}:${st.size}:${walSt ? `${walSt.mtimeMs}:${walSt.size}` : '0'}`;
+  } catch {
+    return null;
+  }
+  const cached = dbTtftCache.get(dbPath);
+  if (cached && cached.mtimeKey === mtimeKey) return cached.map;
+
+  const map = new Map();
+  let db = null;
+  try {
+    db = new DatabaseSync(dbPath, { readOnly: true });
+    const hasTable = db
+      .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='gen_metadata'")
+      .get();
+    if (hasTable) {
+      const rows = db.prepare('SELECT data FROM gen_metadata ORDER BY idx ASC').all();
+      for (const row of rows) {
+        const parsed = parseGenMetadataTtft(row.data);
+        if (!parsed) continue;
+        for (const sIdx of parsed.stepIndices) {
+          map.set(sIdx, parsed.ttftMs);
+        }
+      }
+    }
+  } catch {
+    return null;
+  } finally {
+    try {
+      if (db) db.close();
+    } catch {}
+  }
+  dbTtftCache.set(dbPath, { mtimeKey, map });
+  return map;
+}
 
 const DAY_MS = 86400000;
 const CACHE_DROP_GAP_MS = 5 * 60 * 1000;
@@ -103,6 +241,7 @@ export function parseTranscriptJsonl(rawText = '', conversationId = '', sourceLa
         stepIndex: Number.isInteger(obj.step_index) ? obj.step_index : i,
         timestampMs: tsMs,
         responseMs: null,
+        ttftMs: null,
         model: String(obj.model || 'unknown'),
         inputTokens: 0,
         cacheReadTokens: 0,
@@ -143,6 +282,11 @@ export function parseTranscriptJsonl(rawText = '', conversationId = '', sourceLa
         }
       }
     }
+    let ttftMs = null;
+    const explicitTtft = Number(obj.ttft_ms ?? obj.time_to_first_token_ms ?? obj.first_token_ms);
+    if (Number.isFinite(explicitTtft) && explicitTtft >= 0 && explicitTtft <= 600_000) {
+      ttftMs = Math.round(explicitTtft);
+    }
     const model = String(obj.model || 'unknown').trim() || 'unknown';
     const isErr = String(obj.status || '').toUpperCase() === 'ERROR';
     const costUsd = estimateRequestCost({ model, inputTokens: totalIn, cacheReadTokens, outputTokens });
@@ -155,6 +299,7 @@ export function parseTranscriptJsonl(rawText = '', conversationId = '', sourceLa
       stepIndex: Number.isInteger(obj.step_index) ? obj.step_index : i,
       timestampMs: tsMs,
       responseMs,
+      ttftMs,
       model,
       inputTokens: totalIn,
       cacheReadTokens,
@@ -301,9 +446,11 @@ const fileCache = new Map();
 
 export function readLocalBrainRequests({
   brainDir = join(homedir(), '.gemini', 'antigravity', 'brain'),
+  conversationsDir,
   maxConversations = 160,
 } = {}) {
   if (!existsSync(brainDir)) return [];
+  const convDir = conversationsDir || join(dirname(brainDir), 'conversations');
   let entries = [];
   try {
     entries = readdirSync(brainDir, { withFileTypes: true }).filter((d) => d.isDirectory());
@@ -327,23 +474,36 @@ export function readLocalBrainRequests({
   const all = [];
 
   for (const c of selected) {
+    const dbPath = join(convDir, `${c.id}.db`);
+    const ttftMap = readConversationTtftMap(dbPath);
     const cached = fileCache.get(c.logPath);
+    let rows;
     if (cached && cached.mtimeMs === c.mtimeMs && cached.size === c.size) {
-      for (const r of cached.rows) all.push(r);
-      continue;
+      rows = cached.rows;
+    } else {
+      try {
+        const raw = readFileSync(c.logPath, 'utf8');
+        rows = parseTranscriptJsonl(raw, c.id, 'local');
+        fileCache.set(c.logPath, { mtimeMs: c.mtimeMs, size: c.size, rows });
+      } catch {
+        continue;
+      }
     }
-    try {
-      const raw = readFileSync(c.logPath, 'utf8');
-      const rows = parseTranscriptJsonl(raw, c.id, 'local');
-      fileCache.set(c.logPath, { mtimeMs: c.mtimeMs, size: c.size, rows });
-      for (const r of rows) all.push(r);
-    } catch {}
+    for (const r of rows) {
+      if (ttftMap && Number.isInteger(r.stepIndex) && ttftMap.has(r.stepIndex)) {
+        const dbTtft = ttftMap.get(r.stepIndex);
+        all.push(r.ttftMs === dbTtft ? r : { ...r, ttftMs: dbTtft });
+      } else {
+        all.push(r);
+      }
+    }
   }
   return all;
 }
 
 export function queryTelemetryDashboard({
   brainDir,
+  conversationsDir,
   extraRequests = [],
   range = '7d',
   date = '',
@@ -355,7 +515,7 @@ export function queryTelemetryDashboard({
   limit = 50,
   nowMs = Date.now(),
 } = {}) {
-  const localReqs = readLocalBrainRequests({ brainDir });
+  const localReqs = readLocalBrainRequests({ brainDir, conversationsDir });
   const combined = [...localReqs, ...(Array.isArray(extraRequests) ? extraRequests : [])];
   const anomalies = detectCacheDropAnomalies(combined);
 
@@ -416,6 +576,8 @@ export function queryTelemetryDashboard({
   let errorCount = 0;
   let respSumMs = 0;
   let respCount = 0;
+  let ttftSumMs = 0;
+  let ttftCount = 0;
 
   for (const r of rangeRows) {
     modelSet.add(r.model);
@@ -429,6 +591,10 @@ export function queryTelemetryDashboard({
     if (Number.isFinite(r.responseMs) && r.responseMs >= 0) {
       respSumMs += r.responseMs;
       respCount += 1;
+    }
+    if (Number.isFinite(r.ttftMs) && r.ttftMs >= 0) {
+      ttftSumMs += r.ttftMs;
+      ttftCount += 1;
     }
 
     let m = byModel.get(r.model);
@@ -492,6 +658,7 @@ export function queryTelemetryDashboard({
       anomalyCount,
       errorCount,
       avgResponseMs: respCount > 0 ? Math.round(respSumMs / respCount) : null,
+      avgTtftMs: ttftCount > 0 ? Math.round(ttftSumMs / ttftCount) : null,
     },
     availableModels: Array.from(modelSet).sort(),
     modelsBreakdown,

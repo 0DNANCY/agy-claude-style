@@ -42,6 +42,7 @@
           <span id="status-text">检查中</span>
         </div>
       </div>
+      <div class="companion-strip" id="header-companions" style="display:none;"></div>
       <div class="actions">
         <button type="button" class="primary" id="btn-reinject">✦ 立即应用并刷新</button>
         <div class="actions-secondary">
@@ -56,6 +57,11 @@
       <div class="banner-title" id="cdp-banner-title">未检测到 Antigravity 调试端口</div>
       <div class="banner-desc" id="cdp-banner-desc">Antigravity 2.33+ 默认关闭 CDP 调试端口，点击下方按钮可带参安全重启。</div>
       <button type="button" class="primary" id="btn-relaunch">一键带调试端口重启</button>
+    </div>
+
+    <div class="ctrl-toolbar">
+      <input type="text" id="ctrl-search" placeholder="搜索设置项…" />
+      <button type="button" class="ctrl-fold-btn" id="btn-ctrl-fold" title="全部展开或收起分组">展开全部</button>
     </div>
 
     <div id="sections"></div>
@@ -97,13 +103,22 @@
       <div class="kpi-card">
         <div class="kpi-label">数据源</div>
         <div class="kpi-val" id="kpi-src" style="font-size:13px;">本机</div>
-        <div class="kpi-sub" id="kpi-latency">平均响应 -</div>
+        <div class="kpi-sub" id="kpi-latency">平均首字 -</div>
+      </div>
+      <div class="kpi-card kpi-wide" id="kpi-weekly-card">
+        <div class="kpi-wide-head">
+          <div class="kpi-label">当日消耗周额度</div>
+          <div class="kpi-sub" id="kpi-weekly-sub">采样统计中…</div>
+        </div>
+        <div class="kpi-weekly-pools" id="kpi-weekly-pools">
+          <span class="kpi-val" style="font-size:14px;">-</span>
+        </div>
       </div>
     </div>
 
     <div class="section" id="sec-heatmap">
       <button type="button" class="section-head" id="heat-head">
-        <span class="section-title">🟩 53 周用量热力图</span>
+        <span class="section-title">🟩 用量热力图</span>
         <span class="section-badge" id="heat-summary">自动定位今日</span>
       </button>
       <div class="section-body">

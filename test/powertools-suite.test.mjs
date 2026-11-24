@@ -76,7 +76,7 @@ test('ui-task-progress parses leaf checklists, classifies retry reasons, and for
   assert.equal(taskProgress.classifyRetryReason('503 Service Unavailable').code, 'unavailable');
   assert.equal(taskProgress.friendlyToolLabel('mcp_agy-dart_fast_run_checks', true), '执行命令');
   assert.equal(taskProgress.friendlyToolLabel('read_file', false), 'Read file');
-  assert.equal(taskProgress.formatClock(65000), '1:05');
+  assert.equal(taskProgress.formatClock(65000), '1m 5s');
   assert.equal(taskProgress.formatStepDur(1500), '1.5s');
 });
 
@@ -233,5 +233,315 @@ test('proxy validates URLs, preserves loopback bypass, builds launch args, and t
     assert.equal(okRes.port, port);
   } finally {
     await new Promise((r) => srv.close(r));
+  }
+});
+
+test('extensions-dock: discovery, sorting, scope/viewId helpers, and runtime registration', () => {
+  const extDock = require('../features/extensions-dock.js');
+  const cdp = require('../cdp.js');
+
+  assert.equal(cdp.DEFAULT_CONFIG.headerExtensionsBar, true);
+  assert.equal(cdp.DEFAULT_CONFIG.sidebarExtensionsSection, true);
+  assert.deepEqual(cdp.DEFAULT_CONFIG.pinnedHeaderExtensions, []);
+  assert.deepEqual(cdp.DEFAULT_CONFIG.pinnedSidebarExtensions, []);
+  assert.equal(cdp.DEFAULT_CONFIG.sidebarExtensionsExpanded, false);
+  assert.ok(cdp.RUNTIME_PARTS.includes('features/extensions-dock.js'));
+  assert.equal(typeof cdp.readInstalledSidecarLogos, 'function');
+
+  // Verify readInstalledSidecarLogos encodes local plugin logos safely as data URIs
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-logo-test-'));
+  try {
+    const pDir = path.join(tmpRoot, 'demo-plug');
+    fs.mkdirSync(path.join(pDir, 'assets'), { recursive: true });
+    fs.mkdirSync(path.join(pDir, 'sidecars', 'panel'), { recursive: true });
+    fs.writeFileSync(path.join(pDir, 'plugin.json'), JSON.stringify({ name: 'demo-plug', logo: 'assets/logo.svg' }));
+    fs.writeFileSync(path.join(pDir, 'assets', 'logo.svg'), '<svg xmlns="http://www.w3.org/2000/svg"/>');
+    fs.writeFileSync(path.join(pDir, 'sidecars', 'panel', 'sidecar.json'), '{}');
+    const logos = cdp.readInstalledSidecarLogos({ roots: [tmpRoot] });
+    assert.ok(logos['demo-plug/panel']?.startsWith('data:image/svg+xml;base64,'));
+  } finally {
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+
+  assert.deepEqual(extDock.togglePinnedId([], 'agy-claude-style/panel'), ['agy-claude-style/panel']);
+  assert.deepEqual(extDock.togglePinnedId(['agy-claude-style/panel'], 'agy-claude-style/panel'), []);
+  assert.equal(cdp.validateConfigSetting('pinnedHeaderExtensions', ['agy-claude-style/panel']), true);
+  assert.equal(cdp.validateConfigSetting('pinnedSidebarExtensions', ['agy-capsule/agy_capsule']), true);
+  assert.equal(cdp.validateConfigSetting('sidebarExtensionsExpanded', true), true);
+  assert.equal(cdp.validateConfigSetting('pinnedHeaderExtensions', 'not-an-array'), false);
+
+  const fakeDoc = {
+    querySelectorAll() {
+      return [
+        {
+          getAttribute: (k) =>
+            k === 'data-sidecar-id'
+              ? 'swarm/swarm_board'
+              : 'plugin://swarm--swarm_board-58214/?token=abc&conversationId=111',
+          querySelector: () => ({ getAttribute: () => 'Swarm' }),
+        },
+        {
+          getAttribute: (k) =>
+            k === 'data-sidecar-id'
+              ? 'agy-claude-style/panel'
+              : 'plugin://agy-claude-style--panel-62632/?token=xyz&conversationId=111',
+          querySelector: () => ({ getAttribute: () => 'Claude Style' }),
+        },
+        {
+          getAttribute: (k) =>
+            k === 'data-sidecar-id'
+              ? 'agy-claude-style/panel'
+              : 'plugin://agy-claude-style--panel-62632/?token=xyz&conversationId=222',
+          querySelector: () => ({ getAttribute: () => 'Claude Style' }),
+        },
+      ];
+    },
+  };
+
+  const list = extDock.discoverExtensionsFromDom(fakeDoc);
+  assert.equal(list.length, 2);
+  assert.equal(list[0].sidecarId, 'agy-claude-style/panel');
+  assert.equal(list[0].title, 'Claude Style');
+  assert.ok(!list[0].url.includes('conversationId='));
+  assert.equal(list[1].sidecarId, 'swarm/swarm_board');
+
+  assert.equal(extDock.buildViewId(list[0]), 'sidecar/agy-claude-style/panel:/');
+  assert.equal(extDock.buildAuxTabId(list[0]), 'sidecar__agy-claude-style/panel__/');
+  assert.deepEqual(extDock.parsePanelScopeFromUrl('/c/abc-123', '?project=p1'), { kind: 'cascadeId', cascadeId: 'abc-123' });
+  assert.deepEqual(extDock.parsePanelScopeFromUrl('/', '?project=p1'), { kind: 'newConversation', projectId: 'p1' });
+  assert.deepEqual(extDock.parseActiveMainViewSidecar('/view/sidecar%2Fagy-claude-style%2Fpanel%3A%2F'), {
+    sidecarId: 'agy-claude-style/panel',
+    path: '/',
+  });
+});
+
+test('task-progress: summarizeSteps computes cumulative and live model wait time', () => {
+  const t0 = 1_700_000_000_000;
+  const tail = [
+    {
+      step: { case: 'plannerResponse', value: { thinking: 'plan' } },
+      metadata: { createdAt: new Date(t0).toISOString(), completedAt: new Date(t0 + 2500).toISOString() },
+      status: 3,
+    },
+    {
+      step: { case: 'readFile', value: { path: 'a.js' } },
+      metadata: { toolCall: { name: 'read_file' }, startedAt: new Date(t0 + 2600).toISOString(), completedAt: new Date(t0 + 2900).toISOString() },
+      status: 3,
+    },
+    {
+      step: { case: 'plannerResponse', value: { thinking: 'next' } },
+      metadata: { createdAt: new Date(t0 + 3000).toISOString(), completedAt: new Date(t0 + 6200).toISOString() },
+      status: 3,
+    },
+  ];
+  const doneSum = taskProgress.summarizeSteps(tail, 0, 'complete', true);
+  assert.equal(doneSum.modelWaitCount, 2);
+  assert.equal(doneSum.modelWaitLastMs, 3200);
+  assert.equal(doneSum.modelWaitTotalMs, 5700);
+  assert.equal(doneSum.modelWaitSinceMs, null);
+
+  const liveSum = taskProgress.summarizeSteps(
+    [
+      ...tail.slice(0, 2),
+      { step: { case: 'plannerResponse', value: { thinking: 'live' } }, metadata: { createdAt: new Date(t0 + 3000).toISOString() }, status: 2 },
+    ],
+    0,
+    'running',
+    true
+  );
+  assert.equal(liveSum.modelWaitCount, 2);
+  assert.equal(liveSum.modelWaitTotalMs, 2500);
+  assert.equal(liveSum.modelWaitSinceMs, t0 + 3000);
+
+  assert.equal(taskProgress.formatClock(0), '0s');
+  assert.equal(taskProgress.formatClock(420), '0.4s');
+  assert.equal(taskProgress.formatClock(14800), '14s');
+  assert.equal(taskProgress.formatClock(75000), '1m 15s');
+  assert.equal(taskProgress.formatClock(3720000), '1h 2m');
+});
+
+test('hide-on-close: classifies Cmd+W vs Cmd+Q/Reload and respects hidden state', () => {
+  const hideOnClose = require('../features/hide-on-close.js');
+  const cdp = require('../cdp.js');
+
+  assert.equal(cdp.DEFAULT_CONFIG.hideOnClose, true);
+  assert.ok(cdp.RUNTIME_PARTS.includes('features/hide-on-close.js'));
+  assert.equal(typeof cdp.hideAntigravityWindow, 'function');
+
+  assert.equal(hideOnClose.classifyShortcut({ metaKey: true, key: 'w' }, true), 'hide-window');
+  assert.equal(hideOnClose.classifyShortcut({ metaKey: true, shiftKey: true, key: 'w' }, true), 'none');
+  assert.equal(hideOnClose.classifyShortcut({ metaKey: true, key: 'q' }, true), 'allow-unload');
+  assert.equal(hideOnClose.classifyShortcut({ metaKey: true, key: 'r' }, true), 'allow-unload');
+  assert.equal(hideOnClose.classifyShortcut({ altKey: true, key: 'F4' }, false), 'allow-unload');
+
+  assert.equal(hideOnClose.shouldInterceptBeforeUnload({ enabled: true, nowMs: 5000, allowRealUnloadUntil: 0, isHidden: false }), true);
+  assert.equal(hideOnClose.shouldInterceptBeforeUnload({ enabled: false, nowMs: 5000, allowRealUnloadUntil: 0, isHidden: false }), false);
+  assert.equal(hideOnClose.shouldInterceptBeforeUnload({ enabled: true, nowMs: 5000, allowRealUnloadUntil: 7000, isHidden: false }), false);
+  assert.equal(hideOnClose.shouldInterceptBeforeUnload({ enabled: true, nowMs: 5000, allowRealUnloadUntil: 0, isHidden: true }), false);
+});
+
+test('branch-edit: builds Antigravity forkConversation payload with sourceCascadeId, forkAtStepIndex, and targetForkWorkspace', () => {
+  const branchEdit = require('../features/branch-edit.js');
+  assert.deepEqual(branchEdit.buildForkPayload('cid-123', 42, 1), {
+    sourceCascadeId: 'cid-123',
+    targetForkWorkspace: 1,
+    forkAtStepIndex: 42,
+  });
+  assert.deepEqual(branchEdit.buildForkPayload('cid-123', -1), {
+    sourceCascadeId: 'cid-123',
+    targetForkWorkspace: 1,
+  });
+  assert.equal(
+    branchEdit.isSubagentForkUnsupportedError(new Error('forking is not supported for conversations that have invoked subagents')),
+    true
+  );
+  assert.equal(branchEdit.isSubagentForkUnsupportedError(new Error('network timeout')), false);
+});
+
+test('quota-tracker: tracks daily weekly-quota burn, midnight carry-over, and mid-day resets', async () => {
+  const qt = await import('../sidecars/panel/lib/quota-tracker.mjs');
+  const rawQuota = {
+    groups: [
+      {
+        displayName: 'Gemini Pro',
+        buckets: [
+          { window: '5h', remainingFraction: 0.9, resetTime: '2026-11-24T15:00:00Z' },
+          { window: 'weekly', remainingFraction: 0.8, resetTime: '2026-11-28T00:00:00Z' },
+        ],
+      },
+      {
+        displayName: 'Claude',
+        buckets: [
+          { window: 'weekly', remaining: { case: 'remainingFraction', value: 0.65 }, resetTime: '2026-11-28T00:00:00Z' },
+        ],
+      },
+    ],
+  };
+
+  const pools1 = qt.extractWeeklyPools(rawQuota);
+  assert.equal(pools1.length, 2);
+  assert.equal(pools1[0].name, 'Gemini Pro');
+  assert.equal(pools1[0].remainingPct, 80);
+  assert.equal(pools1[1].name, 'Claude');
+  assert.equal(pools1[1].remainingPct, 65);
+
+  const day1Morning = new Date(2026, 10, 23, 22, 0, 0).getTime();
+  let store = qt.createEmptyStore();
+  ({ store } = qt.recordQuotaSample(store, pools1, day1Morning));
+
+  // Next morning (same weekly reset cycle): Gemini dropped 80 -> 74 (6% burned), Claude stayed 65
+  const day2Morning = new Date(2026, 10, 24, 9, 0, 0).getTime();
+  const pools2 = [
+    { name: 'Gemini Pro', remainingPct: 74, resetSec: pools1[0].resetSec },
+    { name: 'Claude', remainingPct: 65, resetSec: pools1[1].resetSec },
+  ];
+  ({ store } = qt.recordQuotaSample(store, pools2, day2Morning));
+  let sum = qt.summarizeWeeklyQuota(store, pools2, day2Morning);
+  assert.equal(sum.pools.find((p) => p.name === 'Gemini Pro').consumedTodayPct, 6);
+  assert.equal(sum.pools.find((p) => p.name === 'Gemini Pro').carriedFromPrior, true);
+
+  // Mid-day additional usage: Gemini 74 -> 69 (+5% -> 11% total)
+  const day2Noon = new Date(2026, 10, 24, 12, 0, 0).getTime();
+  const pools3 = [
+    { name: 'Gemini Pro', remainingPct: 69, resetSec: pools1[0].resetSec },
+    { name: 'Claude', remainingPct: 60.5, resetSec: pools1[1].resetSec },
+  ];
+  ({ store } = qt.recordQuotaSample(store, pools3, day2Noon));
+  sum = qt.summarizeWeeklyQuota(store, pools3, day2Noon);
+  assert.equal(sum.pools.find((p) => p.name === 'Gemini Pro').consumedTodayPct, 11);
+  assert.equal(sum.pools.find((p) => p.name === 'Claude').consumedTodayPct, 4.5);
+
+  // Mid-day weekly reset on Gemini: resetSec advances and remaining jumps to 96% (4% burned post-reset -> 15% total)
+  const day2Eve = new Date(2026, 10, 24, 18, 0, 0).getTime();
+  const pools4 = [
+    { name: 'Gemini Pro', remainingPct: 96, resetSec: pools1[0].resetSec + 7 * 86400 },
+    { name: 'Claude', remainingPct: 60.5, resetSec: pools1[1].resetSec },
+  ];
+  ({ store } = qt.recordQuotaSample(store, pools4, day2Eve));
+  sum = qt.summarizeWeeklyQuota(store, pools4, day2Eve);
+  assert.equal(sum.pools.find((p) => p.name === 'Gemini Pro').consumedTodayPct, 15);
+  assert.ok(sum.byDate['2026-11-24']);
+  assert.equal(sum.byDate['2026-11-24'].maxConsumedPct, 15);
+});
+
+test('telemetry-db extracts ground-truth TTFT (field 11) from gen_metadata protobuf and computes avgTtftMs', () => {
+  // Encode Duration { seconds=4, nanos=250_000_000 } (4250ms) inside m1 field 11, with stepIndices [7, 8] in top field 2
+  const encodeVarint = (n) => {
+    const out = [];
+    let v = BigInt(n);
+    while (v >= 0x80n) {
+      out.push(Number((v & 0x7fn) | 0x80n));
+      v >>= 7n;
+    }
+    out.push(Number(v));
+    return Buffer.from(out);
+  };
+  const fieldLen = (f, buf) => Buffer.concat([encodeVarint((f << 3) | 2), encodeVarint(buf.length), buf]);
+  const fieldVar = (f, val) => Buffer.concat([encodeVarint((f << 3) | 0), encodeVarint(val)]);
+
+  const durBuf = Buffer.concat([fieldVar(1, 4), fieldVar(2, 250_000_000)]);
+  const m1Buf = fieldLen(11, durBuf);
+  const packedSteps = Buffer.concat([encodeVarint(7), encodeVarint(8)]);
+  const topBuf = Buffer.concat([fieldLen(1, m1Buf), fieldLen(2, packedSteps)]);
+
+  const parsed = telemetry.parseGenMetadataTtft(topBuf);
+  assert.deepEqual(parsed, { stepIndices: [7, 8], ttftMs: 4250 });
+
+  const rows = telemetry.parseTranscriptJsonl(
+    JSON.stringify({
+      step_index: 7,
+      type: 'PLANNER_RESPONSE',
+      status: 'DONE',
+      created_at: new Date().toISOString(),
+      model: 'gemini-3-pro',
+      input_tokens: 4000,
+      cache_read_tokens: 3000,
+      output_tokens: 200,
+      ttft_ms: 4250,
+    }),
+    'c-ttft',
+    'local'
+  );
+  assert.equal(rows[0].ttftMs, 4250);
+  const dash = telemetry.queryTelemetryDashboard({
+    brainDir: '/nonexistent-dir-for-test',
+    extraRequests: rows,
+    range: '7d',
+  });
+  assert.equal(dash.summary.avgTtftMs, 4250);
+});
+
+test('control-tab: every group key and dropdown option value matches cdp.js CONFIG_VALIDATORS', () => {
+  const vm = require('node:vm');
+  const cdp = require('../cdp.js');
+  const src = fs.readFileSync(new URL('../sidecars/panel/ui/control-tab.js', import.meta.url), 'utf8');
+  const sandbox = { window: {} };
+  vm.runInNewContext(src, sandbox);
+  const { I18N, GROUPS, allKeysOfGroup } = sandbox.window.AGYPanelControlSchema;
+  assert.deepEqual(
+    Array.from(GROUPS, (g) => g.id),
+    ['appearance', 'interaction', 'telemetry', 'powertools']
+  );
+
+  const seen = new Set();
+  for (const g of GROUPS) {
+    for (const key of allKeysOfGroup(g)) {
+      assert.ok(!seen.has(key), `Duplicate key in control-tab GROUPS: ${key}`);
+      seen.add(key);
+      assert.ok(key in cdp.DEFAULT_CONFIG, `Unknown config key in control-tab: ${key}`);
+      for (const locale of ['zh-CN', 'en']) {
+        assert.ok(I18N[locale].labels[key], `Missing ${locale} label for ${key}`);
+        const opts = I18N[locale].options[key];
+        if (opts) {
+          for (const [val] of opts) {
+            assert.equal(
+              cdp.validateConfigSetting(key, val),
+              true,
+              `Invalid option value "${val}" for "${key}" (${locale}) rejected by cdp.validateConfigSetting`
+            );
+          }
+        }
+      }
+    }
   }
 });

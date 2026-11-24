@@ -7,6 +7,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { dispatchFileAction } from './lib/file-actions.mjs';
 import { queryTelemetryDashboard } from './lib/telemetry-db.mjs';
+import { createQuotaTracker } from './lib/quota-tracker.mjs';
 import { fetchSshRemoteRequests, listConfiguredSshHosts } from './lib/ssh-remote.mjs';
 import { buildProxyLaunchOptions, normalizeProxyUrl, testProxyConnectivity } from './lib/proxy.mjs';
 
@@ -251,6 +252,15 @@ async function startPanelSidecar() {
   }), 'POST');
 
   let lastSshSync = { ok: false, host: '', requests: [], count: 0, error: '' };
+  const quotaTracker = createQuotaTracker({
+    filePath: join(cdp.STATE_DIR, 'quota-daily.json'),
+  });
+  void quotaTracker.sampleNow({ force: true });
+  const quotaTimer = setInterval(() => {
+    void quotaTracker.sampleNow({ force: false });
+  }, 60_000);
+  if (typeof quotaTimer.unref === 'function') quotaTimer.unref();
+
   app.api('/api/telemetry', guardApi(async (data) => {
     const cfg = cdp.readConfig();
     const range = String(data?.range || '7d');
@@ -268,19 +278,25 @@ async function startPanelSidecar() {
       lastSshSync = sshInfo;
     }
     const extraRequests = includeSsh && sshInfo.ok ? sshInfo.requests : [];
-    const dash = queryTelemetryDashboard({
-      range,
-      date,
-      conversationId,
-      model,
-      status,
-      search,
-      offset,
-      limit,
-      extraRequests,
-    });
+    const [dash, weeklyQuota] = await Promise.all([
+      Promise.resolve(
+        queryTelemetryDashboard({
+          range,
+          date,
+          conversationId,
+          model,
+          status,
+          search,
+          offset,
+          limit,
+          extraRequests,
+        })
+      ),
+      quotaTracker.sampleNow({ force: Boolean(data?.syncSsh) }),
+    ]);
     return {
       ...dash,
+      weeklyQuota,
       ssh: {
         enabled: includeSsh,
         host: cfg.sshHost || '',

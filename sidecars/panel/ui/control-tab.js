@@ -1,4 +1,6 @@
 // Tab 1: Control Room module for AGY Claude Style Aux Pane.
+// Preserves upstream origin/main's exact 3 base sections, titles, ordering, conditional badges,
+// and collapsible HUD sub-section, with PR #19 efficiency & extension features in a dedicated 4th section.
 (function (root) {
   const I18N = {
     'zh-CN': {
@@ -9,53 +11,69 @@
       btnRelaunch: '一键带调试端口重启', relaunching: '正在重启 Antigravity…',
       cdpTitle: '未检测到 Antigravity 调试端口',
       cdpDesc: 'Antigravity 2.33+ 默认关闭 CDP 调试端口，点击下方按钮可带参安全重启。',
-      grpBasics: '外观与基础', grpPowertools: '会话增强与效率', grpLayout: '界面与布局', grpTelemetry: '用量、圆环与思考深度',
+      searchPlaceholder: '搜索设置项…',
+      expandAll: '展开全部', collapseAll: '收起全部',
+      emptySearch: '没有找到匹配的设置项',
+      hudDetailsLabel: '环绕 HUD 细节开关',
+      badgeClaude: '仅 Claude Code',
+      badgeLwf: '仅 梁武峰',
+      grpAppearance: '外观与版面',
+      grpInteraction: '交互与思考滑块',
+      grpTelemetry: 'Token 用量与环绕 HUD',
+      grpPowertools: '效率增强与扩展',
       metaLine: (v, alive) => `v${v} · 宿主${alive ? '运行中' : '未就绪'}`,
       chipTargets: (w, s) => `窗口 ${w}${s ? ` · Swarm ${s}` : ''}`,
       savedToast: (k) => `已更新 ${k} 并实时同步`,
       saveErrToast: (e) => `保存失败: ${e}`,
       actionOk: (a) => `${a} 完成`, actionFail: (a, e) => `${a} 失败: ${e}`,
       labels: {
-        language: ['界面语言', '支持中英粤日韩 5 语言实时切换'],
-        palette: ['配色主题', '默认遵循 Antigravity 主题，可选 Claude 暖色或黑曜石'],
+        // 1. 外观与版面 (origin/main base order)
+        language: ['界面语言', '切换 Antigravity 界面与插件面板语言（简繁粤英日）'],
+        homeLayout: ['首页版面', '切换新对话首页布局（仪表盘、居中或原生关闭）'],
+        palette: ['配色方案', '选择深邃蓝黑、Claude 暖色或跟随宿主主题'],
         glassEffect: ['全局毛玻璃材质', '为顶栏、输入框、弹层与侧栏启用细腻磨砂玻璃效果'],
-        homeLayout: ['主页布局', '工作台或经典单栏'],
-        homeRipple: ['主页星云水波', '在欢迎页呈现柔和涟漪背景'],
-        sidebarRestyle: ['侧边栏风格化', '统一侧边栏间距与柔和边框'],
-        sidebarCompact: ['紧凑侧边栏', '压缩项目行高，展示更多对话'],
-        composerRestyle: ['输入框卡片美化', '增强输入框圆角与光晕层次'],
-        mascot: ['像素小螃蟹', '在主页标题区展示像素风小螃蟹彩蛋'],
-        logoInk: ['品牌 Logo 着色', '品牌图标使用主强调色或中性色'],
-        placeholderStyle: ['输入框占位提示', '工作台或极简占位文案'],
-        rewindPanel: ['Rewind 回退面板', '开启侧边回退目录与一键撤销到历史节点'],
-        undoConfirmMode: ['撤销确认方式', '回退前弹出模式选择器、仅提示或立即执行'],
-        taskProgressCard: ['任务进度浮窗', '显示实时阶段、进度环、工具时间轴与子智能体二级展开（可拖拽，Overview 打开时自动内嵌）'],
-        branchSession: ['原生分支会话', '在每轮 AI 回复原生操作栏添加「分支」图标，保留上下文分叉新会话'],
-        messageEdit: ['原位消息编辑', '在已发消息原生操作栏添加「编辑」图标，原位多行修改并重发'],
-        fileContextMenu: ['文件右键菜单', '右键消息文件链接或文件树可引用、打开、Finder 定位、复制文件/路径'],
-        effortSliderStyle: ['思考深度滑块', 'Claude 分段滑块或原生下拉样式'],
-        effortAccent: ['思考深度强调色', '滑块高亮同步当前主色调'],
-        performanceBackdrop: ['性能模式背景', '大对话下关闭昂贵模糊特效保持流畅'],
+        logoInk: ['Antigravity Logo 着色', '首页问候图标使用主题强调色或前景色'],
+        sidebarRestyle: ['侧栏 Claude 风格', '统一侧边栏行高、图标与悬停高亮样式'],
+        sidebarCompact: ['紧凑侧边栏', '压缩对话行高，同屏展示更多会话'],
+        composerRestyle: ['极简输入框重排', '极简圆角输入框卡片与画布底栏样式'],
+        placeholderStyle: ['输入框占位提示', '使用工作台提示文案或跟随宿主原生'],
+        // 2. 交互与思考滑块 (origin/main base order)
+        effortSliderStyle: ['思考强度滑块风格', '选择推理强度滑块样式（Claude Code / ChatGPT Codex / 梁武峰）'],
+        effortAccent: ['Claude 推理色阶强调', '在 Claude 滑块与像素矩阵上启用蓝紫色阶高亮'],
+        performanceBackdrop: ['梁武峰 性能人像背景', '选择梁武峰模式下 31 帧人像剪影的渲染区域'],
         smoothCaret: ['平滑输入光标', '输入框启用流畅过渡光标动画'],
-        inlineStats: ['底栏用量指标', '在输入框底栏展示 Token 与上下文统计'],
-        ringMode: ['圆环显示模式', '支持经典单环或 5h/周限额双圆环模式'],
-        turnBadges: ['轮次与耗时徽章', '在每轮回复旁展示耗时与轮次标记'],
-        hudTopBar: ['顶部上下文进度条', '在对话顶部显示细长上下文占用条'],
-        hudBottomBar: ['底部精简 HUD', '在输入框下方显示 Token 摘要'],
-        hudRimProgress: ['边缘进度光晕', '以细腻边框光带指示上下文进度'],
-        hudFooterChip: ['底栏紧凑胶囊', '保留精简底栏信息芯片'],
-        hudCompact: ['紧凑 HUD 排版', '收窄 HUD 内边距与字号'],
+        mascot: ['输入框像素螃蟹挂件', '在输入框/首页展示像素风小螃蟹动态彩蛋'],
+        homeRipple: ['首页字符矩阵波纹', '在欢迎页呈现柔和字符矩阵水波背景'],
+        // 3. Token 用量与环绕 HUD (origin/main base order)
+        inlineStats: ['对话内嵌统计与剩余用量环', '在输入框底栏展示 Token 统计与剩余用量圆环'],
+        ringMode: ['右下角圆环显示模式', '切换上下文剩余、模型配额剩余或双圆环模式'],
+        turnBadges: ['对话轮次 Token 徽章', '在每轮 AI 回复旁展示耗时与 Token 徽章'],
+        hudTopBar: ['输入框顶部 HUD 进度条', '在输入框顶部显示轻量上下文占用分段条'],
+        hudBottomBar: ['输入框底部 HUD 统计栏', '在输入框外下方显示详细上下文与配额统计条'],
+        hudRimProgress: ['输入框流光边框进度', '沿输入框边线渲染实时上下文占比进度光带'],
+        hudFooterChip: ['底栏剩余容量胶囊', '在输入框工具栏显示剩余可用容量与配额胶囊'],
+        hudCompact: ['HUD 紧凑显示模式', '缩小环绕 HUD 与底栏胶囊内边距，节省垂直空间'],
+        // 4. 效率增强与扩展 (PR #19 additions)
+        taskProgressCard: ['任务进度浮窗', '实时阶段环、等待计时、工具时间轴与子智能体展开'],
+        branchSession: ['原生分支会话', '在 AI 回复操作栏添加分支按钮，保留上下文分叉'],
+        messageEdit: ['原位消息编辑', '在已发消息操作栏添加编辑按钮，原位修改重发'],
+        fileContextMenu: ['文件右键菜单', '右键文件链接或文件树可引用、打开、定位与复制'],
+        rewindPanel: ['Rewind 回退面板', '侧边回退目录与一键撤销到历史节点'],
+        undoConfirmMode: ['撤销确认方式', '回退前弹出模式选择器、二次确认或直接执行'],
+        headerExtensionsBar: ['顶栏扩展菜单与收藏', '工具栏扩展菜单（右键关闭侧栏），★ 收藏固定至顶栏'],
+        sidebarExtensionsSection: ['左侧栏「扩展」收藏区', '默认收起，已收藏扩展常驻显示并可直达主面板'],
+        hideOnClose: ['关闭窗口挂后台', '点击 × 或 Cmd+W 隐藏至后台，切回免重载（Cmd+Q 正常退出）'],
       },
       options: {
-        language: [['zh-CN', '简体中文'], ['zh-TW', '繁體中文'], ['yue', '粵語'], ['en', 'English'], ['ja', '日本語'], ['ko', '한국어']],
-        palette: [['auto', '跟随宿主'], ['claude', 'Claude 暖色'], ['obsidian', '黑曜石']],
-        homeLayout: [['studio', '工作台'], ['classic', '经典单栏']],
-        logoInk: [['accent', '主题强调色'], ['mono', '中性单色']],
-        placeholderStyle: [['studio', '工作台'], ['minimal', '极简'], ['classic', '原生']],
-        undoConfirmMode: [['picker', '模式选择弹窗'], ['prompt', '二次确认'], ['instant', '直接撤销']],
-        effortSliderStyle: [['claude', 'Claude 滑块'], ['native', '原生样式']],
-        performanceBackdrop: [['card', '卡片背景'], ['transparent', '透明背景'], ['off', '关闭']],
-        ringMode: [['single', '单环（上下文）'], ['both', '双圆环（+配额）']],
+        language: [['zh-CN', '简体中文'], ['zh-TW', '繁體中文'], ['yue', '粵語'], ['en', 'English'], ['ja', '日本語']],
+        homeLayout: [['studio', '仪表盘'], ['classic', '居中'], ['off', '关闭']],
+        palette: [['obsidian', '深邃蓝黑'], ['claude', 'Claude'], ['host', '跟随宿主']],
+        logoInk: [['accent', '主题色'], ['foreground', '前景色']],
+        placeholderStyle: [['studio', '工作台'], ['host', '跟随原生']],
+        effortSliderStyle: [['claude', 'Claude Code'], ['chatgpt', 'ChatGPT Codex'], ['liangwufeng', '梁武峰']],
+        performanceBackdrop: [['card', '仅滑块卡片'], ['page', '全窗口背景'], ['off', '关闭']],
+        ringMode: [['context', '上下文剩余'], ['quota', '配额剩余'], ['both', '双圆环']],
+        undoConfirmMode: [['picker', '模式选择弹窗'], ['prompt', '二次确认'], ['auto_both', '直接撤回全部'], ['auto_chat', '仅撤回对话']],
       },
     },
     en: {
@@ -66,90 +84,188 @@
       btnRelaunch: 'Relaunch with Debug Port', relaunching: 'Relaunching Antigravity…',
       cdpTitle: 'Antigravity Debug Port Not Detected',
       cdpDesc: 'Antigravity 2.33+ disables CDP by default. Click below to relaunch safely with CDP.',
-      grpBasics: 'Appearance & Basics', grpPowertools: 'Session & Productivity', grpLayout: 'Layout & UI', grpTelemetry: 'Usage, Rings & Effort',
+      searchPlaceholder: 'Search settings…',
+      expandAll: 'Expand all', collapseAll: 'Collapse all',
+      emptySearch: 'No matching settings',
+      hudDetailsLabel: 'Surround HUD Details',
+      badgeClaude: 'Claude Code',
+      badgeLwf: 'Liang Wufeng',
+      grpAppearance: 'Appearance & Layout',
+      grpInteraction: 'Slider, Caret & Mascot',
+      grpTelemetry: 'Usage Ring & HUD',
+      grpPowertools: 'Productivity & Extensions',
       metaLine: (v, alive) => `v${v} · Host ${alive ? 'Running' : 'Idle'}`,
       chipTargets: (w, s) => `Win ${w}${s ? ` · Swarm ${s}` : ''}`,
       savedToast: (k) => `Updated ${k}`, saveErrToast: (e) => `Save failed: ${e}`,
       actionOk: (a) => `${a} succeeded`, actionFail: (a, e) => `${a} failed: ${e}`,
       labels: {
-        language: ['Interface Language', 'Live switch across 5 languages'],
-        palette: ['Color Palette', 'Follow Antigravity theme, Claude warm, or Obsidian'],
-        glassEffect: ['Frosted Glass Material', 'Subtle frosted glass blur for bars, composer, and menus'],
-        homeLayout: ['Home Layout', 'Studio workspace or classic single column'],
-        homeRipple: ['Home Ripple', 'Subtle ambient ripple on welcome canvas'],
-        sidebarRestyle: ['Sidebar Styling', 'Unified spacing and soft borders'],
+        language: ['Interface Language', 'Switch display language for Antigravity UI and plugin panels'],
+        homeLayout: ['Home Layout', 'Switch new-conversation home layout'],
+        palette: ['Color Palette', 'Pick Obsidian, Claude palette, or follow host'],
+        glassEffect: ['Frosted Glass Material', 'Subtle frosted glass blur for bars, composer and menus'],
+        logoInk: ['Logo Color', 'Tint of the Antigravity greeting mark'],
+        sidebarRestyle: ['Sidebar Restyle', 'Apply Claude-style row height and hover plates to sidebar'],
         sidebarCompact: ['Compact Sidebar', 'Tighter row height for more sessions'],
-        composerRestyle: ['Composer Card', 'Enhanced radius and elevation'],
-        mascot: ['Pixel Crab Mascot', 'Show pixel crab easter egg in header'],
-        logoInk: ['Brand Logo Ink', 'Accent or monochrome brand icon'],
-        placeholderStyle: ['Input Placeholder', 'Studio, minimal, or native copy'],
-        rewindPanel: ['Rewind Panel', 'Sidebar turn directory with one-click rewind'],
-        undoConfirmMode: ['Undo Confirm Mode', 'Picker modal, prompt, or instant revert'],
-        taskProgressCard: ['Task Progress Panel', 'Live phase ring, tool timeline & expandable subagent menu (draggable; docks in Overview)'],
+        composerRestyle: ['Composer Restyle', 'Minimalist rounded input box and canvas footer'],
+        placeholderStyle: ['Input Placeholder', 'Studio workspace copy or host native'],
+        effortSliderStyle: ['Thinking Effort Slider Style', 'Effort slider popover style (Claude Code, ChatGPT Codex, Liang Wufeng)'],
+        effortAccent: ['Claude Effort Color Accent', 'Use blue-violet effort tint ramp on Claude slider & pixel matrix'],
+        performanceBackdrop: ['Liang Wufeng Portrait Backdrop', 'Where the 31-frame cutout portrait renders in Liang Wufeng mode'],
+        smoothCaret: ['Smooth Caret', 'Animated caret transitions in composer'],
+        mascot: ['Pixel Crab Mascot', 'Show pixel crab easter egg near composer/home'],
+        homeRipple: ['Home Matrix Ripple', 'Subtle ambient matrix ripple on welcome canvas'],
+        inlineStats: ['Inline Stats & Remaining Ring', 'Show token stats and remaining usage ring in footer'],
+        ringMode: ['Bottom-Right Ring Mode', 'Context remaining, model quota remaining, or dual rings'],
+        turnBadges: ['Per-Turn Token Badges', 'Show duration and token badges next to each turn'],
+        hudTopBar: ['Composer Top HUD Bar', 'Show context progress bar above composer'],
+        hudBottomBar: ['Composer Bottom HUD Bar', 'Show detailed HUD telemetry bar below composer'],
+        hudRimProgress: ['Composer Rim Progress', 'Render context usage rim progress around composer'],
+        hudFooterChip: ['Footer Remaining Chip', 'Show remaining context/quota chip in composer footer'],
+        hudCompact: ['Compact HUD Mode', 'Use compact padding and condensed typography for Token HUD'],
+        taskProgressCard: ['Task Progress Panel', 'Live phase ring, wait timer, tool timeline & subagents'],
         branchSession: ['Session Branching', 'Add Branch icon in native action bar to fork conversation'],
         messageEdit: ['In-Place Message Edit', 'Add Edit icon on sent prompts to edit inline & resend'],
-        fileContextMenu: ['File Context Menu', 'Right-click chat file links or tree to attach, open, reveal, or copy'],
-        effortSliderStyle: ['Effort Slider', 'Claude segmented slider or native dropdown'],
-        effortAccent: ['Effort Accent', 'Match effort slider tint to active accent'],
-        performanceBackdrop: ['Performance Backdrop', 'Lighter backdrop for large threads'],
-        smoothCaret: ['Smooth Caret', 'Animated caret transitions in composer'],
-        inlineStats: ['Footer Usage Stats', 'Show token and context metrics in footer'],
-        ringMode: ['Ring Mode', 'Single context ring or dual rings (+5h/weekly quota)'],
-        turnBadges: ['Turn & Duration Badges', 'Per-turn duration and index pills'],
-        hudTopBar: ['Top Progress Bar', 'Thin context bar along chat top'],
-        hudBottomBar: ['Bottom Mini HUD', 'Compact token bar below composer'],
-        hudRimProgress: ['Rim Progress Halo', 'Subtle perimeter context indicator'],
-        hudFooterChip: ['Footer Chip', 'Compact usage chip in footer'],
-        hudCompact: ['Compact HUD', 'Tighter padding and typography'],
+        fileContextMenu: ['File Context Menu', 'Right-click file links or tree to attach, open, reveal or copy'],
+        rewindPanel: ['Rewind Panel', 'Sidebar turn directory with one-click rewind'],
+        undoConfirmMode: ['Undo Confirm Mode', 'Mode picker, prompt, or instant revert'],
+        headerExtensionsBar: ['Header Extensions Menu & Pins', 'Extensions menu (right-click closes side pane); ★ pins stay on bar'],
+        sidebarExtensionsSection: ['Sidebar Extensions & Favorites', 'Collapsed by default; ★ favorites stay visible for main panel'],
+        hideOnClose: ['Hide to Background on Close', 'Clicking × or Cmd+W hides window without reload (Cmd+Q quits)'],
       },
       options: {
-        language: [['zh-CN', '简体中文'], ['zh-TW', '繁體中文'], ['yue', '粵語'], ['en', 'English'], ['ja', '日本語'], ['ko', '한국어']],
-        palette: [['auto', 'Follow Host'], ['claude', 'Claude Warm'], ['obsidian', 'Obsidian']],
-        homeLayout: [['studio', 'Studio'], ['classic', 'Classic']],
-        logoInk: [['accent', 'Accent'], ['mono', 'Monochrome']],
-        placeholderStyle: [['studio', 'Studio'], ['minimal', 'Minimal'], ['classic', 'Native']],
-        undoConfirmMode: [['picker', 'Mode Picker'], ['prompt', 'Prompt'], ['instant', 'Instant']],
-        effortSliderStyle: [['claude', 'Claude Slider'], ['native', 'Native']],
-        performanceBackdrop: [['card', 'Card'], ['transparent', 'Transparent'], ['off', 'Off']],
-        ringMode: [['single', 'Single Ring'], ['both', 'Dual Rings (+Quota)']],
+        language: [['zh-CN', '简体中文'], ['zh-TW', '繁體中文'], ['yue', '粵語'], ['en', 'English'], ['ja', '日本語']],
+        homeLayout: [['studio', 'Studio'], ['classic', 'Classic'], ['off', 'Off']],
+        palette: [['obsidian', 'Obsidian'], ['claude', 'Claude'], ['host', 'Host']],
+        logoInk: [['accent', 'Accent'], ['foreground', 'Ink']],
+        placeholderStyle: [['studio', 'Studio'], ['host', 'Native']],
+        effortSliderStyle: [['claude', 'Claude Code'], ['chatgpt', 'ChatGPT Codex'], ['liangwufeng', 'Liang Wufeng']],
+        performanceBackdrop: [['card', 'Card'], ['page', 'Window'], ['off', 'Off']],
+        ringMode: [['context', 'Context'], ['quota', 'Quota'], ['both', 'Dual Rings']],
+        undoConfirmMode: [['picker', 'Mode Picker'], ['prompt', 'Prompt'], ['auto_both', 'Instant (All)'], ['auto_chat', 'Instant (Chat)']],
       },
     },
   };
 
+  // Based on upstream origin/main's exact 3 groups + ordering, followed by PR #19 efficiency/extensions group
   const GROUPS = [
     {
-      id: 'basics',
+      id: 'appearance',
       icon: '🎨',
-      titleKey: 'grpBasics',
-      keys: ['language', 'palette', 'glassEffect', 'performanceBackdrop'],
-      showCompanions: true,
+      titleKey: 'grpAppearance',
+      defaultOpen: true,
+      keys: ['language', 'homeLayout', 'palette', 'glassEffect', 'logoInk', 'sidebarRestyle', 'sidebarCompact', 'composerRestyle', 'placeholderStyle'],
     },
     {
-      id: 'layout',
-      icon: '🧩',
-      titleKey: 'grpLayout',
-      keys: ['homeLayout', 'homeRipple', 'sidebarRestyle', 'sidebarCompact', 'composerRestyle', 'placeholderStyle', 'mascot', 'logoInk', 'smoothCaret'],
-    },
-    {
-      id: 'powertools',
-      icon: '⚡',
-      titleKey: 'grpPowertools',
-      keys: ['taskProgressCard', 'branchSession', 'messageEdit', 'fileContextMenu', 'rewindPanel', 'undoConfirmMode'],
+      id: 'interaction',
+      icon: '🎛',
+      titleKey: 'grpInteraction',
+      defaultOpen: true,
+      keys: ['effortSliderStyle', 'effortAccent', 'performanceBackdrop', 'smoothCaret', 'mascot', 'homeRipple'],
     },
     {
       id: 'telemetry',
       icon: '📊',
       titleKey: 'grpTelemetry',
-      keys: ['inlineStats', 'ringMode', 'turnBadges', 'effortSliderStyle', 'effortAccent', 'hudTopBar', 'hudBottomBar', 'hudRimProgress', 'hudFooterChip', 'hudCompact'],
+      defaultOpen: true,
+      keys: ['inlineStats', 'ringMode', 'turnBadges'],
+      hudKeys: ['hudTopBar', 'hudBottomBar', 'hudRimProgress', 'hudFooterChip', 'hudCompact'],
+    },
+    {
+      id: 'powertools',
+      icon: '⚡',
+      titleKey: 'grpPowertools',
+      defaultOpen: true,
+      keys: ['taskProgressCard', 'branchSession', 'messageEdit', 'fileContextMenu', 'rewindPanel', 'undoConfirmMode', 'headerExtensionsBar', 'sidebarExtensionsSection', 'hideOnClose'],
     },
   ];
 
+  const SUBROW_RULES = {
+    sidebarCompact: { dim: (cfg) => !cfg.sidebarRestyle },
+    placeholderStyle: { dim: (cfg) => !cfg.composerRestyle },
+    effortAccent: { badgeKey: 'badgeClaude', dim: (cfg) => (cfg.effortSliderStyle || 'claude') !== 'claude' },
+    performanceBackdrop: { badgeKey: 'badgeLwf', dim: (cfg) => cfg.effortSliderStyle !== 'liangwufeng' },
+    undoConfirmMode: { dim: (cfg) => cfg.rewindPanel === false },
+    hudCompact: { dim: (cfg) => !cfg.hudTopBar && !cfg.hudBottomBar && !cfg.hudRimProgress && !cfg.hudFooterChip },
+  };
+
+  const DEFAULT_TRUE_KEYS = new Set([
+    'glassEffect',
+    'branchSession',
+    'messageEdit',
+    'fileContextMenu',
+    'taskProgressCard',
+    'headerExtensionsBar',
+    'sidebarExtensionsSection',
+    'hideOnClose',
+    'rewindPanel',
+  ]);
+
+  function allKeysOfGroup(group) {
+    return [...(group.keys || []), ...(group.hudKeys || [])];
+  }
+
+  function isSwitchChecked(key, cfg) {
+    if (key === 'mascot') return cfg[key] === 'crab';
+    if (DEFAULT_TRUE_KEYS.has(key)) return cfg[key] !== false;
+    return Boolean(cfg[key]);
+  }
+
+  function countEnabledInGroup(group, cfg, optionsMap) {
+    let switches = 0;
+    let enabled = 0;
+    for (const k of allKeysOfGroup(group)) {
+      if (optionsMap[k]) continue;
+      switches++;
+      if (isSwitchChecked(k, cfg)) enabled++;
+    }
+    return switches > 0 ? `${enabled}/${switches}` : `${allKeysOfGroup(group).length}`;
+  }
+
+  root.AGYPanelControlSchema = { I18N, GROUPS, allKeysOfGroup };
+
   root.AGYPanelControl = function initControlTab(app) {
-    const collapsedGroups = new Set(['layout', 'telemetry']);
+    const collapsedGroups = new Set(GROUPS.filter((g) => !g.defaultOpen).map((g) => g.id));
+    let hudDetailsOpen = false;
+    let searchQuery = '';
 
     function getT() {
       const lang = app.getConfig().language || 'zh-CN';
       return lang === 'en' ? I18N.en : I18N['zh-CN'];
+    }
+
+    function syncFoldButton() {
+      const btn = document.getElementById('btn-ctrl-fold');
+      if (!btn) return;
+      const t = getT();
+      const allOpen = collapsedGroups.size === 0;
+      btn.textContent = allOpen ? t.collapseAll : t.expandAll;
+    }
+
+    function renderCompanions(lastStatus, t) {
+      const strip = document.getElementById('header-companions');
+      if (!strip) return;
+      if (!lastStatus) {
+        strip.style.display = 'none';
+        return;
+      }
+      const pages = lastStatus.cdp?.pages || [];
+      const w = pages.filter((p) => p.kind === 'window').length;
+      const s = pages.filter((p) => p.kind === 'swarm').length;
+      const cap = lastStatus.companions?.capsule;
+      const br = lastStatus.companions?.bridge;
+      const chips = [
+        { text: t.chipTargets(w, s), on: w + s > 0 },
+        ...(cap?.installed ? [{ text: `agy-capsule${cap.version ? ' v' + cap.version : ''}`, on: cap.enabled }] : []),
+        ...(br?.installed ? [{ text: `bridge${br.version ? ' v' + br.version : ''}`, on: br.enabled }] : []),
+      ];
+      strip.innerHTML = '';
+      for (const c of chips) {
+        const el = document.createElement('span');
+        el.className = 'chip' + (c.on ? ' on' : '');
+        el.textContent = c.text;
+        strip.appendChild(el);
+      }
+      strip.style.display = chips.length > 0 ? 'flex' : 'none';
     }
 
     function renderStaticChrome() {
@@ -165,6 +281,9 @@
       document.getElementById('cdp-banner-title').textContent = t.cdpTitle;
       document.getElementById('cdp-banner-desc').textContent = t.cdpDesc;
       document.getElementById('btn-relaunch').textContent = t.btnRelaunch;
+      const searchEl = document.getElementById('ctrl-search');
+      if (searchEl) searchEl.placeholder = t.searchPlaceholder;
+      syncFoldButton();
 
       if (lastStatus) {
         const pill = document.getElementById('status-pill');
@@ -180,101 +299,156 @@
           : t.disconnected;
         document.getElementById('meta-line').textContent = t.metaLine(lastStatus.version || '2.1.0', Boolean(lastStatus.watcher?.alive));
         document.getElementById('cdp-banner').classList.toggle('show', !isConnected);
+        renderCompanions(lastStatus, t);
       }
+    }
+
+    function buildSettingRow(key, cfg, t) {
+      const [name, desc] = t.labels[key] || [key, ''];
+      const options = t.options[key];
+      const rule = SUBROW_RULES[key] || null;
+      const isSubrow = Boolean(rule);
+      const dimmed = rule && typeof rule.dim === 'function' ? Boolean(rule.dim(cfg)) : false;
+      const badgeText = rule?.badgeKey ? t[rule.badgeKey] : '';
+
+      const row = document.createElement('div');
+      row.className = 'row' + (isSubrow ? ' is-subrow' : '') + (dimmed ? ' is-dimmed' : '');
+      const labelDiv = document.createElement('div');
+      labelDiv.className = 'row-label';
+      const badgeHtml = badgeText ? `<span class="row-badge">${badgeText}</span>` : '';
+      labelDiv.innerHTML = `<div class="row-name">${name}${badgeHtml}</div>${desc ? `<div class="row-desc">${desc}</div>` : ''}`;
+      row.appendChild(labelDiv);
+
+      if (!options) {
+        const sw = document.createElement('label');
+        sw.className = 'switch';
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.checked = isSwitchChecked(key, cfg);
+        cb.disabled = dimmed;
+        cb.addEventListener('change', () => app.saveOne(key, key === 'mascot' ? (cb.checked ? 'crab' : 'off') : cb.checked));
+        const track = document.createElement('span');
+        track.className = 'switch-track';
+        sw.appendChild(cb);
+        sw.appendChild(track);
+        row.appendChild(sw);
+      } else {
+        const sel = document.createElement('select');
+        sel.disabled = dimmed;
+        for (const [val, text] of options) {
+          const opt = document.createElement('option');
+          opt.value = val;
+          opt.textContent = text;
+          if (cfg[key] === val) opt.selected = true;
+          sel.appendChild(opt);
+        }
+        sel.addEventListener('change', () => app.saveOne(key, sel.value));
+        row.appendChild(sel);
+      }
+      return row;
     }
 
     function renderForm(cfg) {
       const t = getT();
-      const lastStatus = app.getLastStatus();
       const container = document.getElementById('sections');
+      const q = searchQuery.trim().toLowerCase();
       container.innerHTML = '';
+      let matchedGroups = 0;
+
+      const matchesKey = (key) => {
+        const [name, desc] = t.labels[key] || [key, ''];
+        return `${key} ${name} ${desc}`.toLowerCase().includes(q);
+      };
+
       for (const group of GROUPS) {
+        const groupTitle = String(t[group.titleKey] || '');
+        const groupMatches = q && groupTitle.toLowerCase().includes(q);
+        const visibleMainKeys = q
+          ? group.keys.filter((key) => groupMatches || matchesKey(key))
+          : group.keys;
+        const visibleHudKeys = Array.isArray(group.hudKeys)
+          ? q
+            ? group.hudKeys.filter((key) => groupMatches || matchesKey(key))
+            : group.hudKeys
+          : [];
+        if (visibleMainKeys.length === 0 && visibleHudKeys.length === 0) continue;
+        matchedGroups++;
+
+        const isCollapsed = !q && collapsedGroups.has(group.id);
         const sec = document.createElement('div');
-        sec.className = 'section' + (collapsedGroups.has(group.id) ? ' collapsed' : '');
+        sec.className = 'section' + (isCollapsed ? ' collapsed' : '');
 
         const head = document.createElement('button');
         head.type = 'button';
         head.className = 'section-head';
-        head.innerHTML = `<span class="section-title"><span>${group.icon}</span><span>${t[group.titleKey]}</span></span><span style="display:inline-flex;align-items:center;gap:6px;"><span class="section-badge">${group.keys.length}</span><span class="section-chev">▾</span></span>`;
+        const badgeText = q
+          ? `${visibleMainKeys.length + visibleHudKeys.length}`
+          : countEnabledInGroup(group, cfg, t.options);
+        head.innerHTML = `<span class="section-title"><span>${group.icon}</span><span>${groupTitle}</span></span><span style="display:inline-flex;align-items:center;gap:6px;"><span class="section-badge">${badgeText}</span><span class="section-chev">▾</span></span>`;
         head.addEventListener('click', () => {
           if (collapsedGroups.has(group.id)) collapsedGroups.delete(group.id);
           else collapsedGroups.add(group.id);
           sec.classList.toggle('collapsed');
+          syncFoldButton();
         });
         sec.appendChild(head);
 
         const body = document.createElement('div');
         body.className = 'section-body';
-        for (const key of group.keys) {
-          const [name, desc] = t.labels[key] || [key, ''];
-          const options = t.options[key];
-          const dimmed = key === 'undoConfirmMode' && cfg.rewindPanel === false;
-
-          const row = document.createElement('div');
-          row.className = 'row' + (dimmed ? ' is-dimmed' : '');
-          const labelDiv = document.createElement('div');
-          labelDiv.className = 'row-label';
-          labelDiv.innerHTML = `<div class="row-name">${name}</div>${desc ? `<div class="row-desc">${desc}</div>` : ''}`;
-          row.appendChild(labelDiv);
-
-          if (!options) {
-            const sw = document.createElement('label');
-            sw.className = 'switch';
-            const cb = document.createElement('input');
-            cb.type = 'checkbox';
-            cb.checked =
-              key === 'glassEffect' || key === 'branchSession' || key === 'messageEdit' || key === 'fileContextMenu' || key === 'taskProgressCard'
-                ? cfg[key] !== false
-                : key === 'mascot'
-                ? cfg[key] === 'crab'
-                : Boolean(cfg[key]);
-            cb.disabled = dimmed;
-            cb.addEventListener('change', () => app.saveOne(key, key === 'mascot' ? (cb.checked ? 'crab' : 'off') : cb.checked));
-            const track = document.createElement('span');
-            track.className = 'switch-track';
-            sw.appendChild(cb);
-            sw.appendChild(track);
-            row.appendChild(sw);
-          } else {
-            const sel = document.createElement('select');
-            sel.disabled = dimmed;
-            for (const [val, text] of options) {
-              const opt = document.createElement('option');
-              opt.value = val;
-              opt.textContent = text;
-              if (cfg[key] === val) opt.selected = true;
-              sel.appendChild(opt);
-            }
-            sel.addEventListener('change', () => app.saveOne(key, sel.value));
-            row.appendChild(sel);
-          }
-          body.appendChild(row);
+        for (const key of visibleMainKeys) {
+          body.appendChild(buildSettingRow(key, cfg, t));
         }
 
-        if (group.showCompanions && lastStatus) {
-          const strip = document.createElement('div');
-          strip.className = 'companion-strip';
-          const pages = lastStatus.cdp?.pages || [];
-          const w = pages.filter((p) => p.kind === 'window').length;
-          const s = pages.filter((p) => p.kind === 'swarm').length;
-          const cap = lastStatus.companions?.capsule;
-          const br = lastStatus.companions?.bridge;
-          const chips = [
-            { text: t.chipTargets(w, s), on: w + s > 0 },
-            ...(cap?.installed ? [{ text: `agy-capsule${cap.version ? ' v' + cap.version : ''}`, on: cap.enabled }] : []),
-            ...(br?.installed ? [{ text: `bridge${br.version ? ' v' + br.version : ''}`, on: br.enabled }] : []),
-          ];
-          for (const c of chips) {
-            const el = document.createElement('span');
-            el.className = 'chip' + (c.on ? ' on' : '');
-            el.textContent = c.text;
-            strip.appendChild(el);
+        if (visibleHudKeys.length > 0) {
+          const details = document.createElement('details');
+          details.className = 'ctrl-subdetails';
+          details.open = Boolean(q) || hudDetailsOpen;
+          details.addEventListener('toggle', () => {
+            if (!q) hudDetailsOpen = details.open;
+          });
+          const enabledHud = visibleHudKeys.filter((k) => isSwitchChecked(k, cfg)).length;
+          const summary = document.createElement('summary');
+          summary.innerHTML = `<span>${t.hudDetailsLabel}</span><span class="section-badge">${enabledHud}/${visibleHudKeys.length}</span>`;
+          details.appendChild(summary);
+          const subList = document.createElement('div');
+          subList.className = 'ctrl-subdetails-body';
+          for (const key of visibleHudKeys) {
+            subList.appendChild(buildSettingRow(key, cfg, t));
           }
-          body.appendChild(strip);
+          details.appendChild(subList);
+          body.appendChild(details);
         }
+
         sec.appendChild(body);
         container.appendChild(sec);
       }
+
+      if (matchedGroups === 0) {
+        const empty = document.createElement('div');
+        empty.className = 'ctrl-empty';
+        empty.textContent = t.emptySearch;
+        container.appendChild(empty);
+      }
+      syncFoldButton();
+    }
+
+    const searchInput = document.getElementById('ctrl-search');
+    if (searchInput) {
+      searchInput.addEventListener('input', () => {
+        searchQuery = searchInput.value || '';
+        renderForm(app.getConfig());
+      });
+    }
+    const foldBtn = document.getElementById('btn-ctrl-fold');
+    if (foldBtn) {
+      foldBtn.addEventListener('click', () => {
+        if (collapsedGroups.size === 0) {
+          for (const g of GROUPS) collapsedGroups.add(g.id);
+        } else {
+          collapsedGroups.clear();
+        }
+        renderForm(app.getConfig());
+      });
     }
 
     document.getElementById('btn-reinject').addEventListener('click', () => app.postAction('/api/reinject', 'btnReinject'));
@@ -285,4 +459,4 @@
 
     return { getT, renderStaticChrome, renderForm };
   };
-})(window);
+})(typeof window !== 'undefined' ? window : globalThis);

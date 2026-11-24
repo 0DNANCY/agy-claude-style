@@ -36,6 +36,7 @@
 
   root.AGYPanelDashboard = function initDashboardTab(app) {
     let lastHeatCells = [];
+    let lastWeeklyQuota = null;
     let heatMetric = 'tokens';
     let selectedHeatDate = '';
     let selectedConvoId = '';
@@ -55,30 +56,111 @@
       });
     }
 
+    function shortPoolName(name = '') {
+      const cleaned = String(name || '')
+        .replace(/\s*\([^)]*\)\s*/g, '')
+        .replace(/\s*models?\s*/gi, '')
+        .replace(/\s+and\s+/gi, ' / ')
+        .trim();
+      return cleaned || String(name || '');
+    }
+
+    function renderWeeklyQuotaCard(wq) {
+      const poolsEl = document.getElementById('kpi-weekly-pools');
+      const subEl = document.getElementById('kpi-weekly-sub');
+      if (!poolsEl || !subEl) return;
+      if (!wq) {
+        poolsEl.innerHTML = '<span class="kpi-val" style="font-size:13px;color:var(--muted-fg);">待面板服务重载</span>';
+        subEl.textContent = '开关插件或重启 Antigravity 后启用';
+        return;
+      }
+      if (!wq.available || !Array.isArray(wq.pools) || wq.pools.length === 0) {
+        poolsEl.innerHTML = '<span class="kpi-val" style="font-size:13.5px;color:var(--muted-fg);">暂无周额度数据</span>';
+        subEl.textContent = '仅订阅配额模式可用';
+        return;
+      }
+      const pools = wq.pools;
+      const hasCarry = pools.some((p) => p.carriedFromPrior);
+      const resetNote = pools.find((p) => p.resetIn)?.resetIn;
+      subEl.textContent = resetNote
+        ? `重置 ${resetNote}${hasCarry ? '' : ' · 当日采样起统计'}`
+        : hasCarry
+        ? '跨日连续统计'
+        : '当日采样起统计';
+      poolsEl.innerHTML = pools
+        .map((p) => {
+          const burned = Number(p.consumedTodayPct || 0);
+          const rem = Number(p.remainingPct || 0);
+          const cls = burned > 0 ? ' is-burned' : '';
+          return `
+            <div class="kpi-weekly-pill${cls}" title="${escapeHtml(p.name)}：今日已消耗 ${burned.toFixed(1)}% 周额度，当前剩余 ${rem.toFixed(1)}%${p.resetIn ? `（${p.resetIn}后重置）` : ''}">
+              <span class="kw-name">${escapeHtml(shortPoolName(p.name))}</span>
+              <span class="kw-burn">-${burned.toFixed(1)}%</span>
+              <span class="kw-rem">剩 ${rem.toFixed(0)}%</span>
+            </div>
+          `;
+        })
+        .join('');
+    }
+
     function showHeatTooltip(cell, targetEl) {
       const tip = document.getElementById('heat-tooltip');
       if (!tip || !cell) return;
-      const errPart = cell.errorCount > 0 ? ` · 报错 ${cell.errorCount}` : '';
-      const anomPart = cell.anomalyCount > 0 ? ` · 掉缓存 ${cell.anomalyCount}` : '';
+      const flags = [];
+      if (cell.errorCount > 0) {
+        flags.push(`<span class="heat-tt-badge is-err">报错 ${cell.errorCount}</span>`);
+      }
+      if (cell.anomalyCount > 0) {
+        flags.push(`<span class="heat-tt-badge is-warn">掉缓存 ${cell.anomalyCount}</span>`);
+      }
+      const flagsHtml = flags.length > 0 ? `<div class="heat-tt-badges">${flags.join('')}</div>` : '';
+
+      const dayQuota = lastWeeklyQuota?.byDate?.[cell.date];
+      const quotaSection =
+        dayQuota && Array.isArray(dayQuota.pools) && dayQuota.pools.length > 0
+          ? `<div class="heat-tt-sec">
+              <div class="heat-tt-sec-title">周额度消耗</div>
+              ${dayQuota.pools
+                .map((p) => {
+                  const burned = Number(p.consumedPct ?? p.consumedTodayPct ?? 0);
+                  const burnedCls = burned > 0 ? ' is-burned' : ' is-zero';
+                  const remPart =
+                    typeof p.lastPct === 'number'
+                      ? `<span class="heat-tt-rem">剩 ${Math.round(p.lastPct)}%</span>`
+                      : '';
+                  return `<div class="heat-tt-row">
+                    <span class="heat-tt-k">${escapeHtml(shortPoolName(p.name))}</span>
+                    <span class="heat-tt-v${burnedCls}">-${burned.toFixed(1)}%${remPart}</span>
+                  </div>`;
+                })
+                .join('')}
+            </div>`
+          : '';
+
       tip.innerHTML = `
         <div class="heat-tt-date">
           <span>${cell.date}</span>
           ${cell.isToday ? '<span class="heat-tt-tag">今天</span>' : ''}
         </div>
-        <div class="heat-tt-row"><span>请求次数</span><b>${cell.count} 次${errPart}${anomPart}</b></div>
-        <div class="heat-tt-row"><span>总 Token</span><b>${fmtTokens(cell.tokens)}</b></div>
-        <div class="heat-tt-row"><span>缓存命中</span><b>${cell.count > 0 ? cell.cacheHitPct + '%' : '-'}</b></div>
-        <div class="heat-tt-row"><span>参考费用</span><b>$${Number(cell.costUsd || 0).toFixed(3)}</b></div>
+        <div class="heat-tt-rows">
+          <div class="heat-tt-row"><span class="heat-tt-k">请求次数</span><span class="heat-tt-v">${cell.count} 次</span></div>
+          <div class="heat-tt-row"><span class="heat-tt-k">总 Token</span><span class="heat-tt-v">${fmtTokens(cell.tokens)}</span></div>
+          <div class="heat-tt-row"><span class="heat-tt-k">缓存命中</span><span class="heat-tt-v">${cell.count > 0 ? cell.cacheHitPct + '%' : '-'}</span></div>
+          <div class="heat-tt-row"><span class="heat-tt-k">参考费用</span><span class="heat-tt-v">$${Number(cell.costUsd || 0).toFixed(3)}</span></div>
+        </div>
+        ${flagsHtml}
+        ${quotaSection}
         <div class="heat-tt-hint">${selectedHeatDate === cell.date ? '再次点击取消按日筛选' : '点击筛选当日请求记录'}</div>
       `;
       tip.classList.add('show');
       const rect = targetEl.getBoundingClientRect();
-      const tw = tip.offsetWidth || 180;
-      const th = tip.offsetHeight || 110;
+      const tw = tip.offsetWidth || 216;
+      const th = tip.offsetHeight || 130;
       let left = rect.left + rect.width / 2 - tw / 2;
       left = Math.max(8, Math.min(window.innerWidth - tw - 8, left));
-      let top = rect.top - th - 8;
-      if (top < 8) top = rect.bottom + 8;
+      let top = rect.top - th - 10;
+      if (top < 8) top = rect.bottom + 10;
+      if (top + th > window.innerHeight - 8) top = Math.max(8, window.innerHeight - th - 8);
       tip.style.left = `${Math.round(left)}px`;
       tip.style.top = `${Math.round(top)}px`;
     }
@@ -217,9 +299,9 @@
         document.getElementById('kpi-src').textContent = d.ssh?.enabled ? `本机 + SSH (${d.ssh.count})` : '本机';
         const latEl = document.getElementById('kpi-latency');
         if (latEl) {
-          latEl.textContent = Number.isFinite(d.summary.avgResponseMs)
-            ? `平均响应 ${fmtDuration(d.summary.avgResponseMs)}`
-            : '平均响应 -';
+          latEl.textContent = Number.isFinite(d.summary.avgTtftMs)
+            ? `平均首字 ${fmtDuration(d.summary.avgTtftMs)}`
+            : '平均首字 -';
         }
 
         const updEl = document.getElementById('dash-updated');
@@ -240,13 +322,19 @@
         }
 
         lastTodaySummary = d.todaySummary || null;
+        lastWeeklyQuota = d.weeklyQuota || null;
+        renderWeeklyQuotaCard(lastWeeklyQuota);
         const todayText = document.getElementById('heat-today-text');
         const filterTodayBtn = document.getElementById('btn-filter-today');
         if (lastTodaySummary) {
           const td = lastTodaySummary;
+          const todayBurnPart =
+            lastWeeklyQuota?.available && lastWeeklyQuota.pools?.length
+              ? ` · 周额度 ${lastWeeklyQuota.pools.map((p) => `-${Number(p.consumedTodayPct || 0).toFixed(1)}%`).join('/')}`
+              : '';
           todayText.innerHTML = td.count > 0
-            ? `今日 <b>${td.count} 次</b> · ${fmtTokens(td.tokens)} tok · 缓存 ${td.cacheHitPct}% · $${Number(td.costUsd || 0).toFixed(2)}`
-            : `今日 (${td.date.slice(5)}) <span class="muted">暂无请求</span>`;
+            ? `今日 <b>${td.count} 次</b> · ${fmtTokens(td.tokens)} tok · 缓存 ${td.cacheHitPct}% · $${Number(td.costUsd || 0).toFixed(2)}${escapeHtml(todayBurnPart)}`
+            : `今日 (${td.date.slice(5)}) <span class="muted">暂无请求</span>${escapeHtml(todayBurnPart)}`;
           filterTodayBtn.textContent = selectedHeatDate === td.date ? '已选今日 ×' : '只看今日';
         }
 
@@ -277,11 +365,11 @@
               ? `<div class="req-badge-drop">⚠ 短间隔掉缓存 (${r.anomaly.gapSec}s): ${r.anomaly.prevHit}% → ${r.anomaly.curHit}%</div>`
               : '';
             const errHtml = r.errorText ? `<div style="color:var(--danger);font-size:11px;">${escapeHtml(r.errorText)}</div>` : '';
-            const respStr = Number.isFinite(r.responseMs) ? fmtDuration(r.responseMs) : '';
+            const ttftStr = Number.isFinite(r.ttftMs) ? fmtDuration(r.ttftMs) : '';
             card.innerHTML = `
               <div class="req-top">
                 <span class="req-model" title="${escapeHtml(r.model)}">${escapeHtml(r.model)}</span>
-                <span class="req-time">${respStr ? `⏱ ${respStr} · ` : ''}${fmtDateTime(r.timestampMs)}</span>
+                <span class="req-time">${ttftStr ? `首字 ${ttftStr} · ` : ''}${fmtDateTime(r.timestampMs)}</span>
               </div>
               <div class="req-source-row">
                 <span class="req-src-tag${isSsh ? ' is-ssh' : ''}">${escapeHtml(srcLabel)}</span>
@@ -291,7 +379,7 @@
                 <span>In ${fmtTokens(r.inputTokens)}</span>
                 <span>Cache ${r.cacheHitPct}%</span>
                 <span>Out ${fmtTokens(r.outputTokens)}</span>
-                ${respStr ? `<span>响应 ${respStr}</span>` : ''}
+                ${ttftStr ? `<span>首字 ${ttftStr}</span>` : ''}
                 <span>$${Number(r.costUsd || 0).toFixed(4)}</span>
               </div>
               ${dropHtml}${errHtml}
