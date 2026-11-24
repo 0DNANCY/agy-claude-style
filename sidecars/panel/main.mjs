@@ -5,6 +5,10 @@ import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { dispatchFileAction } from './lib/file-actions.mjs';
+import { queryTelemetryDashboard } from './lib/telemetry-db.mjs';
+import { fetchSshRemoteRequests, listConfiguredSshHosts } from './lib/ssh-remote.mjs';
+import { buildProxyLaunchOptions, normalizeProxyUrl, testProxyConnectivity } from './lib/proxy.mjs';
 
 const require = createRequire(import.meta.url);
 const cdp = require('../../cdp.js');
@@ -107,8 +111,10 @@ async function getPanelStatus() {
     configFile: cdp.CONFIG_FILE,
     watcher,
     cdp: {
+      connected: Boolean(activePort),
       port: activePort,
       pageCount: pages.length,
+      pagesCount: pages.length,
       needsCdpRestart: !activePort,
       pages,
     },
@@ -183,6 +189,24 @@ async function startPanelSidecar() {
     });
   });
 
+  const uiDir = join(__dirname, 'ui');
+  const uiAssets = [
+    ['/ui/panel.css', 'panel.css', 'text/css; charset=utf-8'],
+    ['/ui/control-tab.js', 'control-tab.js', 'application/javascript; charset=utf-8'],
+    ['/ui/dashboard-tab.js', 'dashboard-tab.js', 'application/javascript; charset=utf-8'],
+    ['/ui/remote-tab.js', 'remote-tab.js', 'application/javascript; charset=utf-8'],
+  ];
+  for (const [route, fileName, contentType] of uiAssets) {
+    app.page(route, () => {
+      const content = readFileSync(join(uiDir, fileName), 'utf8');
+      return new Response(content, {
+        status: 200,
+        contentType,
+        headers: NO_STORE_HEADERS,
+      });
+    });
+  }
+
   const guardApi = (fn) => async (data, req) => {
     if (!isLocalHostRequest(req)) {
       return new Response(JSON.stringify({ ok: false, error: 'Forbidden host or origin' }), {
@@ -205,14 +229,101 @@ async function startPanelSidecar() {
     return { ok: true, removed };
   }), 'POST');
   app.api('/api/relaunch', guardApi(async () => {
-    const res = await cdp.relaunchAntigravityWithCdp();
+    const cfg = cdp.readConfig();
+    const proxyOpts = buildProxyLaunchOptions({
+      proxyEnabled: Boolean(cfg.proxyEnabled),
+      proxyUrl: cfg.proxyUrl,
+      proxyBypass: cfg.proxyBypass,
+      proxyForceHttp1: Boolean(cfg.proxyForceHttp1),
+    });
+    const res = await cdp.relaunchAntigravityWithCdp({
+      detached: true,
+      extraArgs: proxyOpts.args,
+      extraEnv: proxyOpts.env,
+    });
     if (!res?.relaunched) {
       return new Response(JSON.stringify({ ok: false, ...res }), {
         status: 500,
         contentType: 'application/json',
       });
     }
-    return { ok: true, ...res };
+    return { ok: true, proxyActive: proxyOpts.args.length > 0, ...res };
+  }), 'POST');
+
+  let lastSshSync = { ok: false, host: '', requests: [], count: 0, error: '' };
+  app.api('/api/telemetry', guardApi(async (data) => {
+    const cfg = cdp.readConfig();
+    const range = String(data?.range || '7d');
+    const date = String(data?.date || '');
+    const conversationId = String(data?.conversationId || '');
+    const model = String(data?.model || '');
+    const status = String(data?.status || 'all');
+    const search = String(data?.search || '');
+    const offset = Number(data?.offset) || 0;
+    const limit = Number(data?.limit) || 50;
+    const includeSsh = Boolean(cfg.sshRemoteStats && cfg.sshHost);
+    let sshInfo = lastSshSync;
+    if (includeSsh && (data?.syncSsh || lastSshSync.host !== cfg.sshHost)) {
+      sshInfo = await fetchSshRemoteRequests(cfg.sshHost, { force: Boolean(data?.syncSsh) });
+      lastSshSync = sshInfo;
+    }
+    const extraRequests = includeSsh && sshInfo.ok ? sshInfo.requests : [];
+    const dash = queryTelemetryDashboard({
+      range,
+      date,
+      conversationId,
+      model,
+      status,
+      search,
+      offset,
+      limit,
+      extraRequests,
+    });
+    return {
+      ...dash,
+      ssh: {
+        enabled: includeSsh,
+        host: cfg.sshHost || '',
+        ok: sshInfo.ok,
+        count: sshInfo.count || 0,
+        error: sshInfo.error || '',
+      },
+    };
+  }), 'POST');
+
+  app.api('/api/ssh/hosts', guardApi(async () => ({
+    ok: true,
+    hosts: listConfiguredSshHosts(),
+  })), 'GET');
+
+  app.api('/api/ssh/sync', guardApi(async (data) => {
+    const cfg = cdp.readConfig();
+    const host = String(data?.host || cfg.sshHost || '').trim();
+    if (!host) return { ok: false, error: '请先填写 SSH 主机名' };
+    const res = await fetchSshRemoteRequests(host, { force: true });
+    lastSshSync = res;
+    return { ok: res.ok, host: res.host, count: res.count || 0, error: res.error || '' };
+  }), 'POST');
+
+  app.api('/api/proxy/test', guardApi(async (data) => {
+    const cfg = cdp.readConfig();
+    const rawUrl = String(data?.proxyUrl || cfg.proxyUrl || '').trim();
+    if (!rawUrl) return { ok: false, error: '请先填写代理地址' };
+    if (!normalizeProxyUrl(rawUrl)) {
+      return { ok: false, error: '代理地址格式无效（支持 http://、https://、socks5://、socks5h://）' };
+    }
+    return await testProxyConnectivity(rawUrl);
+  }), 'POST');
+
+  app.api('/api/file/action', guardApi(async (data) => {
+    try {
+      return await dispatchFileAction(data || {});
+    } catch (err) {
+      return new Response(JSON.stringify({ ok: false, error: err?.message || String(err) }), {
+        status: 400,
+        contentType: 'application/json',
+      });
+    }
   }), 'POST');
 
   let shuttingDown = false;

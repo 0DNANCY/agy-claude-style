@@ -174,7 +174,9 @@ function stageTempRuntimeDir() {
     ...cdp.RUNTIME_PARTS,
   ];
   for (const f of files) {
-    fs.copyFileSync(path.join(ROOT_DIR, f), path.join(dir, f));
+    const dest = path.join(dir, f);
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    fs.copyFileSync(path.join(ROOT_DIR, f), dest);
   }
   return dir;
 }

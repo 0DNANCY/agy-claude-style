@@ -82,6 +82,16 @@ const DEFAULT_CONFIG = {
   placeholderStyle: 'studio',
   rewindPanel: true,
   undoConfirmMode: 'picker',
+  branchSession: true,
+  messageEdit: true,
+  fileContextMenu: true,
+  taskProgressCard: true,
+  sshRemoteStats: false,
+  sshHost: '',
+  proxyEnabled: false,
+  proxyUrl: '',
+  proxyBypass: 'localhost,127.0.0.1,::1',
+  proxyForceHttp1: false,
   autoRelaunchWithCdp: true,
   exitOnHostClose: false,
   pollIntervalMs: 2500,
@@ -114,6 +124,13 @@ const CONFIG_VALIDATORS = {
   placeholderStyle: ['studio', 'host'],
   rewindPanel: 'boolean',
   undoConfirmMode: ['picker', 'prompt', 'auto_both', 'auto_chat'],
+  branchSession: 'boolean',
+  messageEdit: 'boolean',
+  fileContextMenu: 'boolean',
+  taskProgressCard: 'boolean',
+  sshRemoteStats: 'boolean',
+  proxyEnabled: 'boolean',
+  proxyForceHttp1: 'boolean',
   autoRelaunchWithCdp: 'boolean',
   exitOnHostClose: 'boolean',
 };
@@ -121,6 +138,9 @@ const CONFIG_VALIDATORS = {
 function validateConfigSetting(key, value) {
   if (key === 'pollIntervalMs') {
     return Number.isInteger(value) && value >= 250 && value <= 60000;
+  }
+  if (key === 'sshHost' || key === 'proxyUrl' || key === 'proxyBypass') {
+    return typeof value === 'string' && value.length <= 512 && !/[\x00-\x1f\x7f]/.test(value);
   }
   if (!Object.prototype.hasOwnProperty.call(CONFIG_VALIDATORS, key)) return false;
   const rule = CONFIG_VALIDATORS[key];
@@ -297,7 +317,7 @@ function readCss() {
   return fs.readFileSync(path.join(__dirname, 'style.css'), 'utf8');
 }
 
-const RUNTIME_PARTS = ['i18n-locales.js', 'i18n-core.js', 'sidecar-core.js', 'usage-core.js', 'ripple-core.js', 'mascot-core.js', 'crab-assets.js', 'effort-core.js', 'perf-assets.js', 'ui-rewind.js', 'ui-runtime.js'];
+const RUNTIME_PARTS = ['i18n-locales.js', 'i18n-core.js', 'sidecar-core.js', 'usage-core.js', 'ripple-core.js', 'mascot-core.js', 'crab-assets.js', 'effort-core.js', 'perf-assets.js', 'ui-rewind.js', 'features/branch-edit.js', 'features/file-menu.js', 'features/task-progress.js', 'ui-runtime.js'];
 
 function readRuntimeBundle() {
   return RUNTIME_PARTS.map((f) => fs.readFileSync(path.join(__dirname, f), 'utf8')).join('\n');
@@ -454,7 +474,7 @@ const REMOVE_EXPRESSION = `(() => {
     if (root.getAttribute('data-ag-cjk') === '1') root.removeAttribute('data-ag-cjk');
   }
   const nodes = document.querySelectorAll(
-    'style#${STYLE_ID}, style#ag-token-hud-style, .ag-cs-home-panel-seat, .ag-cs-ripple-host, .ag-cs-ripple-canvas, .ag-cs-crab, .ag-cs-inline-stats, .ag-cs-quota-ring, .ag-cs-context-ring, .ag-cs-ctx-popover, .ag-cs-effort-popover, .ag-cs-perf-backdrop, .ag-cs-smooth-caret, .ag-cs-turn-bar, .ag-cs-hud-top-bar, .ag-cs-hud-bottom-bar, .ag-cs-hud-rim-progress, .ag-cs-hud-footer-chip, .ag-cs-rewind-bar, .ag-cs-rewind-notice, .ag-cs-rewind-backdrop, #ag-cs-settings-sec, .ag-th-top-bar, .ag-th-bottom-bar, .ag-th-rim-progress, .ag-th-footer-chip, .ag-th-popover, .ag-th-turn-bar, .ag-th-reopen-pill'
+    'style#${STYLE_ID}, style#ag-token-hud-style, .ag-cs-home-panel-seat, .ag-cs-ripple-host, .ag-cs-ripple-canvas, .ag-cs-crab, .ag-cs-inline-stats, .ag-cs-quota-ring, .ag-cs-context-ring, .ag-cs-ctx-popover, .ag-cs-effort-popover, .ag-cs-perf-backdrop, .ag-cs-smooth-caret, .ag-cs-turn-bar, .ag-cs-hud-top-bar, .ag-cs-hud-bottom-bar, .ag-cs-hud-rim-progress, .ag-cs-hud-footer-chip, .ag-cs-rewind-bar, .ag-cs-rewind-notice, .ag-cs-rewind-backdrop, .ag-cs-branch-btn, .ag-cs-edit-btn, .ag-cs-inline-edit, .ag-cs-file-menu, .ag-cs-progress-card, .ag-cs-action-toast, #ag-cs-settings-sec, .ag-th-top-bar, .ag-th-bottom-bar, .ag-th-rim-progress, .ag-th-footer-chip, .ag-th-popover, .ag-th-turn-bar, .ag-th-reopen-pill'
   );
   nodes.forEach((n) => n.remove());
   return { removed: nodes.length };
@@ -1126,6 +1146,48 @@ function activateAntigravityWindow(opts = {}) {
   return false;
 }
 
+function sanitizeAppLaunchEnv(baseEnv = process.env, extraEnv = {}) {
+  const env = { ...(baseEnv || {}) };
+  const stripExact = [
+    'ELECTRON_RUN_AS_NODE',
+    'ELECTRON_NO_ATTACH_CONSOLE',
+    'NODE_OPTIONS',
+    'NODE_PATH',
+    'AGY_RELAUNCH_SPEC',
+    'AG_CDP_PORT',
+    'PLUGIN_DATA',
+  ];
+  for (const k of stripExact) delete env[k];
+  for (const k of Object.keys(env)) {
+    if (
+      k.startsWith('ANTIGRAVITY_SIDECAR_') ||
+      k.startsWith('ANTIGRAVITY_LS_') ||
+      k.startsWith('ANTIGRAVITY_HOST_BRIDGE_') ||
+      k === 'ANTIGRAVITY_SOURCE_METADATA' ||
+      k === 'ANTIGRAVITY_EXECUTABLE_DATA_DIR' ||
+      k === 'ANTIGRAVITY_NODE_PATH'
+    ) {
+      delete env[k];
+    }
+  }
+  if (extraEnv && typeof extraEnv === 'object') {
+    for (const [k, v] of Object.entries(extraEnv)) {
+      if (v === undefined || v === null) delete env[k];
+      else env[k] = String(v);
+    }
+  }
+  return env;
+}
+
+function resolveMacAppBinary(appTarget) {
+  if (!appTarget || typeof appTarget !== 'string') return null;
+  if (appTarget.toLowerCase().endsWith('.app')) {
+    const candidate = path.join(appTarget, 'Contents', 'MacOS', 'Antigravity');
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  return null;
+}
+
 function launchAntigravityWithCdp(opts = {}) {
   const cdpPort = Number.isInteger(opts.port) && opts.port >= 0 ? opts.port : 0;
   const flag = `--remote-debugging-port=${cdpPort}`;
@@ -1136,21 +1198,37 @@ function launchAntigravityWithCdp(opts = {}) {
   if (!opts.skipPortCleanup && !detectFn().running) {
     removePortFileFn();
   }
+  const extraArgs = Array.isArray(opts.extraArgs) ? opts.extraArgs.filter((a) => typeof a === 'string' && a) : [];
+  const hasBindAddr = extraArgs.some((a) => /^--remote-debugging-address(?:=|$)/i.test(a));
+  const cdpArgs = hasBindAddr ? [flag] : [flag, '--remote-debugging-address=127.0.0.1'];
+  const hasExtraEnv = Boolean(opts.extraEnv && typeof opts.extraEnv === 'object' && Object.keys(opts.extraEnv).length > 0);
+  const spawnEnv = hasExtraEnv || process.env.ELECTRON_RUN_AS_NODE ? sanitizeAppLaunchEnv(process.env, opts.extraEnv) : undefined;
   if (IS_MAC) {
     const appTarget = opts.appPath || findAntigravityExecutable() || 'Antigravity';
-    const child = spawnFn('/usr/bin/open', ['-a', appTarget, '--args', flag], {
-      detached: true,
-      stdio: 'ignore',
-    });
+    const macBin = hasExtraEnv ? resolveMacAppBinary(appTarget) : null;
+    // On macOS, `/usr/bin/open -a` delegates to LaunchServices and drops custom env vars
+    // (HTTP_PROXY/HTTPS_PROXY/GODEBUG). Spawn the app binary directly when custom env is needed.
+    const child = macBin
+      ? spawnFn(macBin, [...cdpArgs, ...extraArgs], {
+          detached: true,
+          stdio: 'ignore',
+          env: spawnEnv,
+        })
+      : spawnFn('/usr/bin/open', ['-a', appTarget, '--args', ...cdpArgs, ...extraArgs], {
+          detached: true,
+          stdio: 'ignore',
+          ...(spawnEnv ? { env: spawnEnv } : {}),
+        });
     if (child && typeof child.unref === 'function') child.unref();
     return true;
   }
   const exePath = opts.appPath || findAntigravityExecutable();
   if (!exePath) return false;
-  const child = spawnFn(exePath, [flag], {
+  const child = spawnFn(exePath, [...cdpArgs, ...extraArgs], {
     detached: true,
     stdio: 'ignore',
     windowsHide: false,
+    ...(spawnEnv ? { env: spawnEnv } : {}),
   });
   if (child && typeof child.unref === 'function') child.unref();
   return true;
@@ -1219,6 +1297,129 @@ async function ensureAntigravityWithCdp(opts = {}) {
   return { ok: false, action: 'executable-not-found' };
 }
 
+function scheduleDetachedRelaunch({
+  pids = [],
+  appPath,
+  port = 0,
+  waitMs = 8000,
+  delayMs = 300,
+  extraArgs = [],
+  extraEnv = {},
+  portFile = PORT_FILE,
+  spawnFn = spawn,
+} = {}) {
+  const cdpPort = Number.isInteger(port) && port >= 0 ? port : 0;
+  const cleanExtra = Array.isArray(extraArgs) ? extraArgs.filter((a) => typeof a === 'string' && a) : [];
+  const hasBindAddr = cleanExtra.some((a) => /^--remote-debugging-address(?:=|$)/i.test(a));
+  const launchArgs = [
+    `--remote-debugging-port=${cdpPort}`,
+    ...(hasBindAddr ? [] : ['--remote-debugging-address=127.0.0.1']),
+    ...cleanExtra,
+  ];
+  const payload = {
+    pids: Array.isArray(pids) ? pids.filter((p) => Number.isInteger(p) && p > 0) : [],
+    appPath: String(appPath || ''),
+    macBinary: IS_MAC ? resolveMacAppBinary(String(appPath || '')) || '' : '',
+    launchArgs,
+    waitMs: Number.isInteger(waitMs) && waitMs > 0 ? waitMs : 8000,
+    delayMs: Number.isInteger(delayMs) && delayMs >= 0 ? delayMs : 300,
+    portFile: String(portFile || PORT_FILE),
+    logFile: path.join(STATE_DIR || __dirname, 'relaunch.log'),
+    isMac: IS_MAC,
+    isWin: IS_WIN,
+    extraEnv: extraEnv && typeof extraEnv === 'object' ? extraEnv : {},
+  };
+  // Runs completely outside Antigravity's process tree so killing Antigravity
+  // does not terminate the relauncher before it can spawn the new instance.
+  // Crucially strips ELECTRON_RUN_AS_NODE & ANTIGRAVITY_SIDECAR_* before spawning Antigravity
+  // (when invoked from an Electron Helper sidecar, process.env contains ELECTRON_RUN_AS_NODE=1!).
+  const helperScript = `
+const fs = require('fs');
+const path = require('path');
+const { spawn, execFileSync } = require('child_process');
+const cfg = JSON.parse(process.env.AGY_RELAUNCH_SPEC || '{}');
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const alive = (p) => { try { process.kill(p, 0); return true; } catch (e) { return e && e.code === 'EPERM'; } };
+const log = (m) => { try { if (cfg.logFile) { fs.mkdirSync(path.dirname(cfg.logFile), { recursive: true }); fs.appendFileSync(cfg.logFile, '[' + new Date().toISOString() + '] ' + m + '\\n'); } } catch {} };
+(async () => {
+  if (cfg.delayMs > 0) await sleep(cfg.delayMs);
+  const pids = Array.isArray(cfg.pids) ? cfg.pids : [];
+  log('terminating pids=' + JSON.stringify(pids));
+  if (cfg.isWin) {
+    for (const p of pids) {
+      try { execFileSync('taskkill', ['/PID', String(p), '/T'], { timeout: 4000, windowsHide: true, stdio: 'ignore' }); } catch {}
+    }
+    if (pids.length === 0) {
+      try { execFileSync('taskkill', ['/IM', 'Antigravity.exe'], { timeout: 4000, windowsHide: true, stdio: 'ignore' }); } catch {}
+    }
+  } else {
+    for (const p of pids) {
+      try { process.kill(p, 'SIGTERM'); } catch {}
+    }
+  }
+  const deadline = Date.now() + (cfg.waitMs || 8000);
+  while (Date.now() < deadline && pids.some(alive)) {
+    await sleep(200);
+  }
+  try { if (cfg.portFile && fs.existsSync(cfg.portFile)) fs.unlinkSync(cfg.portFile); } catch {}
+  await sleep(800);
+  const extraEnv = cfg.extraEnv && typeof cfg.extraEnv === 'object' ? cfg.extraEnv : {};
+  const env = { ...process.env };
+  for (const k of ['ELECTRON_RUN_AS_NODE', 'ELECTRON_NO_ATTACH_CONSOLE', 'NODE_OPTIONS', 'NODE_PATH', 'AGY_RELAUNCH_SPEC', 'AG_CDP_PORT', 'PLUGIN_DATA']) {
+    delete env[k];
+  }
+  for (const k of Object.keys(env)) {
+    if (k.startsWith('ANTIGRAVITY_SIDECAR_') || k.startsWith('ANTIGRAVITY_LS_') || k.startsWith('ANTIGRAVITY_HOST_BRIDGE_') || k === 'ANTIGRAVITY_SOURCE_METADATA' || k === 'ANTIGRAVITY_EXECUTABLE_DATA_DIR' || k === 'ANTIGRAVITY_NODE_PATH') {
+      delete env[k];
+    }
+  }
+  for (const [k, v] of Object.entries(extraEnv)) {
+    if (v === undefined || v === null) delete env[k];
+    else env[k] = String(v);
+  }
+  if (cfg.isMac) {
+    const macBin = cfg.macBinary || (cfg.appPath && cfg.appPath.toLowerCase().endsWith('.app') ? path.join(cfg.appPath, 'Contents', 'MacOS', 'Antigravity') : '');
+    if (macBin && fs.existsSync(macBin)) {
+      log('spawning macBin=' + macBin + ' args=' + JSON.stringify(cfg.launchArgs || []) + ' proxy=' + Boolean(env.HTTPS_PROXY) + ' electronRunAsNode=' + String(env.ELECTRON_RUN_AS_NODE));
+      const child = spawn(macBin, cfg.launchArgs || [], { detached: true, stdio: 'ignore', env });
+      child.unref();
+      // Wait briefly for CDP DevToolsActivePort and bring Antigravity to the foreground automatically.
+      const readyDeadline = Date.now() + 6000;
+      while (Date.now() < readyDeadline) {
+        if (cfg.portFile && fs.existsSync(cfg.portFile)) break;
+        await sleep(250);
+      }
+      log('cdpPortReady=' + Boolean(cfg.portFile && fs.existsSync(cfg.portFile)));
+      try {
+        execFileSync('/usr/bin/osascript', ['-e', 'tell application "Antigravity" to activate'], { timeout: 3000, stdio: 'ignore' });
+      } catch {}
+    } else {
+      log('fallback open -a ' + (cfg.appPath || 'Antigravity'));
+      const child = spawn('/usr/bin/open', ['-a', cfg.appPath || 'Antigravity', '--args', ...(cfg.launchArgs || [])], {
+        detached: true, stdio: 'ignore', env
+      });
+      child.unref();
+    }
+  } else if (cfg.appPath) {
+    log('spawning appPath=' + cfg.appPath + ' proxy=' + Boolean(env.HTTPS_PROXY));
+    const child = spawn(cfg.appPath, cfg.launchArgs || [], {
+      detached: true, stdio: 'ignore', windowsHide: false, env
+    });
+    child.unref();
+  }
+})().catch((e) => log('error: ' + (e && e.message || e)));
+`.trim();
+
+  const child = spawnFn(process.execPath, ['-e', helperScript], {
+    detached: true,
+    stdio: 'ignore',
+    windowsHide: true,
+    env: { ...process.env, AGY_RELAUNCH_SPEC: JSON.stringify(payload) },
+  });
+  if (child && typeof child.unref === 'function') child.unref();
+  return true;
+}
+
 async function relaunchAntigravityWithCdp(opts = {}) {
   const waitMs = Number.isInteger(opts.waitMs) && opts.waitMs > 0 ? opts.waitMs : 8000;
   const detectFn = typeof opts.detectProcess === 'function' ? opts.detectProcess : detectAntigravityProcess;
@@ -1270,6 +1471,20 @@ async function relaunchAntigravityWithCdp(opts = {}) {
   );
   if (!hasValidTarget) {
     return { relaunched: false, reason: 'executable-not-found' };
+  }
+
+  if (opts.detached === true && typeof opts.launch !== 'function' && typeof opts.terminate !== 'function') {
+    scheduleDetachedRelaunch({
+      pids: initialPids,
+      appPath: resolvedPath,
+      port: opts.port ?? 0,
+      waitMs,
+      delayMs: opts.delayMs ?? 300,
+      extraArgs: opts.extraArgs,
+      extraEnv: opts.extraEnv,
+      spawnFn: opts.spawn,
+    });
+    return { relaunched: true, scheduled: true, reason: 'detached' };
   }
 
   try {
@@ -1344,7 +1559,9 @@ module.exports = {
   isLikelyWatcherProcess,
   removeStalePortFile,
   activateAntigravityWindow,
+  sanitizeAppLaunchEnv,
   launchAntigravityWithCdp,
+  scheduleDetachedRelaunch,
   relaunchAntigravityWithCdp,
   ensureAntigravityWithCdp,
   formatCdpUnavailableMessage,

@@ -301,6 +301,7 @@ async function createWatchController({
   forceExitOnHostClose = false,
   startupGraceEnabled = false,
   allowGracefulDuplicateExit = false,
+  allowAutoRelaunch = true,
   manageProcessExit = true,
   enableConsole = true,
   logFile = LOG_FILE,
@@ -354,6 +355,7 @@ async function createWatchController({
   let tickTimer = null;
   let reloadTimer = null;
   let watcher = null;
+  let featuresWatcher = null;
   let configDirWatcher = null;
 
   function closeAllSessions() {
@@ -383,6 +385,10 @@ async function createWatchController({
     if (watcher) {
       try { watcher.close(); } catch {}
       watcher = null;
+    }
+    if (featuresWatcher) {
+      try { featuresWatcher.close(); } catch {}
+      featuresWatcher = null;
     }
     if (configDirWatcher) {
       try { configDirWatcher.close(); } catch {}
@@ -452,6 +458,12 @@ async function createWatchController({
         if (name !== SETTING_BINDING) return;
         try {
           const { key, value } = JSON.parse(payload);
+          if (key === '__fileAction' && value && typeof value === 'object') {
+            import('./sidecars/panel/lib/file-actions.mjs')
+              .then((m) => m.dispatchFileAction(value))
+              .catch((err) => log(`[!] 文件操作失败: ${err && err.message ? err.message : err}`));
+            return;
+          }
           if (cdpApi.updateConfigSetting(key, value)) {
             currentConfig = cdpApi.readConfig();
             log(`[⚙] 设置已保存: ${key} = ${JSON.stringify(value)}`);
@@ -558,6 +570,7 @@ async function createWatchController({
                 }
               }
               if (
+                allowAutoRelaunch &&
                 currentConfig.autoRelaunchWithCdp === true &&
                 relaunchedPidSig !== pidSig &&
                 Date.now() - lastRelaunchAt >= 60000
@@ -634,6 +647,17 @@ async function createWatchController({
     if (!filename || !/\.(css|js|json)$/i.test(filename) || filename.startsWith('.')) return;
     scheduleHotReload(filename);
   });
+
+  const featuresDir = path.join(__dirname, 'features');
+  if (fs.existsSync(featuresDir)) {
+    try {
+      featuresWatcher = fs.watch(featuresDir, (_, filename) => {
+        if (!filename || !/\.js$/i.test(filename) || filename.startsWith('.')) return;
+        scheduleHotReload(`features/${filename}`);
+      });
+      if (typeof featuresWatcher.unref === 'function') featuresWatcher.unref();
+    } catch {}
+  }
 
   const cfgDir = path.dirname(cdpApi.CONFIG_FILE);
   const cfgBase = path.basename(cdpApi.CONFIG_FILE);

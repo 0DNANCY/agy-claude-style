@@ -5388,7 +5388,7 @@
   // Self-contained features live in ui-<feature>.js and register on
   // globalThis.__agCsFeatures.<name> = { create(ctx) }. Each instance may expose
   // sync(), onClick(ev), onKeyDown(ev) -> boolean (consumed), onEscape(ev, info), destroy().
-  const FEATURE_ORDER = ['rewind'];
+  const FEATURE_ORDER = ['rewind', 'branchEdit', 'fileMenu', 'taskProgress'];
   const featureCtx = {
     getCfg: () => cfg,
     getUi: () => uiText(getLang()),
@@ -5937,7 +5937,7 @@
       });
       document
         .querySelectorAll(
-          '.ag-cs-inline-stats, .ag-cs-quota-ring, .ag-cs-context-ring, .ag-cs-hud-top-bar, .ag-cs-hud-bottom-bar, .ag-cs-hud-rim-progress, .ag-cs-hud-footer-chip, .ag-cs-perf-backdrop, .ag-cs-rewind-bar, .ag-cs-rewind-notice, .ag-cs-rewind-backdrop, #' + SETTINGS_SEC_ID
+          '.ag-cs-inline-stats, .ag-cs-quota-ring, .ag-cs-context-ring, .ag-cs-hud-top-bar, .ag-cs-hud-bottom-bar, .ag-cs-hud-rim-progress, .ag-cs-hud-footer-chip, .ag-cs-perf-backdrop, .ag-cs-rewind-bar, .ag-cs-rewind-notice, .ag-cs-rewind-backdrop, .ag-cs-branch-btn, .ag-cs-edit-btn, .ag-cs-inline-edit, .ag-cs-file-menu, .ag-cs-progress-card, .ag-cs-action-toast, #' + SETTINGS_SEC_ID
         )
         .forEach((el) => el.remove());
       const html = document.documentElement;

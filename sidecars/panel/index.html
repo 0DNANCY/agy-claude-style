@@ -5,858 +5,252 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Claude Style</title>
   <script src="/preload.js"></script>
-  <style>
-    :root {
-      color-scheme: light dark;
-      --bg: var(--background, #141518);
-      --fg: var(--foreground, #eceef2);
-      --muted-fg: var(--muted-foreground, #969aa6);
-      --card-bg: var(--card, rgba(255, 255, 255, 0.04));
-      --border-col: var(--border, rgba(255, 255, 255, 0.1));
-      --divider-col: rgba(255, 255, 255, 0.07);
-      --control-bg: rgba(255, 255, 255, 0.06);
-      --control-hover: rgba(255, 255, 255, 0.1);
-      --brand-accent: #d97757;
-      --brand-accent-soft: rgba(217, 119, 87, 0.14);
-      --switch-off: rgba(255, 255, 255, 0.18);
-      --ok: #3fb950;
-      --ok-soft: rgba(63, 185, 80, 0.14);
-      --warn: #d29922;
-      --warn-bg: rgba(210, 153, 34, 0.14);
-      --warn-border: rgba(210, 153, 34, 0.42);
-      --toast-bg: rgba(24, 25, 29, 0.95);
-      --toast-fg: #f4f5f8;
-      --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.22);
-      --radius: 12px;
-    }
-    @media (prefers-color-scheme: light) {
-      :root:not([data-theme="dark"]) {
-        --bg: var(--background, #f6f7f9);
-        --fg: var(--foreground, #181a1f);
-        --muted-fg: var(--muted-foreground, #646974);
-        --card-bg: var(--card, #ffffff);
-        --border-col: var(--border, rgba(15, 23, 42, 0.09));
-        --divider-col: rgba(15, 23, 42, 0.06);
-        --control-bg: #f4f5f8;
-        --control-hover: #eceef3;
-        --switch-off: rgba(15, 23, 42, 0.16);
-        --ok: #1f9d4c;
-        --ok-soft: rgba(31, 157, 76, 0.1);
-        --warn-bg: rgba(210, 153, 34, 0.1);
-        --toast-bg: rgba(24, 26, 31, 0.94);
-        --toast-fg: #ffffff;
-        --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.04);
-      }
-    }
-    :root[data-theme="light"] {
-      --bg: var(--background, #f6f7f9);
-      --fg: var(--foreground, #181a1f);
-      --muted-fg: var(--muted-foreground, #646974);
-      --card-bg: var(--card, #ffffff);
-      --border-col: var(--border, rgba(15, 23, 42, 0.09));
-      --divider-col: rgba(15, 23, 42, 0.06);
-      --control-bg: #f4f5f8;
-      --control-hover: #eceef3;
-      --switch-off: rgba(15, 23, 42, 0.16);
-      --ok: #1f9d4c;
-      --ok-soft: rgba(31, 157, 76, 0.1);
-      --warn-bg: rgba(210, 153, 34, 0.1);
-      --toast-bg: rgba(24, 26, 31, 0.94);
-      --toast-fg: #ffffff;
-      --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.04);
-    }
-    :root[data-theme="dark"] {
-      --bg: var(--background, #141518);
-      --fg: var(--foreground, #eceef2);
-      --muted-fg: var(--muted-foreground, #969aa6);
-      --card-bg: var(--card, rgba(255, 255, 255, 0.04));
-      --border-col: var(--border, rgba(255, 255, 255, 0.1));
-      --divider-col: rgba(255, 255, 255, 0.07);
-      --control-bg: #1e2025;
-      --control-hover: #272a31;
-      --switch-off: rgba(255, 255, 255, 0.18);
-      --ok: #3fb950;
-      --ok-soft: rgba(63, 185, 80, 0.14);
-      --warn-bg: rgba(210, 153, 34, 0.14);
-      --toast-bg: rgba(24, 25, 29, 0.95);
-      --toast-fg: #f4f5f8;
-      --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.22);
-    }
-    * { box-sizing: border-box; }
-    html {
-      scrollbar-width: thin;
-      scrollbar-color: var(--border-col) transparent;
-    }
-    body {
-      margin: 0;
-      padding: 12px 14px 18px;
-      background: var(--bg);
-      color: var(--fg);
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", Roboto, sans-serif;
-      font-size: 13px;
-      line-height: 1.45;
-      -webkit-font-smoothing: antialiased;
-    }
-
-    /* Header Card */
-    .header-card {
-      background: var(--card-bg);
-      border: 1px solid var(--border-col);
-      border-radius: var(--radius);
-      padding: 12px;
-      margin-bottom: 12px;
-      box-shadow: var(--shadow-sm);
-    }
-    .header-top {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 10px;
-      margin-bottom: 11px;
-    }
-    .brand {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      min-width: 0;
-    }
-    .brand-badge {
-      width: 36px;
-      height: 36px;
-      border-radius: 10px;
-      background: linear-gradient(135deg, rgba(217, 119, 87, 0.18) 0%, rgba(167, 139, 250, 0.18) 100%);
-      border: 1px solid rgba(217, 119, 87, 0.34);
-      display: grid;
-      place-items: center;
-      flex: 0 0 auto;
-    }
-    .brand-badge svg {
-      width: 28px;
-      height: 28px;
-      display: block;
-    }
-    .brand-info { min-width: 0; }
-    .brand-title {
-      font-weight: 650;
-      font-size: 14px;
-      letter-spacing: -0.01em;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-    .brand-sub {
-      font-size: 11px;
-      color: var(--muted-fg);
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-    .status-pill {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      padding: 4px 10px;
-      border-radius: 999px;
-      font-size: 11px;
-      font-weight: 500;
-      border: 1px solid var(--border-col);
-      background: var(--control-bg);
-      color: var(--muted-fg);
-      white-space: nowrap;
-      flex-shrink: 0;
-    }
-    .status-pill.is-ok {
-      background: var(--ok-soft);
-      border-color: rgba(63, 185, 80, 0.3);
-      color: var(--ok);
-    }
-    .dot {
-      width: 7px;
-      height: 7px;
-      border-radius: 50%;
-      background: var(--warn);
-      flex-shrink: 0;
-    }
-    .dot.ok { background: var(--ok); }
-
-    /* Balanced Action Grid */
-    .actions {
-      display: flex;
-      flex-direction: column;
-      gap: 7px;
-    }
-    .actions-secondary {
-      display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 6px;
-    }
-    button {
-      appearance: none;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      gap: 5px;
-      width: 100%;
-      min-height: 32px;
-      border: 1px solid var(--border-col);
-      background: var(--control-bg);
-      color: var(--fg);
-      padding: 6px 8px;
-      border-radius: 8px;
-      font-size: 12px;
-      font-weight: 500;
-      cursor: pointer;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      transition: background 140ms ease, border-color 140ms ease, transform 90ms ease, filter 140ms ease;
-    }
-    button:hover {
-      border-color: rgba(217, 119, 87, 0.55);
-      background: var(--control-hover);
-    }
-    button:active { transform: scale(0.985); }
-    button.primary {
-      min-height: 35px;
-      background: linear-gradient(180deg, color-mix(in srgb, var(--brand-accent) 88%, #ffffff 12%) 0%, var(--brand-accent) 100%);
-      border-color: var(--brand-accent);
-      color: #ffffff;
-      font-weight: 600;
-      box-shadow: 0 2px 8px color-mix(in srgb, var(--brand-accent) 28%, transparent);
-    }
-    button.primary:hover {
-      filter: brightness(1.06);
-      background: linear-gradient(180deg, color-mix(in srgb, var(--brand-accent) 88%, #ffffff 12%) 0%, var(--brand-accent) 100%);
-    }
-    button:disabled { opacity: 0.55; cursor: wait; transform: none; }
-
-    /* CDP Alert Banner */
-    .banner {
-      display: none;
-      padding: 10px 12px;
-      border-radius: var(--radius);
-      background: var(--warn-bg);
-      border: 1px solid var(--warn-border);
-      font-size: 12px;
-      margin-bottom: 12px;
-    }
-    .banner.show { display: block; }
-    .banner-title { font-weight: 600; margin-bottom: 3px; }
-    .banner-desc { font-size: 11.5px; color: var(--muted-fg); margin-bottom: 8px; }
-
-    /* Collapsible Section Cards */
-    .section {
-      background: var(--card-bg);
-      border: 1px solid var(--border-col);
-      border-radius: var(--radius);
-      padding: 0;
-      margin-bottom: 10px;
-      box-shadow: var(--shadow-sm);
-      overflow: hidden;
-    }
-    button.section-head {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 8px;
-      width: 100%;
-      min-height: 0;
-      margin: 0;
-      padding: 11px 13px;
-      border: none;
-      border-radius: 0;
-      background: transparent;
-      color: var(--fg);
-      text-align: left;
-      cursor: pointer;
-    }
-    button.section-head:hover {
-      border-color: transparent;
-      background: var(--control-bg);
-    }
-    button.section-head:active { transform: none; }
-    .section-title {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      font-size: 12.5px;
-      font-weight: 650;
-      color: var(--fg);
-    }
-    .section-head-right {
-      display: inline-flex;
-      align-items: center;
-      gap: 7px;
-      flex-shrink: 0;
-    }
-    .section-badge {
-      font-size: 11px;
-      font-weight: 500;
-      color: var(--muted-fg);
-      background: var(--control-bg);
-      border: 1px solid var(--border-col);
-      padding: 1px 7px;
-      border-radius: 999px;
-      white-space: nowrap;
-    }
-    .section-chevron {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      width: 16px;
-      height: 16px;
-      color: var(--muted-fg);
-      transition: transform 160ms cubic-bezier(0.22, 1, 0.36, 1);
-    }
-    .section.is-collapsed .section-chevron { transform: rotate(-90deg); }
-    .section-body {
-      padding: 0 13px 4px;
-      border-top: 1px solid var(--divider-col);
-    }
-    .section.is-collapsed .section-body { display: none; }
-
-    /* Setting Rows (Single clean horizontal row) */
-    .row {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 12px;
-      padding: 9px 0;
-      border-top: 1px solid var(--divider-col);
-    }
-    .row:first-of-type { border-top: none; }
-    .row.is-dimmed {
-      opacity: 0.42;
-      transition: opacity 150ms ease;
-    }
-    .row.is-dimmed select,
-    .row.is-dimmed .switch { cursor: not-allowed; }
-    .row-label {
-      display: flex;
-      flex-direction: column;
-      gap: 2px;
-      min-width: 0;
-      flex: 1;
-    }
-    .row-name {
-      font-weight: 550;
-      font-size: 12.5px;
-      color: var(--fg);
-    }
-    .row-desc {
-      font-size: 11px;
-      line-height: 1.4;
-      color: var(--muted-fg);
-    }
-
-    /* Sleek Select */
-    select {
-      appearance: none;
-      -webkit-appearance: none;
-      background-color: var(--control-bg);
-      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%238a8f9b' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
-      background-repeat: no-repeat;
-      background-position: right 8px center;
-      color: var(--fg);
-      border: 1px solid var(--border-col);
-      border-radius: 8px;
-      padding: 5px 26px 5px 9px;
-      font-size: 12px;
-      font-weight: 500;
-      width: 138px;
-      flex-shrink: 0;
-      cursor: pointer;
-      transition: border-color 140ms ease, background-color 140ms ease;
-    }
-    select:hover:not(:disabled) {
-      border-color: rgba(217, 119, 87, 0.55);
-      background-color: var(--control-hover);
-    }
-    select:focus {
-      outline: none;
-      border-color: var(--brand-accent);
-    }
-
-    /* Pill Toggle Switch */
-    .switch {
-      position: relative;
-      display: inline-flex;
-      align-items: center;
-      width: 36px;
-      height: 20px;
-      flex-shrink: 0;
-      cursor: pointer;
-    }
-    .switch input {
-      position: absolute;
-      opacity: 0;
-      width: 0;
-      height: 0;
-      margin: 0;
-    }
-    .switch-track {
-      position: absolute;
-      inset: 0;
-      border-radius: 999px;
-      background: var(--switch-off);
-      transition: background 160ms ease, box-shadow 160ms ease;
-    }
-    .switch-track::after {
-      content: '';
-      position: absolute;
-      top: 2px;
-      left: 2px;
-      width: 16px;
-      height: 16px;
-      border-radius: 50%;
-      background: #ffffff;
-      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.26);
-      transition: transform 160ms cubic-bezier(0.22, 1, 0.36, 1);
-    }
-    .switch input:checked + .switch-track {
-      background: var(--brand-accent);
-      box-shadow: 0 0 0 2px var(--brand-accent-soft);
-    }
-    .switch input:checked + .switch-track::after {
-      transform: translateX(16px);
-    }
-
-    /* Compact Companion Status Footer */
-    .companion-strip {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 6px;
-      padding: 8px 0 6px;
-      border-top: 1px solid var(--divider-col);
-    }
-    .chip {
-      display: inline-flex;
-      align-items: center;
-      gap: 5px;
-      padding: 2px 8px;
-      border-radius: 999px;
-      font-size: 11px;
-      color: var(--muted-fg);
-      background: var(--control-bg);
-      border: 1px solid var(--border-col);
-    }
-    .chip.on {
-      color: var(--ok);
-      background: var(--ok-soft);
-      border-color: rgba(63, 185, 80, 0.28);
-    }
-
-    .toast {
-      position: sticky;
-      bottom: 10px;
-      margin-top: 8px;
-      padding: 8px 12px;
-      border-radius: 10px;
-      background: var(--toast-bg);
-      color: var(--toast-fg);
-      border: 1px solid rgba(217, 119, 87, 0.65);
-      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.24);
-      font-size: 12px;
-      text-align: center;
-      display: none;
-    }
-    .toast.show { display: block; }
-  </style>
+  <link rel="stylesheet" href="/ui/panel.css" />
 </head>
 <body>
-  <div class="header-card">
-    <div class="header-top">
-      <div class="brand">
-        <div class="brand-badge">
-          <svg viewBox="0 0 64 64" aria-hidden="true">
-            <rect x="3" y="3" width="58" height="58" rx="14" fill="#1B1918" stroke="#D97757" stroke-width="3"/>
-            <g fill="#E07A58">
-              <rect x="14" y="13" width="6" height="6"/><rect x="44" y="13" width="6" height="6"/>
-              <rect x="11" y="19" width="9" height="4"/><rect x="44" y="19" width="9" height="4"/>
-              <rect x="14" y="23" width="36" height="17" rx="2"/><rect x="10" y="34" width="44" height="6" rx="1"/>
-              <rect x="14" y="40" width="6" height="7"/><rect x="23" y="40" width="5" height="6"/>
-              <rect x="36" y="40" width="5" height="6"/><rect x="44" y="40" width="6" height="7"/>
-            </g>
-            <g fill="#1B1918"><rect x="22" y="27" width="4" height="6"/><rect x="38" y="27" width="4" height="6"/></g>
-          </svg>
+  <div class="tab-bar">
+    <button type="button" class="tab-btn is-active" data-tab="control" id="tab-control">⚙ 控制室</button>
+    <button type="button" class="tab-btn" data-tab="dashboard" id="tab-dashboard">📊 用量看板</button>
+    <button type="button" class="tab-btn" data-tab="remote" id="tab-remote">🌐 代理与远程</button>
+  </div>
+
+  <!-- TAB 1: Control Room -->
+  <div class="tab-pane is-active" id="pane-control">
+    <div class="header-card">
+      <div class="header-top">
+        <div class="brand">
+          <div class="brand-badge">
+            <svg viewBox="0 0 64 64" aria-hidden="true">
+              <rect x="3" y="3" width="58" height="58" rx="14" fill="#1B1918" stroke="#D97757" stroke-width="3"/>
+              <g fill="#E07A58">
+                <rect x="14" y="13" width="6" height="6"/><rect x="44" y="13" width="6" height="6"/>
+                <rect x="11" y="19" width="9" height="4"/><rect x="44" y="19" width="9" height="4"/>
+                <rect x="14" y="23" width="36" height="17" rx="2"/><rect x="10" y="34" width="44" height="6" rx="1"/>
+                <rect x="14" y="40" width="6" height="7"/><rect x="23" y="40" width="5" height="6"/>
+                <rect x="36" y="40" width="5" height="6"/><rect x="44" y="40" width="6" height="7"/>
+              </g>
+              <g fill="#1B1918"><rect x="22" y="27" width="4" height="6"/><rect x="38" y="27" width="4" height="6"/></g>
+            </svg>
+          </div>
+          <div class="brand-info">
+            <div class="brand-title" id="brand-title">Claude Style</div>
+            <div class="brand-sub" id="meta-line">加载中…</div>
+          </div>
         </div>
-        <div class="brand-info">
-          <div class="brand-title" id="brand-title">Claude Style</div>
-          <div class="brand-sub" id="meta-line">加载中…</div>
+        <div class="status-pill" id="status-pill">
+          <span class="dot" id="status-dot"></span>
+          <span id="status-text">检查中</span>
         </div>
       </div>
-      <div class="status-pill" id="status-pill">
-        <span class="dot" id="status-dot"></span>
-        <span id="status-text">检查中</span>
+      <div class="actions">
+        <button type="button" class="primary" id="btn-reinject">✦ 立即应用并刷新</button>
+        <div class="actions-secondary">
+          <button type="button" id="btn-remove">还原原生</button>
+          <button type="button" id="btn-reset">恢复默认</button>
+          <button type="button" id="btn-refresh">刷新状态</button>
+        </div>
       </div>
     </div>
-    <div class="actions">
-      <button type="button" class="primary" id="btn-reinject">✦ 立即应用并刷新</button>
-      <div class="actions-secondary">
-        <button type="button" id="btn-remove">还原原生</button>
-        <button type="button" id="btn-reset">恢复默认</button>
-        <button type="button" id="btn-refresh">刷新状态</button>
+
+    <div class="banner" id="cdp-banner">
+      <div class="banner-title" id="cdp-banner-title">未检测到 Antigravity 调试端口</div>
+      <div class="banner-desc" id="cdp-banner-desc">Antigravity 2.33+ 默认关闭 CDP 调试端口，点击下方按钮可带参安全重启。</div>
+      <button type="button" class="primary" id="btn-relaunch">一键带调试端口重启</button>
+    </div>
+
+    <div id="sections"></div>
+  </div>
+
+  <!-- TAB 2: Usage & Request Records Dashboard -->
+  <div class="tab-pane" id="pane-dashboard">
+    <div class="dash-topbar">
+      <select id="dash-range">
+        <option value="today">今天</option>
+        <option value="24h">24 小时</option>
+        <option value="7d" selected>近 7 天</option>
+        <option value="30d">近 30 天</option>
+        <option value="all">全部时间</option>
+      </select>
+      <div class="dash-top-actions">
+        <span class="dash-updated" id="dash-updated"></span>
+        <button type="button" class="auto-pill is-on" id="btn-dash-auto" title="切换 5 秒自动刷新"></button>
+        <button type="button" class="icon-mini-btn" id="btn-dash-refresh" title="立即刷新并同步 SSH">↻</button>
+      </div>
+    </div>
+
+    <div class="kpi-grid">
+      <div class="kpi-card">
+        <div class="kpi-label">请求次数</div>
+        <div class="kpi-val" id="kpi-reqs">-</div>
+        <div class="kpi-sub" id="kpi-errs"></div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">总 Token</div>
+        <div class="kpi-val" id="kpi-tokens">-</div>
+        <div class="kpi-sub" id="kpi-cost">参考费用 $-</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">缓存命中率</div>
+        <div class="kpi-val" id="kpi-cache">-</div>
+        <div class="kpi-sub" id="kpi-anomaly"></div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">数据源</div>
+        <div class="kpi-val" id="kpi-src" style="font-size:13px;">本机</div>
+        <div class="kpi-sub" id="kpi-latency">平均响应 -</div>
+      </div>
+    </div>
+
+    <div class="section" id="sec-heatmap">
+      <button type="button" class="section-head" id="heat-head">
+        <span class="section-title">🟩 53 周用量热力图</span>
+        <span class="section-badge" id="heat-summary">自动定位今日</span>
+      </button>
+      <div class="section-body">
+        <div class="heat-toolbar">
+          <div class="heat-seg" id="heat-metric-seg" role="group">
+            <button type="button" data-metric="tokens" class="is-active">Token</button>
+            <button type="button" data-metric="count">请求</button>
+            <button type="button" data-metric="cost">费用</button>
+          </div>
+          <button type="button" class="heat-today-btn" id="btn-heat-today">定位今日</button>
+        </div>
+        <div class="heat-today-strip" id="heat-today-strip">
+          <span id="heat-today-text">今日：加载中…</span>
+          <button type="button" id="btn-filter-today" style="min-height:22px;padding:1px 7px;font-size:10.5px;">只看今日</button>
+        </div>
+        <div class="heat-body-row">
+          <div class="heat-weekdays" aria-hidden="true">
+            <span></span><span>一</span><span></span><span>三</span><span></span><span>五</span><span></span>
+          </div>
+          <div class="heatmap-wrap" id="heatmap-wrap"><div class="heatmap-cols" id="heatmap-grid"></div></div>
+        </div>
+        <div class="heat-foot">
+          <span>悬浮查看明细 · 点击按日筛选</span>
+          <span class="heat-legend">少<i data-l="0"></i><i data-l="1"></i><i data-l="2"></i><i data-l="3"></i><i data-l="4"></i>多</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="section" id="sec-requests">
+      <div class="section-head" style="cursor:default;">
+        <span class="section-title">📋 单次请求记录</span>
+        <span class="section-badge" id="req-count">0 条</span>
+      </div>
+      <div class="section-body">
+        <div class="req-filters">
+          <div class="req-filter-top">
+            <div class="status-pills" id="req-status-pills" role="group">
+              <button type="button" data-status="all" class="is-active">全部</button>
+              <button type="button" data-status="anomaly">⚠ 掉缓存</button>
+              <button type="button" data-status="error">✕ 报错</button>
+            </div>
+            <select id="dash-model"><option value="">全部模型</option></select>
+          </div>
+          <input type="text" id="dash-search" placeholder="搜索会话标题 / 模型 / 会话ID / 报错…" />
+          <div class="active-chips" id="req-active-chips"></div>
+        </div>
+        <div class="req-list" id="req-list"></div>
+        <div class="req-pager" id="req-pager" style="display:none;"></div>
+      </div>
+    </div>
+  </div>
+  <div class="heat-tooltip" id="heat-tooltip" role="tooltip"></div>
+
+  <!-- TAB 3: SSH Remote & TUN-Free Proxy -->
+  <div class="tab-pane" id="pane-remote">
+    <div class="section">
+      <div class="section-head" style="cursor:default;">
+        <span class="section-title">🖥 SSH 远程会话统计（默认关闭）</span>
+        <span class="section-badge" id="ssh-badge">关闭</span>
+      </div>
+      <div class="section-body">
+        <div class="row">
+          <div class="row-label">
+            <div class="row-name">启用 SSH 远端用量合并</div>
+            <div class="row-desc">无远端落盘：通过本机 ssh 只读拉取远端会话统计并入看板</div>
+          </div>
+          <label class="switch"><input type="checkbox" id="sw-ssh-enabled" /><span class="switch-track"></span></label>
+        </div>
+        <div class="field-stack">
+          <div class="field-label">SSH 主机名（支持 ~/.ssh/config 别名）</div>
+          <input type="text" id="inp-ssh-host" list="ssh-host-list" placeholder="例如：my-dev-server 或 user@10.0.0.2" />
+          <datalist id="ssh-host-list"></datalist>
+          <div class="btn-2col">
+            <button type="button" id="btn-ssh-save">保存主机</button>
+            <button type="button" class="primary" id="btn-ssh-sync">同步远端统计</button>
+          </div>
+          <div class="status-note" id="ssh-note">未同步</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-head" style="cursor:default;">
+        <span class="section-title">🌐 免 TUN 独立代理（默认关闭）</span>
+        <span class="section-badge" id="proxy-badge">关闭</span>
+      </div>
+      <div class="section-body">
+        <div class="row">
+          <div class="row-label">
+            <div class="row-name">启用独立代理启动参数</div>
+            <div class="row-desc">仅注入 Antigravity 启动参数与环境变量，不改系统全局代理或应用签名</div>
+          </div>
+          <label class="switch"><input type="checkbox" id="sw-proxy-enabled" /><span class="switch-track"></span></label>
+        </div>
+        <div class="field-stack">
+          <div class="field-label">代理地址（http / https / socks5）</div>
+          <input type="text" id="inp-proxy-url" placeholder="例如：http://127.0.0.1:7890 或 socks5://127.0.0.1:7891" />
+          <div class="field-label" style="margin-top:4px;">绕过列表（始终保留 localhost,127.0.0.1,::1）</div>
+          <input type="text" id="inp-proxy-bypass" placeholder="localhost,127.0.0.1,::1" />
+          <div class="row" style="border-top:none;padding:6px 0 2px;">
+            <div class="row-label">
+              <div class="row-name">强制 HTTP/1.1（GODEBUG=http2client=0）</div>
+              <div class="row-desc">排查代理下流式 EOF / HTTP2 断连时可开启</div>
+            </div>
+            <label class="switch"><input type="checkbox" id="sw-proxy-h1" /><span class="switch-track"></span></label>
+          </div>
+          <div class="btn-2col" style="margin-top:4px;">
+            <button type="button" id="btn-proxy-save">保存配置</button>
+            <button type="button" id="btn-proxy-test">测试连通性</button>
+          </div>
+          <button type="button" class="primary" id="btn-proxy-relaunch">✦ 带代理与 CDP 重启 Antigravity</button>
+          <div class="status-note" id="proxy-note">未测试</div>
+        </div>
       </div>
     </div>
   </div>
 
-  <div class="banner" id="cdp-banner">
-    <div class="banner-title" id="cdp-banner-title">未检测到 Antigravity 调试端口</div>
-    <div class="banner-desc" id="cdp-banner-desc">Antigravity 2.33+ 默认关闭 CDP 调试端口，点击下方按钮可带参重启。</div>
-    <button type="button" class="primary" id="btn-relaunch">一键带调试端口重启</button>
-  </div>
-
-  <div id="sections"></div>
   <div class="toast" id="toast"></div>
 
+  <script src="/ui/control-tab.js"></script>
+  <script src="/ui/dashboard-tab.js"></script>
+  <script src="/ui/remote-tab.js"></script>
   <script>
-    const TEXTS = {
-      'zh-CN': {
-        brandTitle: 'Claude Style',
-        loading: '加载中…',
-        checking: '检查中',
-        connected: (p, n) => `CDP :${p} · ${n} 目标`,
-        waitingPort: '等待调试端口',
-        disconnected: '未连接',
-        watcherOn: (pid) => `守护运行中 (PID ${pid})`,
-        watcherOff: '守护未运行',
-        cdpTitle: '未检测到 Antigravity 调试端口',
-        cdpDesc: 'Antigravity 2.33+ 默认关闭远程调试端口，点击下方按钮可带 --remote-debugging-port=0 重启。',
-        btnRelaunch: '一键带调试端口重启',
-        relaunching: '正在带调试端口重启 Antigravity…',
-        btnReinject: '✦ 立即应用并刷新',
-        btnRemove: '还原原生',
-        btnReset: '恢复默认',
-        btnRefresh: '刷新状态',
-        actionOk: (l) => `${l.replace(/^✦\s*/, '')}成功`,
-        actionFail: (l, e) => `${l.replace(/^✦\s*/, '')}失败：${e}`,
-        savedToast: (k) => `已更新 ${k}，实时生效`,
-        invalidToast: (k) => `配置项 ${k} 校验失败`,
-        saveErrToast: (e) => `保存失败：${e}`,
-        grpBasics: '基础设置',
-        grpLayout: '界面与材质',
-        grpAdvanced: '进阶互动',
-        grpTelemetry: '用量与圆环',
-        countBadge: (n) => `${n} 项`,
-        chipTargets: (w, s) => `窗口 ${w} · Swarm ${s}`,
-        items: {
-          language: ['界面语言', '切换全局 5 语言翻译（含 Swarm 侧栏），保护代码原文', [['zh-CN', '简体中文'], ['zh-TW', '繁體中文'], ['yue', '粵語'], ['en', 'English'], ['ja', '日本語']]],
-          homeLayout: ['首页布局', '新对话首页：用量看板 / 经典居中 / 原生', [['studio', '用量看板'], ['classic', '经典居中'], ['off', '原生首页']]],
-          palette: ['主题配色', '选择黑曜石、Claude 暖灰或保持宿主原生配色', [['obsidian', '黑曜石'], ['claude', 'Claude 暖灰'], ['host', '宿主原生']]],
-          glassEffect: ['毛玻璃质感', '为输入框、浮层与 Rewind 条添加磨砂高光边框、看图胶囊及聚焦柔光'],
-          sidebarRestyle: ['侧边栏美化', '应用 Claude 风格侧栏行高与悬停高亮'],
-          sidebarCompact: ['紧凑侧边栏', '收紧列表间距，同屏显示更多对话'],
-          composerRestyle: ['Claude 风格输入框', '采用圆角输入框与极简底栏布局'],
-          placeholderStyle: ['输入框引导语', '选择 Claude 风格引导语或保留原生提示', [['studio', 'Claude 风格'], ['host', '原生提示']]],
-          logoInk: ['首页 Logo 色彩', '首页顶部标志使用强调色或跟随文字色', [['accent', '主题强调色'], ['foreground', '跟随文字色']]],
-          rewindPanel: ['Rewind 回退条', '输入 /rewind 或双击 Esc 在输入框上方打开时间线回退面板'],
-          undoConfirmMode: ['消息撤销行为', '点击消息旁 Undo 时的默认处理模式', [['picker', 'Rewind 面板'], ['prompt', '原生确认'], ['auto_both', '自动(代码+对话)'], ['auto_chat', '自动(仅对话)']]],
-          effortSliderStyle: ['思考强度滑块', '点击模型思考等级时弹出的滑块样式', [['claude', 'Claude Code'], ['chatgpt', 'ChatGPT Codex'], ['liangwufeng', '梁武锋']]],
-          effortAccent: ['Claude 推理色阶', 'Claude 模式下按思考等级显示蓝紫渐变'],
-          performanceBackdrop: ['性能模式背景', '梁武锋滑块的背景展示方式', [['card', '卡片背景'], ['page', '全屏背景'], ['off', '关闭']]],
-          smoothCaret: ['丝滑打字光标', '打字时平滑插值滑动，兼容多行与中文输入法'],
-          mascot: ['像素小螃蟹 Clawd', '输入框右上角像素小螃蟹，随思考与回复状态实时互动'],
-          homeRipple: ['首页字符波纹海', '点击首页空白处触发字符水波扩散动画'],
-          inlineStats: ['底栏统计与圆环', '在输入框底栏渲染用量统计与圆环按钮'],
-          ringMode: ['右下角圆环模式', '切换单圆环或双圆环（左配额剩余 + 右上下文占用）', [['context', '上下文剩余'], ['quota', '配额剩余'], ['both', '双圆环']]],
-          turnBadges: ['每轮 #T 徽章', '在每轮 AI 回复底部显示上下文增量、输出与速率'],
-          hudTopBar: ['顶部上下文条', '在输入框上方显示上下文占比分段进度条'],
-          hudBottomBar: ['底部详情统计栏', '在输入框下方显示本对话详细 Token 与配额条'],
-          hudRimProgress: ['流光边框进度', '沿输入框边线显示上下文实时占比进度'],
-          hudFooterChip: ['底栏配额胶囊', '在底栏显示剩余容量与当前模型配额胶囊'],
-          hudCompact: ['紧凑 HUD 样式', '缩小上述用量条与圆环的边距字号，更省空间'],
-        },
-      },
-      'zh-TW': {
-        brandTitle: 'Claude Style',
-        loading: '載入中…',
-        checking: '檢查中',
-        connected: (p, n) => `CDP :${p} · ${n} 目標`,
-        waitingPort: '等待偵錯埠',
-        disconnected: '未連線',
-        watcherOn: (pid) => `守護運行中 (PID ${pid})`,
-        watcherOff: '守護未運行',
-        cdpTitle: '未偵測到 Antigravity 偵錯埠',
-        cdpDesc: 'Antigravity 2.33+ 預設關閉遠端偵錯埠，點擊下方按鈕可帶參重啟。',
-        btnRelaunch: '一鍵帶偵錯埠重啟',
-        relaunching: '正在重啟 Antigravity…',
-        btnReinject: '✦ 立即套用並重新整理',
-        btnRemove: '還原原生',
-        btnReset: '重設預設',
-        btnRefresh: '重新整理',
-        actionOk: (l) => `${l.replace(/^✦\s*/, '')}成功`,
-        actionFail: (l, e) => `${l.replace(/^✦\s*/, '')}失敗：${e}`,
-        savedToast: (k) => `已更新 ${k}，即時生效`,
-        invalidToast: (k) => `設定項 ${k} 驗證失敗`,
-        saveErrToast: (e) => `儲存失敗：${e}`,
-        grpBasics: '基礎設定',
-        grpLayout: '介面與材質',
-        grpAdvanced: '進階互動',
-        grpTelemetry: '用量與圓環',
-        countBadge: (n) => `${n} 項`,
-        chipTargets: (w, s) => `視窗 ${w} · Swarm ${s}`,
-        items: {
-          language: ['介面語言', '切換全域 5 語言翻譯（含 Swarm 側欄）', [['zh-CN', '简体中文'], ['zh-TW', '繁體中文'], ['yue', '粵語'], ['en', 'English'], ['ja', '日本語']]],
-          homeLayout: ['首頁版面', '新對話首頁：用量看板 / 經典置中 / 原生', [['studio', '用量看板'], ['classic', '經典置中'], ['off', '原生首頁']]],
-          palette: ['主題配色', '選擇黑曜石、Claude 暖灰或宿主原生配色', [['obsidian', '黑曜石'], ['claude', 'Claude 暖灰'], ['host', '宿主原生']]],
-          glassEffect: ['毛玻璃質感', '為輸入框、浮層與 Rewind 條加入磨砂高光邊框與聚焦柔光'],
-          sidebarRestyle: ['側邊欄美化', '套用 Claude 風格側欄行高與懸停高亮'],
-          sidebarCompact: ['緊湊側邊欄', '收緊清單間距以顯示更多對話'],
-          composerRestyle: ['Claude 風格輸入框', '採用圓角輸入框與極簡底列'],
-          placeholderStyle: ['輸入框引導語', '選擇 Claude 風格引導語或保留原生提示', [['studio', 'Claude 風格'], ['host', '原生提示']]],
-          logoInk: ['首頁 Logo 顏色', '首頁頂部標誌使用強調色或跟隨文字色', [['accent', '主題強調色'], ['foreground', '跟隨文字色']]],
-          rewindPanel: ['Rewind 回退條', '輸入 /rewind 或雙擊 Esc 在輸入框上方開啟時間線回退面板'],
-          undoConfirmMode: ['訊息復原行為', '點擊訊息旁 Undo 時的預設模式', [['picker', 'Rewind 面板'], ['prompt', '原生確認'], ['auto_both', '自動(程式+對話)'], ['auto_chat', '自動(僅對話)']]],
-          effortSliderStyle: ['思考強度滑桿', '點擊思考等級時彈出的滑桿樣式', [['claude', 'Claude Code'], ['chatgpt', 'ChatGPT Codex'], ['liangwufeng', '梁武鋒']]],
-          effortAccent: ['Claude 推理色階', 'Claude 模式下依思考等級顯示藍紫漸層'],
-          performanceBackdrop: ['效能模式背景', '梁武鋒滑桿的背景展示方式', [['card', '卡片背景'], ['page', '全螢幕背景'], ['off', '關閉']]],
-          smoothCaret: ['絲滑打字游標', '平滑插值跟隨，相容多行與中文輸入法'],
-          mascot: ['像素小螃蟹 Clawd', '輸入框右上角像素小螃蟹，隨狀態即時互動'],
-          homeRipple: ['首頁字元波紋海', '點擊首頁空白處觸發字元水波動畫'],
-          inlineStats: ['底列統計與圓環', '在輸入框底列顯示用量統計與圓環按鈕'],
-          ringMode: ['右下角圓環模式', '切換單圓環或雙圓環（左配額剩餘 + 右上下文佔用）', [['context', '上下文剩餘'], ['quota', '配額剩餘'], ['both', '雙圓環']]],
-          turnBadges: ['每輪 #T 徽章', '於每輪 AI 回覆底部顯示上下文增量與速率'],
-          hudTopBar: ['頂部上下文條', '在輸入框上方顯示上下文佔比進度條'],
-          hudBottomBar: ['底部詳情統計列', '在輸入框下方顯示詳細 Token 與配額統計'],
-          hudRimProgress: ['流光邊框進度', '沿輸入框邊線顯示上下文使用進度'],
-          hudFooterChip: ['底列配額膠囊', '於底列顯示剩餘容量與配額標籤'],
-          hudCompact: ['緊湊 HUD 樣式', '縮小用量條與圓環邊距字號以節省空間'],
-        },
-      },
-      yue: {
-        brandTitle: 'Claude Style',
-        loading: '載入緊…',
-        checking: '檢查緊',
-        connected: (p, n) => `CDP :${p} · ${n} 目標`,
-        waitingPort: '等緊除錯埠',
-        disconnected: '未連接',
-        watcherOn: (pid) => `守護行緊 (PID ${pid})`,
-        watcherOff: '守護未開',
-        cdpTitle: '未搵到 Antigravity 除錯埠',
-        cdpDesc: 'Antigravity 2.33+ 預設閂咗除錯埠，撳下面粒掣即可帶參重開。',
-        btnRelaunch: '一鍵帶除錯埠重開',
-        relaunching: '重開緊 Antigravity…',
-        btnReinject: '✦ 即刻套用並刷新',
-        btnRemove: '還原原版',
-        btnReset: '重設預設',
-        btnRefresh: '刷新狀態',
-        actionOk: (l) => `${l.replace(/^✦\s*/, '')}搞掂`,
-        actionFail: (l, e) => `${l.replace(/^✦\s*/, '')}失敗：${e}`,
-        savedToast: (k) => `已更新 ${k}，即刻生效`,
-        invalidToast: (k) => `設定項 ${k} 校驗失敗`,
-        saveErrToast: (e) => `儲存失敗：${e}`,
-        grpBasics: '基礎設定',
-        grpLayout: '介面同材質',
-        grpAdvanced: '進階互動',
-        grpTelemetry: '用量同圓環',
-        countBadge: (n) => `${n} 項`,
-        chipTargets: (w, s) => `視窗 ${w} · Swarm ${s}`,
-        items: {
-          language: ['介面語言', '切換全介面 5 語言（含 Swarm 側欄）', [['zh-CN', '简体中文'], ['zh-TW', '繁體中文'], ['yue', '粵語'], ['en', 'English'], ['ja', '日本語']]],
-          homeLayout: ['首頁版面', '新對話首頁：用量看板 / 經典置中 / 原生', [['studio', '用量看板'], ['classic', '經典置中'], ['off', '原生首頁']]],
-          palette: ['主題配色', '揀黑曜石、Claude 暖灰或者原生配色', [['obsidian', '黑曜石'], ['claude', 'Claude 暖灰'], ['host', '宿主原生']]],
-          glassEffect: ['毛玻璃質感', '幫輸入框、浮層同 Rewind 條加磨砂高光框同聚焦柔光'],
-          sidebarRestyle: ['側邊欄美化', '套用 Claude 風格側欄行高同懸停高亮'],
-          sidebarCompact: ['緊湊側邊欄', '收窄列表間距，一屏睇多幾條對話'],
-          composerRestyle: ['Claude 風格輸入框', '圓角輸入框配極簡底欄'],
-          placeholderStyle: ['輸入框引導語', '揀 Claude 風格引導語定保留原版提示', [['studio', 'Claude 風格'], ['host', '原生提示']]],
-          logoInk: ['首頁 Logo 顏色', '首頁頂部標誌用強調色定跟隨文字色', [['accent', '主題強調色'], ['foreground', '跟隨文字色']]],
-          rewindPanel: ['Rewind 回退條', '打 /rewind 或連撳兩下 Esc 打開時間線回退面板'],
-          undoConfirmMode: ['還原掣行為', '撳訊息隔離 Undo 掣嘅預設動作', [['picker', 'Rewind 面板'], ['prompt', '原生確認'], ['auto_both', '自動(代碼+對話)'], ['auto_chat', '自動(只係對話)']]],
-          effortSliderStyle: ['思考強度滑桿', '撳思考等級彈出嘅滑桿樣式', [['claude', 'Claude Code'], ['chatgpt', 'ChatGPT Codex'], ['liangwufeng', '梁武鋒']]],
-          effortAccent: ['Claude 推理色階', 'Claude 模式下跟思考等級顯示藍紫漸變'],
-          performanceBackdrop: ['性能模式背景', '梁武鋒滑桿嘅背景顯示方式', [['card', '卡片背景'], ['page', '全屏背景'], ['off', '關閉']]],
-          smoothCaret: ['順滑打字光標', '打字時順滑跟住郁，支援多行同中文輸入法'],
-          mascot: ['像素小螃蟹 Clawd', '輸入框右上角像素小螃蟹，跟住狀態互動'],
-          homeRipple: ['首頁字符波紋海', '撳首頁空白位觸發字符水波擴散'],
-          inlineStats: ['底欄統計同圓環', '喺輸入框底欄顯示用量統計同圓環掣'],
-          ringMode: ['右下角圓環模式', '單圓環或者雙圓環（左配額剩低 + 右上下文佔用）', [['context', '上下文剩餘'], ['quota', '配額剩餘'], ['both', '雙圓環']]],
-          turnBadges: ['每輪 #T 徽章', '喺每輪 AI 回覆底顯示增量同速度'],
-          hudTopBar: ['頂部上下文條', '喺輸入框上面顯示上下文佔比進度條'],
-          hudBottomBar: ['底部詳情統計欄', '喺輸入框下面顯示詳細 Token 同配額條'],
-          hudRimProgress: ['流光邊框進度', '沿輸入框邊線顯示上下文進度'],
-          hudFooterChip: ['底欄配額膠囊', '喺底欄顯示剩低容量同配額標籤'],
-          hudCompact: ['緊湊 HUD 樣式', '縮細用量條同圓環邊距字號慳返位'],
-        },
-      },
-      en: {
-        brandTitle: 'Claude Style',
-        loading: 'Loading…',
-        checking: 'Checking',
-        connected: (p, n) => `CDP :${p} · ${n} targets`,
-        waitingPort: 'Waiting for CDP',
-        disconnected: 'Disconnected',
-        watcherOn: (pid) => `Watcher PID ${pid}`,
-        watcherOff: 'Watcher stopped',
-        cdpTitle: 'Antigravity CDP debug port not detected',
-        cdpDesc: 'Antigravity 2.33+ disables remote debugging by default. Click below to relaunch with --remote-debugging-port=0.',
-        btnRelaunch: 'Relaunch with Debug Port',
-        relaunching: 'Relaunching Antigravity…',
-        btnReinject: '✦ Apply & Refresh',
-        btnRemove: 'Vanilla UI',
-        btnReset: 'Defaults',
-        btnRefresh: 'Refresh',
-        actionOk: (l) => `${l.replace(/^✦\s*/, '')} complete`,
-        actionFail: (l, e) => `${l.replace(/^✦\s*/, '')} failed: ${e}`,
-        savedToast: (k) => `Updated ${k} (live)`,
-        invalidToast: (k) => `Invalid value for ${k}`,
-        saveErrToast: (e) => `Save failed: ${e}`,
-        grpBasics: 'Basic Settings',
-        grpLayout: 'UI & Material',
-        grpAdvanced: 'Interactions',
-        grpTelemetry: 'Usage & Rings',
-        countBadge: (n) => `${n}`,
-        chipTargets: (w, s) => `Main ${w} · Swarm ${s}`,
-        items: {
-          language: ['Interface Language', '5-language UI & Swarm translation (preserves code/chat)', [['zh-CN', '简体中文'], ['zh-TW', '繁體中文'], ['yue', '粵語'], ['en', 'English'], ['ja', '日本語']]],
-          homeLayout: ['Home Layout', 'New-chat home: Dashboard / Classic / Native', [['studio', 'Dashboard'], ['classic', 'Classic'], ['off', 'Native']]],
-          palette: ['Color Palette', 'Obsidian, Claude warm gray, or host native', [['obsidian', 'Obsidian'], ['claude', 'Claude'], ['host', 'Host Native']]],
-          glassEffect: ['Frosted Glass', 'Frosted surfaces with 1px specular borders, media capsules & focus halos'],
-          sidebarRestyle: ['Claude Sidebar', 'Claude-style sidebar row height and hover states'],
-          sidebarCompact: ['Compact Sidebar', 'Tighter list spacing to fit more chats'],
-          composerRestyle: ['Claude Composer', 'Rounded composer card with a clean minimal footer'],
-          placeholderStyle: ['Input Prompt', 'Claude-style prompt copy or host native prompt', [['studio', 'Claude Style'], ['host', 'Native']]],
-          logoInk: ['Home Logo Color', 'Tint home logo with accent color or plain text color', [['accent', 'Accent'], ['foreground', 'Text Color']]],
-          rewindPanel: ['Rewind Bar', 'Type /rewind or press Esc twice to open inline timeline rewind bar'],
-          undoConfirmMode: ['Undo Behavior', 'Action when clicking turn Undo button', [['picker', 'Rewind Bar'], ['prompt', 'Native Dialog'], ['auto_both', 'Auto (Code+Chat)'], ['auto_chat', 'Auto (Chat Only)']]],
-          effortSliderStyle: ['Effort Slider', 'Slider style when clicking model thinking level', [['claude', 'Claude Code'], ['chatgpt', 'ChatGPT Codex'], ['liangwufeng', 'Performance']]],
-          effortAccent: ['Claude Effort Gradient', 'Color-code effort levels with blue-violet gradient'],
-          performanceBackdrop: ['Perf Backdrop', 'Backdrop display for performance slider', [['card', 'Card'], ['page', 'Full Page'], ['off', 'Off']]],
-          smoothCaret: ['Smooth Caret', 'Glide typing caret smoothly (multiline & IME safe)'],
-          mascot: ['Pixel Crab Clawd', 'Reactive pixel crab on composer top-right'],
-          homeRipple: ['Home Ripple Waves', 'Click empty home background for ASCII ripple waves'],
-          inlineStats: ['Footer Stats & Rings', 'Show telemetry stats and capacity ring in footer'],
-          ringMode: ['Ring Mode', 'Single ring or Dual Rings (Quota left + Context used right)', [['context', 'Context Left'], ['quota', 'Quota Left'], ['both', 'Dual Rings']]],
-          turnBadges: ['Per-Turn #T Badges', 'Show delta tokens & speed under each AI reply'],
-          hudTopBar: ['Top Context Bar', 'Segmented context usage bar above composer'],
-          hudBottomBar: ['Bottom Details Bar', 'Detailed token & quota telemetry bar below composer'],
-          hudRimProgress: ['Rim Progress Line', 'Context usage progress along composer border'],
-          hudFooterChip: ['Footer Quota Chip', 'Show remaining capacity/quota pill in footer'],
-          hudCompact: ['Compact HUD Style', 'Use condensed spacing and font sizes for HUD'],
-        },
-      },
-      ja: {
-        brandTitle: 'Claude Style',
-        loading: '読み込み中…',
-        checking: '確認中',
-        connected: (p, n) => `CDP :${p} · ${n} 対象`,
-        waitingPort: 'ポート待機中',
-        disconnected: '未接続',
-        watcherOn: (pid) => `常駐中 (PID ${pid})`,
-        watcherOff: '監視停止中',
-        cdpTitle: 'Antigravity のデバッグポートが未検出です',
-        cdpDesc: 'Antigravity 2.33+ は既定でデバッグポートが無効です。下のボタンから再起動できます。',
-        btnRelaunch: 'デバッグ有効で再起動',
-        relaunching: 'Antigravity を再起動中…',
-        btnReinject: '✦ 今すぐ適用＆更新',
-        btnRemove: '標準 UI',
-        btnReset: '初期値',
-        btnRefresh: '状態更新',
-        actionOk: (l) => `${l.replace(/^✦\s*/, '')}完了`,
-        actionFail: (l, e) => `${l.replace(/^✦\s*/, '')}失敗：${e}`,
-        savedToast: (k) => `${k} を更新しました`,
-        invalidToast: (k) => `${k} の値が無効です`,
-        saveErrToast: (e) => `保存エラー：${e}`,
-        grpBasics: '基本設定',
-        grpLayout: 'UI・質感',
-        grpAdvanced: 'インタラクション',
-        grpTelemetry: '使用量・リング',
-        countBadge: (n) => `${n} 件`,
-        chipTargets: (w, s) => `窓 ${w} · Swarm ${s}`,
-        items: {
-          language: ['表示言語', 'Swarm 含む 5 言語ローカライズ（コード保護）', [['zh-CN', '简体中文'], ['zh-TW', '繁體中文'], ['yue', '粵語'], ['en', 'English'], ['ja', '日本語']]],
-          homeLayout: ['ホームレイアウト', '使用量ボード / クラシック / 標準', [['studio', '使用量ボード'], ['classic', 'クラシック'], ['off', '標準']]],
-          palette: ['テーマ配色', 'Obsidian・Claude 暖灰またはホスト標準', [['obsidian', 'Obsidian'], ['claude', 'Claude'], ['host', '標準']]],
-          glassEffect: ['すりガラス質感', '入力欄・浮遊パネル・Rewind バーのすりガラス＆高光枠'],
-          sidebarRestyle: ['サイドバー最適化', 'Claude 風の行高とホバーハイライト'],
-          sidebarCompact: ['コンパクトサイドバー', '余白を詰めてより多くの会話を表示'],
-          composerRestyle: ['Claude 風入力欄', '角丸入力欄とシンプルなフッター'],
-          placeholderStyle: ['入力欄ガイド文', 'Claude 風ガイド文または標準の案内文', [['studio', 'Claude 風'], ['host', '標準']]],
-          logoInk: ['ホームロゴ色', 'アクセント色または通常文字色', [['accent', 'アクセント'], ['foreground', '文字色']]],
-          rewindPanel: ['Rewind バー', '/rewind または Esc 2回で入力欄上にタイムライン復元バーを表示'],
-          undoConfirmMode: ['元に戻す動作', 'メッセージ横の元に戻すボタン押下時の動作', [['picker', 'Rewind パネル'], ['prompt', '標準確認'], ['auto_both', '自動(コード+会話)'], ['auto_chat', '自動(会話のみ)']]],
-          effortSliderStyle: ['推論強度スライダー', '推論レベル押下時のスライダー形式', [['claude', 'Claude Code'], ['chatgpt', 'ChatGPT Codex'], ['liangwufeng', 'パフォーマンス']]],
-          effortAccent: ['Claude 推論カラー', '推論レベルに応じた青紫グラデ表示'],
-          performanceBackdrop: ['背景表示', 'パフォーマンススライダーの背景表示', [['card', 'カード'], ['page', '全画面'], ['off', 'オフ']]],
-          smoothCaret: ['スムーズカーソル', '入力時にカーソルを滑らかに追従'],
-          mascot: ['ピクセルカニ Clawd', '入力欄右上のカニが状態に応じて反応'],
-          homeRipple: ['ホーム波紋エフェクト', '背景クリックで文字グリッドの波紋を再生'],
-          inlineStats: ['フッター統計＆リング', 'フッターに速度・キャッシュ率・リングを表示'],
-          ringMode: ['リングモード', '単一リングまたはデュアルリング（左クォータ残量 + 右使用率）', [['context', 'コンテキスト残量'], ['quota', 'クォータ残量'], ['both', 'デュアルリング']]],
-          turnBadges: ['ターン毎 #T バッジ', '各応答下部に増分トークンと速度を表示'],
-          hudTopBar: ['上部コンテキストバー', '入力欄上にコンテキスト進捗バーを表示'],
-          hudBottomBar: ['下部詳細バー', '入力欄下に詳細なトークン・クォータ統計を表示'],
-          hudRimProgress: ['枠線進捗ライン', '入力欄の枠線に沿って使用率を表示'],
-          hudFooterChip: ['フッタークォータ', '残り容量とクォータのチップを表示'],
-          hudCompact: ['コンパクト HUD', 'HUD とリングの余白・フォントを省スペース化'],
-        },
-      },
-    };
-
-    const GROUP_DEFS = [
-      { id: 'basics', icon: '🎨', titleKey: 'grpBasics', keys: ['language', 'homeLayout', 'palette'] },
-      { id: 'layout', icon: '🧩', titleKey: 'grpLayout', keys: ['glassEffect', 'sidebarRestyle', 'sidebarCompact', 'composerRestyle', 'placeholderStyle', 'logoInk'] },
-      { id: 'advanced', icon: '✨', titleKey: 'grpAdvanced', keys: ['rewindPanel', 'undoConfirmMode', 'effortSliderStyle', 'effortAccent', 'performanceBackdrop', 'smoothCaret', 'mascot', 'homeRipple'] },
-      { id: 'telemetry', icon: '📊', titleKey: 'grpTelemetry', keys: ['inlineStats', 'ringMode', 'turnBadges', 'hudTopBar', 'hudBottomBar', 'hudRimProgress', 'hudFooterChip', 'hudCompact'], showCompanions: true },
-    ];
-
-    const apiFetch = (url, opts) => {
-      if (window.sidecar && typeof window.sidecar.fetch === 'function') {
-        return window.sidecar.fetch(url, opts);
-      }
-      return fetch(url, {
-        ...opts,
-        headers: { 'Content-Type': 'application/json', ...(opts && opts.headers) },
-      });
-    };
-
-    const COLLAPSED_KEY = 'agCsPanelCollapsedV2';
-    let collapsedGroups = new Set();
-    try {
-      const raw = JSON.parse(localStorage.getItem(COLLAPSED_KEY) || '[]');
-      if (Array.isArray(raw)) collapsedGroups = new Set(raw.filter((x) => typeof x === 'string'));
-    } catch {}
-
-    let currentConfig = { language: 'zh-CN' };
+    const TOKEN = new URLSearchParams(window.location.search).get('token') || '';
+    let currentConfig = {};
     let lastStatus = null;
     let toastTimer = null;
+    let activeTab = 'control';
 
-    function getT() {
-      return TEXTS[currentConfig?.language] || TEXTS['zh-CN'];
-    }
-
-    function parseLum(raw) {
-      const s = String(raw || '').trim();
+    function parseRgbLuminance(colorStr) {
+      if (!colorStr) return null;
+      const s = String(colorStr).trim();
       const hex = s.match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i);
       if (hex) {
-        const h = hex[1];
-        const r = parseInt(h.length === 3 ? h[0] + h[0] : h.slice(0, 2), 16);
-        const g = parseInt(h.length === 3 ? h[1] + h[1] : h.slice(2, 4), 16);
-        const b = parseInt(h.length === 3 ? h[2] + h[2] : h.slice(4, 6), 16);
-        return 0.299 * r + 0.587 * g + 0.114 * b;
+        const h = hex[1].length === 3 ? hex[1].split('').map((c) => c + c).join('') : hex[1];
+        const r = parseInt(h.slice(0, 2), 16), g = parseInt(h.slice(2, 4), 16), b = parseInt(h.slice(4, 6), 16);
+        return (0.299 * r + 0.587 * g + 0.114 * b) / 255;
       }
-      const rgb = s.match(/^rgba?\(\s*([\d.]+)\s*[,\s]\s*([\d.]+)\s*[,\s]\s*([\d.]+)/i);
-      if (rgb) return 0.299 * Number(rgb[1]) + 0.587 * Number(rgb[2]) + 0.114 * Number(rgb[3]);
+      const rgb = s.match(/rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)/i);
+      if (rgb) return (0.299 * Number(rgb[1]) + 0.587 * Number(rgb[2]) + 0.114 * Number(rgb[3])) / 255;
       return null;
     }
 
-    function syncHostThemeAttr(overrideBg) {
-      const cands = [
-        overrideBg,
-        getComputedStyle(document.documentElement).getPropertyValue('--background'),
-        document.body ? getComputedStyle(document.body).backgroundColor : '',
-      ];
-      for (const c of cands) {
-        const lum = parseLum(c);
-        if (lum !== null) {
-          document.documentElement.setAttribute('data-theme', lum < 140 ? 'dark' : 'light');
-          return;
-        }
-      }
-      if (typeof window.matchMedia === 'function') {
-        const isLight = window.matchMedia('(prefers-color-scheme: light)').matches;
-        document.documentElement.setAttribute('data-theme', isLight ? 'light' : 'dark');
-      }
+    function syncHostThemeAttr(explicitBg) {
+      const bg = explicitBg || getComputedStyle(document.documentElement).getPropertyValue('--background').trim();
+      const lum = parseRgbLuminance(bg);
+      if (lum !== null) document.documentElement.setAttribute('data-theme', lum > 0.55 ? 'light' : 'dark');
     }
 
     function showToast(msg) {
@@ -864,240 +258,103 @@
       el.textContent = msg;
       el.classList.add('show');
       clearTimeout(toastTimer);
-      toastTimer = setTimeout(() => el.classList.remove('show'), 2400);
+      toastTimer = setTimeout(() => el.classList.remove('show'), 2600);
     }
 
-    function renderStaticChrome() {
-      const t = getT();
-      document.documentElement.lang = currentConfig?.language === 'yue' ? 'zh-HK' : (currentConfig?.language || 'zh-CN');
-      document.getElementById('brand-title').textContent = t.brandTitle;
-      document.getElementById('btn-reinject').textContent = t.btnReinject;
-      document.getElementById('btn-remove').textContent = t.btnRemove;
-      document.getElementById('btn-reset').textContent = t.btnReset;
-      document.getElementById('btn-refresh').textContent = t.btnRefresh;
-      document.getElementById('btn-relaunch').textContent = t.btnRelaunch;
-      document.getElementById('cdp-banner-title').textContent = t.cdpTitle;
-      document.getElementById('cdp-banner-desc').textContent = t.cdpDesc;
-
-      const pill = document.getElementById('status-pill');
-      const dot = document.getElementById('status-dot');
-      const txt = document.getElementById('status-text');
-      const meta = document.getElementById('meta-line');
-      if (lastStatus) {
-        const st = lastStatus;
-        const hasCdp = Boolean(st.cdp?.port && st.cdp?.pageCount > 0);
-        dot.classList.toggle('ok', hasCdp);
-        pill.classList.toggle('is-ok', hasCdp);
-        txt.textContent = hasCdp
-          ? t.connected(st.cdp.port, st.cdp.pageCount)
-          : st.watcher?.alive ? t.waitingPort : t.disconnected;
-        meta.textContent = `v${st.version || '2.1.0'} · ${st.watcher?.alive ? t.watcherOn(st.watcher.pid) : t.watcherOff}`;
-        document.getElementById('cdp-banner').classList.toggle('show', Boolean(st.cdp?.needsCdpRestart));
-      } else {
-        meta.textContent = t.loading;
-        txt.textContent = t.checking;
-      }
+    async function apiFetch(path, opts = {}) {
+      const headers = Object.assign({}, opts.headers || {}, { 'Content-Type': 'application/json' });
+      if (TOKEN) headers['Authorization'] = `Bearer ${TOKEN}`;
+      return fetch(path, Object.assign({}, opts, { headers }));
     }
 
-    function isRowDimmed(key, cfg) {
-      if (key === 'undoConfirmMode' && cfg.rewindPanel === false) return true;
-      if (key === 'effortAccent' && cfg.effortSliderStyle !== 'claude') return true;
-      if (key === 'performanceBackdrop' && cfg.effortSliderStyle !== 'liangwufeng') return true;
-      if (key === 'ringMode' && cfg.inlineStats === false) return true;
-      return false;
-    }
+    let controlTab = null;
+    let dashboardTab = null;
+    let remoteTab = null;
 
-    function renderForm(cfg) {
-      const t = getT();
-      const container = document.getElementById('sections');
-      container.innerHTML = '';
-
-      for (const group of GROUP_DEFS) {
-        const isCollapsed = collapsedGroups.has(group.id);
-        const sec = document.createElement('div');
-        sec.className = isCollapsed ? 'section is-collapsed' : 'section';
-
-        const head = document.createElement('button');
-        head.type = 'button';
-        head.className = 'section-head';
-        head.setAttribute('aria-expanded', String(!isCollapsed));
-        head.innerHTML = `<span class="section-title">${group.icon} ${t[group.titleKey]}</span><span class="section-head-right"><span class="section-badge">${t.countBadge(group.keys.length)}</span><span class="section-chevron" aria-hidden="true"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></span></span>`;
-        head.addEventListener('click', () => {
-          const next = !collapsedGroups.has(group.id);
-          if (next) collapsedGroups.add(group.id);
-          else collapsedGroups.delete(group.id);
-          sec.classList.toggle('is-collapsed', next);
-          head.setAttribute('aria-expanded', String(!next));
-          try { localStorage.setItem(COLLAPSED_KEY, JSON.stringify(Array.from(collapsedGroups))); } catch {}
-        });
-        sec.appendChild(head);
-
-        const body = document.createElement('div');
-        body.className = 'section-body';
-
-        for (const key of group.keys) {
-          const def = t.items[key];
-          if (!def) continue;
-          const [labelText, descText, options] = def;
-          const dimmed = isRowDimmed(key, cfg);
-          const row = document.createElement('div');
-          row.className = 'row' + (dimmed ? ' is-dimmed' : '');
-
-          const label = document.createElement('div');
-          label.className = 'row-label';
-          label.innerHTML = `<div class="row-name">${labelText}</div><div class="row-desc">${descText}</div>`;
-          row.appendChild(label);
-
-          if (!options) {
-            const sw = document.createElement('label');
-            sw.className = 'switch';
-            const cb = document.createElement('input');
-            cb.type = 'checkbox';
-            cb.checked =
-              key === 'glassEffect'
-                ? cfg[key] !== false
-                : key === 'mascot'
-                ? cfg[key] === 'crab'
-                : Boolean(cfg[key]);
-            cb.disabled = dimmed;
-            cb.addEventListener('change', () => saveOne(key, key === 'mascot' ? (cb.checked ? 'crab' : 'off') : cb.checked));
-            const track = document.createElement('span');
-            track.className = 'switch-track';
-            sw.appendChild(cb);
-            sw.appendChild(track);
-            row.appendChild(sw);
-          } else {
-            const sel = document.createElement('select');
-            sel.disabled = dimmed;
-            for (const [val, text] of options) {
-              const opt = document.createElement('option');
-              opt.value = val;
-              opt.textContent = text;
-              if (cfg[key] === val) opt.selected = true;
-              sel.appendChild(opt);
-            }
-            sel.addEventListener('change', () => saveOne(key, sel.value));
-            row.appendChild(sel);
-          }
-          body.appendChild(row);
+    const app = {
+      apiFetch,
+      showToast,
+      getConfig: () => currentConfig,
+      getLastStatus: () => lastStatus,
+      getActiveTab: () => activeTab,
+      async saveUpdates(updates) {
+        try {
+          const res = await apiFetch('/api/config', { method: 'POST', body: JSON.stringify({ updates }) });
+          const data = await res.json();
+          if (data.config) currentConfig = data.config;
+          controlTab.renderStaticChrome();
+          controlTab.renderForm(currentConfig);
+          remoteTab.syncForm(currentConfig);
+          showToast(data.ok ? '已保存配置' : `配置校验失败: ${(data.rejected || []).join(',')}`);
+          return Boolean(data.ok);
+        } catch (err) {
+          showToast(controlTab.getT().saveErrToast(err.message));
+          return false;
         }
-
-        if (group.showCompanions && lastStatus) {
-          const strip = document.createElement('div');
-          strip.className = 'companion-strip';
-          const pages = lastStatus.cdp?.pages || [];
-          const w = pages.filter((p) => p.kind === 'window').length;
-          const s = pages.filter((p) => p.kind === 'swarm').length;
-          const cap = lastStatus.companions?.capsule;
-          const br = lastStatus.companions?.bridge;
-          const chips = [
-            { text: t.chipTargets(w, s), on: w + s > 0 },
-            ...(cap?.installed ? [{ text: `agy-capsule${cap.version ? ' v' + cap.version : ''}`, on: cap.enabled }] : []),
-            ...(br?.installed ? [{ text: `bridge${br.version ? ' v' + br.version : ''}`, on: br.enabled }] : []),
-          ];
-          for (const c of chips) {
-            const el = document.createElement('span');
-            el.className = 'chip' + (c.on ? ' on' : '');
-            el.textContent = c.text;
-            strip.appendChild(el);
-          }
-          body.appendChild(strip);
+      },
+      async saveOne(key, value) {
+        const ok = await app.saveUpdates({ [key]: value });
+        if (ok) showToast(controlTab.getT().savedToast(key));
+      },
+      async refreshStatus() {
+        syncHostThemeAttr();
+        try {
+          const res = await apiFetch('/api/status', { method: 'GET' });
+          const st = await res.json();
+          lastStatus = st;
+          currentConfig = st.config || currentConfig;
+          controlTab.renderStaticChrome();
+          controlTab.renderForm(currentConfig);
+          remoteTab.syncForm(currentConfig);
+        } catch (err) {
+          document.getElementById('status-text').textContent = 'Error';
+          document.getElementById('meta-line').textContent = err.message;
         }
+      },
+      async postAction(endpoint, labelKey) {
+        const btns = document.querySelectorAll('.actions button');
+        btns.forEach((b) => (b.disabled = true));
+        try {
+          const res = await apiFetch(endpoint, { method: 'POST', body: '{}' });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || 'Error');
+          showToast(controlTab.getT().actionOk(controlTab.getT()[labelKey]));
+          await app.refreshStatus();
+        } catch (err) {
+          showToast(controlTab.getT().actionFail(controlTab.getT()[labelKey], err.message));
+        } finally {
+          btns.forEach((b) => (b.disabled = false));
+        }
+      },
+    };
 
-        sec.appendChild(body);
-        container.appendChild(sec);
-      }
-    }
+    controlTab = window.AGYPanelControl(app);
+    dashboardTab = window.AGYPanelDashboard(app);
+    remoteTab = window.AGYPanelRemote(app);
 
-    async function saveOne(key, value) {
-      try {
-        const res = await apiFetch('/api/config', {
-          method: 'POST',
-          body: JSON.stringify({ key, value }),
-        });
-        const data = await res.json();
-        if (data.config) currentConfig = data.config;
-        renderStaticChrome();
-        renderForm(currentConfig);
-        const t = getT();
-        showToast(data.ok ? t.savedToast(key) : t.invalidToast(key));
-      } catch (err) {
-        showToast(getT().saveErrToast(err.message));
-      }
-    }
-
-    async function refreshStatus() {
-      syncHostThemeAttr();
-      try {
-        const res = await apiFetch('/api/status', { method: 'GET' });
-        const st = await res.json();
-        lastStatus = st;
-        currentConfig = st.config || currentConfig;
-        renderStaticChrome();
-        renderForm(currentConfig);
-      } catch (err) {
-        document.getElementById('status-text').textContent = 'Error';
-        document.getElementById('meta-line').textContent = err.message;
-      }
-    }
-
-    async function postAction(endpoint, labelKey) {
-      const btns = document.querySelectorAll('.actions button');
-      btns.forEach((b) => (b.disabled = true));
-      try {
-        const res = await apiFetch(endpoint, { method: 'POST', body: '{}' });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || 'Error');
-        const t = getT();
-        showToast(t.actionOk(t[labelKey]));
-        await refreshStatus();
-      } catch (err) {
-        const t = getT();
-        showToast(t.actionFail(t[labelKey], err.message));
-      } finally {
-        btns.forEach((b) => (b.disabled = false));
-      }
-    }
-
-    async function triggerRelaunch() {
-      const btn = document.getElementById('btn-relaunch');
-      if (btn) btn.disabled = true;
-      try {
-        const res = await apiFetch('/api/relaunch', { method: 'POST', body: '{}' });
-        const data = await res.json();
-        if (!res.ok || !data?.ok) throw new Error(data?.reason || data?.error || 'Error');
-        showToast(getT().relaunching);
-      } catch (err) {
-        showToast(getT().actionFail(getT().btnRelaunch, err.message));
-        if (btn) btn.disabled = false;
-      }
-    }
+    document.querySelectorAll('.tab-btn').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        activeTab = btn.getAttribute('data-tab');
+        document.querySelectorAll('.tab-btn').forEach((b) => b.classList.toggle('is-active', b === btn));
+        document.querySelectorAll('.tab-pane').forEach((p) => p.classList.toggle('is-active', p.id === `pane-${activeTab}`));
+        if (activeTab === 'dashboard') dashboardTab.onActivate();
+        if (activeTab === 'remote') remoteTab.onActivate();
+      });
+    });
 
     window.addEventListener('message', (ev) => {
       if (ev.data?.type === 'theme-change') {
-        const bg = ev.data?.payload?.cssVariables?.['--background'];
-        syncHostThemeAttr(bg);
-        if (typeof requestAnimationFrame === 'function') {
-          requestAnimationFrame(() => syncHostThemeAttr());
-        }
+        syncHostThemeAttr(ev.data?.payload?.cssVariables?.['--background']);
       }
     });
     if (typeof window.matchMedia === 'function') {
-      try {
-        window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', () => syncHostThemeAttr());
-      } catch {}
+      try { window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', () => syncHostThemeAttr()); } catch {}
     }
 
-    document.getElementById('btn-reinject').addEventListener('click', () => postAction('/api/reinject', 'btnReinject'));
-    document.getElementById('btn-remove').addEventListener('click', () => postAction('/api/remove', 'btnRemove'));
-    document.getElementById('btn-reset').addEventListener('click', () => postAction('/api/reset', 'btnReset'));
-    document.getElementById('btn-refresh').addEventListener('click', refreshStatus);
-    document.getElementById('btn-relaunch').addEventListener('click', triggerRelaunch);
-
-    renderStaticChrome();
-    refreshStatus();
+    controlTab.renderStaticChrome();
+    app.refreshStatus();
     setInterval(() => {
-      if (document.visibilityState !== 'hidden') void refreshStatus();
+      if (document.visibilityState !== 'hidden' && activeTab === 'control') void app.refreshStatus();
     }, 8000);
   </script>
 </body>

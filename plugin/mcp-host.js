@@ -227,6 +227,7 @@ function startMcpPluginHost() {
         forceExitOnHostClose: false,
         startupGraceEnabled: false,
         allowGracefulDuplicateExit: true,
+        allowAutoRelaunch: false,
         manageProcessExit: false,
         enableConsole: false,
         logFile,
