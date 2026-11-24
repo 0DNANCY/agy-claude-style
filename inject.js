@@ -25,7 +25,7 @@ const RELAUNCH = process.argv.includes('--relaunch');
 const REPLACE_EXISTING = process.argv.includes('--replace');
 const SKIP_IF_RUNNING = process.argv.includes('--skip-if-running');
 const EXIT_ON_HOST_CLOSE_FLAG = MANAGED || process.argv.includes('--exit-on-host-close');
-const LOG_FILE = path.join(__dirname, 'watch.log');
+const LOG_FILE = path.join(cdpApi.STATE_DIR || __dirname, 'watch.log');
 
 function parseIntArg(flag, envName) {
   const prefix = `${flag}=`;
@@ -57,18 +57,25 @@ const POLL_INTERVAL_MS = Math.max(
   Math.min(10000, parseIntArg('--poll-ms', 'AG_WATCH_POLL_MS') || 2000)
 );
 
+let consoleLoggingEnabled = true;
+let activeLogFile = LOG_FILE;
+
 function log(...args) {
   const line = args.map((a) => (typeof a === 'string' ? a : JSON.stringify(a))).join(' ');
-  try {
-    console.log(line);
-  } catch {}
-  if (WATCH) {
+  if (consoleLoggingEnabled) {
     try {
-      const stat = fs.existsSync(LOG_FILE) ? fs.statSync(LOG_FILE) : null;
+      console.log(line);
+    } catch {}
+  }
+  if (WATCH || !consoleLoggingEnabled) {
+    try {
+      const dir = path.dirname(activeLogFile);
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      const stat = fs.existsSync(activeLogFile) ? fs.statSync(activeLogFile) : null;
       if (stat && stat.size > 1024 * 1024) {
-        fs.writeFileSync(LOG_FILE, '');
+        fs.writeFileSync(activeLogFile, '');
       }
-      fs.appendFileSync(LOG_FILE, `[${new Date().toISOString()}] ${line}\n`);
+      fs.appendFileSync(activeLogFile, `[${new Date().toISOString()}] ${line}\n`);
     } catch {}
   }
 }
@@ -290,17 +297,46 @@ async function applyPageScripts(entry, { expr, configExpr, refreshOnly = false }
   return await entry.session.evaluate(expr);
 }
 
-async function watch({
+async function createWatchController({
   forceExitOnHostClose = false,
   startupGraceEnabled = false,
   allowGracefulDuplicateExit = false,
+  manageProcessExit = true,
+  enableConsole = true,
+  logFile = LOG_FILE,
 } = {}) {
-  const lockRes = acquireLock({ allowGracefulDuplicateExit });
-  if (!lockRes || !lockRes.acquired) return;
+  consoleLoggingEnabled = Boolean(enableConsole);
+  if (logFile) activeLogFile = logFile;
+  const lockRes = acquireLock({
+    allowGracefulDuplicateExit,
+    exitFn: manageProcessExit
+      ? (code) => process.exit(code)
+      : () => ({ acquired: false }),
+  });
+  if (!lockRes || !lockRes.acquired) return null;
+  const emitLog = (...args) => {
+    const line = args.map((a) => (typeof a === 'string' ? a : JSON.stringify(a))).join(' ');
+    if (enableConsole) {
+      try { console.log(line); } catch {}
+    }
+    if (logFile) {
+      try {
+        const dir = path.dirname(logFile);
+        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+        const stat = fs.existsSync(logFile) ? fs.statSync(logFile) : null;
+        if (stat && stat.size > 1024 * 1024) fs.writeFileSync(logFile, '');
+        fs.appendFileSync(logFile, `[${new Date().toISOString()}] ${line}\n`);
+      } catch {}
+    }
+  };
   try {
-    fs.writeFileSync(LOG_FILE, '');
+    if (logFile) {
+      const dir = path.dirname(logFile);
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(logFile, '');
+    }
   } catch {}
-  log(
+  emitLog(
     `[*] AGY Claude Style (agy-claude-style) 守护模式启动 (PID ${process.pid})，每 ${POLL_INTERVAL_MS / 1000} 秒检查一次窗口`
   );
 
@@ -318,6 +354,7 @@ async function watch({
   let tickTimer = null;
   let reloadTimer = null;
   let watcher = null;
+  let configDirWatcher = null;
 
   function closeAllSessions() {
     for (const entry of attached.values()) {
@@ -331,10 +368,10 @@ async function watch({
     attached.clear();
   }
 
-  function shutdown(code = 0, reason = '') {
+  async function stop({ removeFromPages = false, code = 0, reason = '' } = {}) {
     if (shuttingDown) return;
     shuttingDown = true;
-    if (reason) log(`[*] 守护进程退出: ${reason}`);
+    if (reason) emitLog(`[*] 守护进程退出: ${reason}`);
     if (tickTimer) {
       clearTimeout(tickTimer);
       tickTimer = null;
@@ -344,39 +381,56 @@ async function watch({
       reloadTimer = null;
     }
     if (watcher) {
-      try {
-        watcher.close();
-      } catch {}
+      try { watcher.close(); } catch {}
       watcher = null;
+    }
+    if (configDirWatcher) {
+      try { configDirWatcher.close(); } catch {}
+      configDirWatcher = null;
+    }
+    if (removeFromPages) {
+      await Promise.allSettled(
+        Array.from(attached.values())
+          .filter((entry) => entry && entry.session)
+          .map((entry) => entry.session.evaluate(cdpApi.REMOVE_EXPRESSION).catch(() => {}))
+      );
     }
     closeAllSessions();
     releasePidFile();
-    process.exit(code);
-  }
-
-  for (const sig of ['SIGINT', 'SIGTERM', 'SIGBREAK']) {
-    process.on(sig, () => shutdown(0, `收到信号 ${sig}`));
-  }
-
-  // Prevent orphan CPU spin when stdout/stderr pipe disconnects (e.g. ELECTRON_RUN_AS_NODE=1)
-  for (const stream of [process.stdout, process.stderr]) {
-    if (stream && typeof stream.on === 'function') {
-      stream.on('error', (err) => {
-        if (err && (err.code === 'EPIPE' || err.code === 'EOF' || err.code === 'ERR_STREAM_DESTROYED')) {
-          shutdown(0);
-        }
-      });
+    if (manageProcessExit) {
+      process.exit(code);
     }
   }
-  if ((PARENT_PID || process.env.ELECTRON_RUN_AS_NODE === '1') && process.stdin && !process.stdin.isTTY) {
-    try {
-      const st = fs.fstatSync(0);
-      if (st.isFIFO() || st.isSocket()) {
-        process.stdin.resume();
-        process.stdin.on('end', () => shutdown(0, '标准输入管道已关闭'));
-        process.stdin.on('close', () => shutdown(0, '标准输入管道已断开'));
+
+  function shutdown(code = 0, reason = '') {
+    void stop({ removeFromPages: false, code, reason });
+  }
+
+  if (manageProcessExit) {
+    for (const sig of ['SIGINT', 'SIGTERM', 'SIGBREAK']) {
+      process.on(sig, () => shutdown(0, `收到信号 ${sig}`));
+    }
+
+    // Prevent orphan CPU spin when stdout/stderr pipe disconnects (e.g. ELECTRON_RUN_AS_NODE=1)
+    for (const stream of [process.stdout, process.stderr]) {
+      if (stream && typeof stream.on === 'function') {
+        stream.on('error', (err) => {
+          if (err && (err.code === 'EPIPE' || err.code === 'EOF' || err.code === 'ERR_STREAM_DESTROYED')) {
+            shutdown(0);
+          }
+        });
       }
-    } catch {}
+    }
+    if ((PARENT_PID || process.env.ELECTRON_RUN_AS_NODE === '1') && process.stdin && !process.stdin.isTTY) {
+      try {
+        const st = fs.fstatSync(0);
+        if (st.isFIFO() || st.isSocket()) {
+          process.stdin.resume();
+          process.stdin.on('end', () => shutdown(0, '标准输入管道已关闭'));
+          process.stdin.on('close', () => shutdown(0, '标准输入管道已断开'));
+        }
+      } catch {}
+    }
   }
 
   async function apply(entry, opts = {}) {
@@ -539,8 +593,8 @@ async function watch({
     }
   }
 
-  watcher = fs.watch(__dirname, (_, filename) => {
-    if (!filename || !/\.(css|js|json)$/i.test(filename) || filename.startsWith('.')) return;
+  const scheduleHotReload = (filename) => {
+    if (shuttingDown) return;
     clearTimeout(reloadTimer);
     reloadTimer = setTimeout(async () => {
       let refreshOnly = false;
@@ -561,7 +615,7 @@ async function watch({
         }
         configExpr = cdpApi.buildConfigScriptExpression(currentConfig, currentCodeHash);
       } catch (err) {
-        log(`[!] 读取文件失败: ${err.message}`);
+        emitLog(`[!] 读取文件失败: ${err.message}`);
         return;
       }
       let n = 0;
@@ -572,20 +626,48 @@ async function watch({
           n++;
         } catch {}
       }
-      log(`[↻] ${filename} 已变更，已热更新 ${n} 个窗口${refreshOnly ? '（轻量配置同步）' : ''}`);
-    }, 180);
+      emitLog(`[↻] ${filename} 已变更，已热更新 ${n} 个窗口${refreshOnly ? '（轻量配置同步）' : ''}`);
+    }, 120);
+  };
+
+  watcher = fs.watch(__dirname, (_, filename) => {
+    if (!filename || !/\.(css|js|json)$/i.test(filename) || filename.startsWith('.')) return;
+    scheduleHotReload(filename);
   });
 
-  if (WATCH) {
+  const cfgDir = path.dirname(cdpApi.CONFIG_FILE);
+  const cfgBase = path.basename(cdpApi.CONFIG_FILE);
+  if (path.resolve(cfgDir) !== path.resolve(__dirname)) {
+    try {
+      if (!fs.existsSync(cfgDir)) fs.mkdirSync(cfgDir, { recursive: true });
+      configDirWatcher = fs.watch(cfgDir, (_, filename) => {
+        if (!filename || String(filename) === cfgBase) {
+          scheduleHotReload(cfgBase);
+        }
+      });
+      if (typeof configDirWatcher.unref === 'function') configDirWatcher.unref();
+    } catch {}
+  }
+
+  if (WATCH && manageProcessExit) {
     process.on('uncaughtException', (err) => {
-      log(`[!] 未捕获异常: ${err && err.stack ? err.stack : err}`);
+      emitLog(`[!] 未捕获异常: ${err && err.stack ? err.stack : err}`);
     });
     process.on('unhandledRejection', (err) => {
-      log(`[!] 未处理 Promise 拒绝: ${err && err.stack ? err.stack : err}`);
+      emitLog(`[!] 未处理 Promise 拒绝: ${err && err.stack ? err.stack : err}`);
     });
   }
 
   await tick();
+  return {
+    stop,
+    isStopped: () => shuttingDown,
+    getAttachedCount: () => attached.size,
+  };
+}
+
+async function watch(opts = {}) {
+  return createWatchController({ ...opts, manageProcessExit: true });
 }
 
 async function main() {
@@ -610,6 +692,8 @@ async function main() {
 }
 
 module.exports = {
+  injectOnce,
+  createWatchController,
   acquireLock,
   applyPageScripts,
 };

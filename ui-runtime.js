@@ -4943,9 +4943,14 @@
   }
 
   // ── Settings Panel Integration ─────────────────────────────────────────
+  // Settings are now managed exclusively by the native Aux Pane control panel
+  // (sidecars/panel), so we no longer inject a duplicate section into Appearance.
   const SETTINGS_SEC_ID = 'ag-cs-settings-sec';
 
   function ensureSettingsSection() {
+    const stale = document.getElementById(SETTINGS_SEC_ID);
+    if (stale) stale.remove();
+    return;
     const lang = getLang();
     const ui = uiText(lang);
     const targetTitles = ['Appearance', '外观', '外觀', '外観'];

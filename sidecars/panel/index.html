@@ -1,0 +1,745 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Claude Style</title>
+  <style>
+    :root {
+      color-scheme: dark light;
+      --bg: #171615;
+      --surface: #201e1c;
+      --surface-2: #282523;
+      --border: rgba(255, 255, 255, 0.09);
+      --border-strong: rgba(255, 255, 255, 0.16);
+      --fg: #eceae6;
+      --muted: #9a958d;
+      --accent: #d97757;
+      --accent-soft: rgba(217, 119, 87, 0.16);
+      --ok: #4ade80;
+      --ok-soft: rgba(74, 222, 128, 0.14);
+      --warn: #f59e0b;
+      --warn-soft: rgba(245, 158, 11, 0.15);
+      --danger: #f87171;
+      --radius: 10px;
+    }
+    @media (prefers-color-scheme: light) {
+      :root {
+        --bg: #f6f4ef;
+        --surface: #ffffff;
+        --surface-2: #f0ece4;
+        --border: rgba(26, 24, 22, 0.09);
+        --border-strong: rgba(26, 24, 22, 0.18);
+        --fg: #1d1b19;
+        --muted: #6c675f;
+        --accent: #c96442;
+        --accent-soft: rgba(201, 100, 66, 0.13);
+        --ok: #16a34a;
+        --ok-soft: rgba(22, 163, 74, 0.12);
+        --warn: #d97706;
+        --warn-soft: rgba(217, 119, 6, 0.13);
+        --danger: #dc2626;
+      }
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: var(--bg);
+      color: var(--fg);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", sans-serif;
+      font-size: 12.5px;
+      line-height: 1.45;
+      -webkit-font-smoothing: antialiased;
+    }
+    .app {
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      max-width: 520px;
+      margin: 0 auto;
+    }
+    .header {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 11px 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 9px;
+    }
+    .header-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+    }
+    .brand-icon {
+      width: 26px;
+      height: 26px;
+      border-radius: 7px;
+      flex-shrink: 0;
+    }
+    .brand-title {
+      font-size: 14px;
+      font-weight: 700;
+      letter-spacing: -0.01em;
+    }
+    .brand-ver {
+      font-size: 11px;
+      color: var(--muted);
+      font-weight: 500;
+      margin-left: 4px;
+    }
+    .badges {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: 11px;
+      border: 1px solid var(--border);
+      background: var(--surface-2);
+      color: var(--muted);
+      white-space: nowrap;
+    }
+    .pill .dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--muted);
+    }
+    .pill.ok {
+      border-color: rgba(74, 222, 128, 0.28);
+      background: var(--ok-soft);
+      color: var(--ok);
+    }
+    .pill.ok .dot { background: var(--ok); }
+    .pill.warn {
+      border-color: rgba(245, 158, 11, 0.35);
+      background: var(--warn-soft);
+      color: var(--warn);
+    }
+    .pill.warn .dot { background: var(--warn); }
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+    .btn {
+      appearance: none;
+      border: 1px solid var(--border);
+      background: var(--surface-2);
+      color: var(--fg);
+      border-radius: 7px;
+      padding: 5px 9px;
+      font-size: 11.5px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: background 120ms ease, border-color 120ms ease, opacity 120ms ease;
+    }
+    .btn:hover { border-color: var(--border-strong); }
+    .btn:disabled { opacity: 0.55; cursor: wait; }
+    .btn-primary {
+      background: var(--accent);
+      border-color: transparent;
+      color: #fff;
+    }
+    .btn-primary:hover { filter: brightness(1.06); }
+    .banner {
+      display: none;
+      background: var(--warn-soft);
+      border: 1px solid rgba(245, 158, 11, 0.35);
+      border-radius: var(--radius);
+      padding: 10px 12px;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .banner.show { display: flex; }
+    .banner-title { font-weight: 600; color: var(--warn); font-size: 12px; }
+    .banner-desc { color: var(--fg); font-size: 11.5px; opacity: 0.9; }
+    .group {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+    }
+    .group-head {
+      width: 100%;
+      appearance: none;
+      border: 0;
+      background: transparent;
+      color: var(--fg);
+      padding: 9px 12px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      cursor: pointer;
+      text-align: left;
+      font-size: 12.5px;
+      font-weight: 600;
+    }
+    .group-head:hover { background: rgba(255, 255, 255, 0.03); }
+    .group-head-left {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+    }
+    .group-count {
+      font-size: 10.5px;
+      font-weight: 500;
+      color: var(--muted);
+      padding: 1px 6px;
+      border-radius: 999px;
+      background: var(--surface-2);
+    }
+    .group-chev {
+      font-size: 10px;
+      color: var(--muted);
+      transition: transform 140ms ease;
+    }
+    .group.collapsed .group-chev { transform: rotate(-90deg); }
+    .group.collapsed .group-body { display: none; }
+    .group-body {
+      border-top: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+    }
+    .row {
+      padding: 9px 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      border-bottom: 1px solid var(--border);
+    }
+    .row:last-child { border-bottom: 0; }
+    .row.bool-row {
+      flex-direction: row;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+    .row.dimmed { opacity: 0.45; }
+    .row-info {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      min-width: 0;
+      flex: 1;
+    }
+    .row-title { font-size: 12px; font-weight: 500; color: var(--fg); }
+    .row-desc { font-size: 11px; color: var(--muted); }
+    .seg {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+    }
+    .seg-btn {
+      appearance: none;
+      border: 1px solid var(--border);
+      background: var(--surface-2);
+      color: var(--muted);
+      border-radius: 6px;
+      padding: 3px 8px;
+      font-size: 11px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 120ms ease;
+    }
+    .seg-btn:hover { color: var(--fg); border-color: var(--border-strong); }
+    .seg-btn.active {
+      background: var(--accent-soft);
+      border-color: var(--accent);
+      color: var(--accent);
+      font-weight: 600;
+    }
+    .switch {
+      position: relative;
+      width: 34px;
+      height: 19px;
+      border-radius: 999px;
+      border: 1px solid var(--border-strong);
+      background: var(--surface-2);
+      cursor: pointer;
+      flex-shrink: 0;
+      transition: background 140ms ease, border-color 140ms ease;
+      padding: 0;
+    }
+    .switch::after {
+      content: '';
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      width: 13px;
+      height: 13px;
+      border-radius: 50%;
+      background: var(--muted);
+      transition: transform 140ms ease, background 140ms ease;
+    }
+    .switch.on {
+      background: var(--accent);
+      border-color: var(--accent);
+    }
+    .switch.on::after {
+      transform: translateX(15px);
+      background: #fff;
+    }
+    .meta-list {
+      padding: 9px 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      font-size: 11.5px;
+    }
+    .meta-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      color: var(--muted);
+    }
+    .meta-val {
+      color: var(--fg);
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 11px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      max-width: 240px;
+    }
+    .toast {
+      position: fixed;
+      left: 12px;
+      right: 12px;
+      bottom: 12px;
+      background: var(--surface-2);
+      border: 1px solid var(--border-strong);
+      color: var(--fg);
+      border-radius: 8px;
+      padding: 7px 11px;
+      font-size: 11.5px;
+      box-shadow: 0 8px 20px rgba(0, 0, 0, 0.35);
+      opacity: 0;
+      transform: translateY(8px);
+      pointer-events: none;
+      transition: opacity 150ms ease, transform 150ms ease;
+    }
+    .toast.show { opacity: 1; transform: translateY(0); }
+    .toast.err { border-color: var(--danger); color: var(--danger); }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <div class="header">
+      <div class="header-top">
+        <div class="brand">
+          <svg class="brand-icon" viewBox="0 0 64 64" aria-hidden="true">
+            <rect x="2" y="2" width="60" height="60" rx="14" fill="#1B1918" stroke="#D97757" stroke-width="3"/>
+            <g fill="#E07A58">
+              <rect x="14" y="13" width="6" height="6"/><rect x="44" y="13" width="6" height="6"/>
+              <rect x="11" y="19" width="9" height="4"/><rect x="44" y="19" width="9" height="4"/>
+              <rect x="14" y="23" width="36" height="17" rx="2"/><rect x="10" y="34" width="44" height="6" rx="1"/>
+              <rect x="14" y="40" width="6" height="7"/><rect x="23" y="40" width="5" height="6"/>
+              <rect x="36" y="40" width="5" height="6"/><rect x="44" y="40" width="6" height="7"/>
+            </g>
+            <g fill="#1B1918"><rect x="22" y="27" width="4" height="6"/><rect x="38" y="27" width="4" height="6"/></g>
+          </svg>
+          <div>
+            <span class="brand-title" id="brand-title">Claude Style</span>
+            <span class="brand-ver" id="brand-ver">v2.1.0</span>
+          </div>
+        </div>
+        <button type="button" class="btn" id="btn-refresh">刷新</button>
+      </div>
+      <div class="badges">
+        <span class="pill" id="pill-cdp"><span class="dot"></span><span id="txt-cdp">检查中…</span></span>
+        <span class="pill" id="pill-watcher"><span class="dot"></span><span id="txt-watcher">守护检查中</span></span>
+      </div>
+      <div class="actions">
+        <button type="button" class="btn btn-primary" id="btn-reinject">✦ 立即应用</button>
+        <button type="button" class="btn" id="btn-remove">还原原生</button>
+        <button type="button" class="btn" id="btn-reset">恢复默认</button>
+      </div>
+    </div>
+
+    <div class="banner" id="cdp-banner">
+      <div class="banner-title" id="cdp-banner-title">未检测到 Antigravity CDP 调试端口</div>
+      <div class="banner-desc" id="cdp-banner-desc">Antigravity 2.33+ 默认关闭远程调试端口，点击下方按钮可带 --remote-debugging-port=0 重启。</div>
+      <div>
+        <button type="button" class="btn btn-primary" id="btn-relaunch">一键带调试端口重启</button>
+      </div>
+    </div>
+
+    <div id="groups-root"></div>
+  </div>
+  <div class="toast" id="toast"></div>
+
+  <script>
+    const TEXT = {
+      'zh-CN': {
+        brand: 'Claude Style',
+        refresh: '刷新',
+        checking: '检查中…',
+        cdpOk: (p, n) => `CDP :${p} · ${n} 个目标`,
+        cdpOff: '未连接 CDP',
+        watcherOn: (pid) => `守护运行中 (PID ${pid})`,
+        watcherOff: '守护未运行',
+        reinject: '✦ 立即应用',
+        remove: '还原原生',
+        reset: '恢复默认',
+        cdpTitle: '未检测到 Antigravity CDP 调试端口',
+        cdpDesc: 'Antigravity 2.33+ 默认关闭远程调试端口，点击下方按钮可带参重启。',
+        relaunch: '一键带调试端口重启',
+        saved: (k) => `已更新 ${k}（实时生效）`,
+        ok: (l) => `${l}成功`,
+        fail: (l, e) => `${l}失败：${e}`,
+        grpAppearance: '外观与布局',
+        grpInteraction: '交互与 Rewind',
+        grpTelemetry: '双圆环与 Token HUD',
+        grpSystem: '协同插件与注入状态',
+        count: (n) => `${n} 项`,
+        installed: '已启用',
+        disabled: '已禁用',
+        notInstalled: '未安装',
+        targetsLabel: '已注入目标',
+        capsuleLabel: 'agy-capsule',
+        bridgeLabel: 'claude-capsule-bridge',
+        items: {
+          language: ['界面语言', '5 语言全局翻译（含 Swarm 侧栏），保留代码与原文', [['zh-CN', '简体中文'], ['zh-TW', '繁體中文'], ['yue', '粵語'], ['en', 'English'], ['ja', '日本語']]],
+          palette: ['主题配色', '选择黑曜石、Claude 暖灰或宿主原生配色', [['obsidian', '黑曜石'], ['claude', 'Claude 暖灰'], ['host', '宿主原生']]],
+          homeLayout: ['首页布局', '新对话首页：统计看板 / 经典居中 / 原生', [['studio', '统计看板'], ['classic', '经典居中'], ['off', '原生']]],
+          logoInk: ['首页 Logo 色彩', '首页顶部标志使用强调色或跟随文字色', [['accent', '强调色'], ['foreground', '文字色']]],
+          sidebarRestyle: ['侧边栏美化', '应用 Claude 风格侧栏行高与悬停高亮'],
+          sidebarCompact: ['紧凑侧边栏', '收紧列表间距以显示更多对话'],
+          composerRestyle: ['Claude 风格输入框', '圆角卡片输入框与紧凑底栏布局'],
+          placeholderStyle: ['输入框引导语', '选择 Studio 引导语或保留宿主原生提示', [['studio', 'Studio'], ['host', '原生']]],
+          rewindPanel: ['Rewind 回退面板', '输入 /rewind 或双击 Esc 在输入框上方打开时间线回退条'],
+          undoConfirmMode: ['撤销按钮行为', '点击消息旁 Undo 时的动作模式', [['picker', 'Rewind 面板'], ['prompt', '原生确认'], ['auto_both', '自动(代码+对话)'], ['auto_chat', '自动(仅对话)']]],
+          effortSliderStyle: ['思考强度滑块', '点击思考等级徽章弹出的滑块样式', [['claude', 'Claude'], ['chatgpt', 'Codex'], ['liangwufeng', '梁武锋']]],
+          effortAccent: ['Claude 推理色阶', 'Claude 滑块按思考等级显示蓝紫渐变'],
+          performanceBackdrop: ['性能模式背景', '梁武锋滑块背景展示方式', [['off', '关闭'], ['card', '卡片'], ['page', '全屏']]],
+          smoothCaret: ['丝滑打字光标', '平滑插值光标，兼容多行与中文输入法'],
+          mascot: ['像素螃蟹 Clawd', '输入框右上角状态互动像素螃蟹', [['crab', '开启'], ['off', '关闭']]],
+          homeRipple: ['首页字符波纹', '点击首页背景触发字符水波动画'],
+          inlineStats: ['底栏统计与圆环', '在输入框底栏渲染用量统计与圆环按钮'],
+          ringMode: ['右下角圆环模式', '单圆环或双圆环（左配额剩余 + 右上下文占用）', [['context', '上下文剩余'], ['quota', '配额剩余'], ['both', '双圆环']]],
+          turnBadges: ['每轮 #T 徽章', '在每轮 AI 回复底部显示上下文增量与速率'],
+          hudTopBar: ['顶部上下文进度条', '在输入框上方显示上下文分段进度条'],
+          hudBottomBar: ['底部详情统计栏', '在输入框下方显示上下文与配额统计条'],
+          hudRimProgress: ['流光边框进度', '沿输入框边线显示上下文占比进度'],
+          hudFooterChip: ['底栏剩余容量胶囊', '在底栏显示剩余上下文/配额胶囊按钮'],
+          hudCompact: ['HUD 紧凑模式', '缩小 HUD 与圆环边距字体节省空间'],
+          autoRelaunchWithCdp: ['无 CDP 时自动重拉', 'CLI 启动发现未开调试端口时自动带参重启'],
+        },
+      },
+      en: {
+        brand: 'Claude Style',
+        refresh: 'Refresh',
+        checking: 'Checking…',
+        cdpOk: (p, n) => `CDP :${p} · ${n} targets`,
+        cdpOff: 'CDP Disconnected',
+        watcherOn: (pid) => `Watcher PID ${pid}`,
+        watcherOff: 'Watcher Stopped',
+        reinject: '✦ Apply Now',
+        remove: 'Vanilla UI',
+        reset: 'Defaults',
+        cdpTitle: 'Antigravity CDP port not detected',
+        cdpDesc: 'Antigravity 2.33+ disables remote debugging by default. Click below to relaunch with --remote-debugging-port=0.',
+        relaunch: 'Relaunch with CDP',
+        saved: (k) => `Updated ${k} (live)`,
+        ok: (l) => `${l} succeeded`,
+        fail: (l, e) => `${l} failed: ${e}`,
+        grpAppearance: 'Appearance & Layout',
+        grpInteraction: 'Interaction & Rewind',
+        grpTelemetry: 'Dual Rings & Token HUD',
+        grpSystem: 'Companions & Status',
+        count: (n) => `${n}`,
+        installed: 'Enabled',
+        disabled: 'Disabled',
+        notInstalled: 'Not installed',
+        targetsLabel: 'Injected Targets',
+        capsuleLabel: 'agy-capsule',
+        bridgeLabel: 'claude-capsule-bridge',
+        items: {
+          language: ['Language', '5-language UI & Swarm localization (preserves code/chat)', [['zh-CN', '简体中文'], ['zh-TW', '繁體中文'], ['yue', '粵語'], ['en', 'English'], ['ja', '日本語']]],
+          palette: ['Color Palette', 'Obsidian, Claude warm gray, or host native', [['obsidian', 'Obsidian'], ['claude', 'Claude'], ['host', 'Host']]],
+          homeLayout: ['Home Layout', 'Usage dashboard / Classic / Native', [['studio', 'Dashboard'], ['classic', 'Classic'], ['off', 'Native']]],
+          logoInk: ['Home Logo Color', 'Accent color or plain foreground', [['accent', 'Accent'], ['foreground', 'Foreground']]],
+          sidebarRestyle: ['Sidebar Restyle', 'Claude-style row height and hover states'],
+          sidebarCompact: ['Compact Sidebar', 'Tighter spacing to show more chats'],
+          composerRestyle: ['Claude Composer', 'Rounded composer card and compact footer'],
+          placeholderStyle: ['Placeholder Copy', 'Studio prompt copy or host native', [['studio', 'Studio'], ['host', 'Host']]],
+          rewindPanel: ['Rewind Panel', 'Open inline timeline bar via /rewind or double-Esc'],
+          undoConfirmMode: ['Undo Button Mode', 'Action when clicking turn Undo button', [['picker', 'Rewind Bar'], ['prompt', 'Native Dialog'], ['auto_both', 'Auto (Code+Chat)'], ['auto_chat', 'Auto (Chat Only)']]],
+          effortSliderStyle: ['Effort Slider', 'Popover style for model thinking effort', [['claude', 'Claude'], ['chatgpt', 'Codex'], ['liangwufeng', 'Perf']]],
+          effortAccent: ['Claude Effort Gradient', 'Color-code effort levels with blue-violet gradient'],
+          performanceBackdrop: ['Performance Backdrop', 'Backdrop style for performance slider', [['off', 'Off'], ['card', 'Card'], ['page', 'Page']]],
+          smoothCaret: ['Smooth Caret', 'Interpolated typing caret (IME & multiline safe)'],
+          mascot: ['Pixel Crab Clawd', 'Reactive pixel crab on composer top-right', [['crab', 'On'], ['off', 'Off']]],
+          homeRipple: ['Home Ripple Field', 'Interactive ASCII ripple on home background'],
+          inlineStats: ['Footer Stats & Rings', 'Show inline telemetry and capacity rings in footer'],
+          ringMode: ['Ring Mode', 'Single ring or Dual Rings (Quota left + Used right)', [['context', 'Context Rem'], ['quota', 'Quota Rem'], ['both', 'Dual Rings']]],
+          turnBadges: ['Per-Turn #T Badges', 'Show delta tokens & speed under each reply'],
+          hudTopBar: ['Top Context Bar', 'Segmented context progress bar above composer'],
+          hudBottomBar: ['Bottom Telemetry Bar', 'Detailed context & quota bar below composer'],
+          hudRimProgress: ['Composer Rim Progress', 'Context progress line along composer rim'],
+          hudFooterChip: ['Footer Quota Chip', 'Remaining capacity/quota pill in footer'],
+          hudCompact: ['Compact HUD Mode', 'Condensed spacing and font sizes for HUD'],
+          autoRelaunchWithCdp: ['Auto Relaunch CDP', 'Auto-relaunch with CDP flag when invoked via CLI'],
+        },
+      },
+    };
+
+    const GROUPS = [
+      { id: 'appearance', icon: '🎨', titleKey: 'grpAppearance', keys: ['language', 'palette', 'homeLayout', 'logoInk', 'sidebarRestyle', 'sidebarCompact', 'composerRestyle', 'placeholderStyle'] },
+      { id: 'interaction', icon: '⏪', titleKey: 'grpInteraction', keys: ['rewindPanel', 'undoConfirmMode', 'effortSliderStyle', 'effortAccent', 'performanceBackdrop', 'smoothCaret', 'mascot', 'homeRipple'] },
+      { id: 'telemetry', icon: '◎', titleKey: 'grpTelemetry', keys: ['inlineStats', 'ringMode', 'turnBadges', 'hudTopBar', 'hudBottomBar', 'hudRimProgress', 'hudFooterChip', 'hudCompact'] },
+      { id: 'system', icon: '🔌', titleKey: 'grpSystem', keys: ['autoRelaunchWithCdp'], showMeta: true },
+    ];
+
+    const COLLAPSED_KEY = 'agCsPanelCollapsed';
+    let collapsed = {};
+    try { collapsed = JSON.parse(localStorage.getItem(COLLAPSED_KEY) || '{}') || {}; } catch {}
+
+    let state = { config: { language: 'zh-CN' }, status: null };
+    let toastTimer = null;
+
+    function t() {
+      const lang = state.config?.language || 'zh-CN';
+      return TEXT[lang] || (lang === 'zh-TW' || lang === 'yue' ? TEXT['zh-CN'] : TEXT.en);
+    }
+
+    function apiFetch(url, opts = {}) {
+      if (window.sidecar && typeof window.sidecar.fetch === 'function') {
+        return window.sidecar.fetch(url, opts);
+      }
+      return fetch(url, {
+        ...opts,
+        headers: { 'Content-Type': 'application/json', ...(opts.headers || {}) },
+      });
+    }
+
+    function showToast(msg, isErr = false) {
+      const el = document.getElementById('toast');
+      el.textContent = msg;
+      el.className = 'toast show' + (isErr ? ' err' : '');
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => { el.className = 'toast'; }, 2200);
+    }
+
+    function renderHeader() {
+      const tr = t();
+      const s = state.status;
+      document.getElementById('brand-title').textContent = tr.brand;
+      document.getElementById('brand-ver').textContent = s?.version ? `v${s.version}` : '';
+      document.getElementById('btn-refresh').textContent = tr.refresh;
+      document.getElementById('btn-reinject').textContent = tr.reinject;
+      document.getElementById('btn-remove').textContent = tr.remove;
+      document.getElementById('btn-reset').textContent = tr.reset;
+      document.getElementById('cdp-banner-title').textContent = tr.cdpTitle;
+      document.getElementById('cdp-banner-desc').textContent = tr.cdpDesc;
+      document.getElementById('btn-relaunch').textContent = tr.relaunch;
+
+      const cdpPill = document.getElementById('pill-cdp');
+      const cdpTxt = document.getElementById('txt-cdp');
+      const banner = document.getElementById('cdp-banner');
+      if (s?.cdp?.port) {
+        cdpPill.className = 'pill ok';
+        cdpTxt.textContent = tr.cdpOk(s.cdp.port, s.cdp.pageCount || 0);
+        banner.classList.remove('show');
+      } else if (s) {
+        cdpPill.className = 'pill warn';
+        cdpTxt.textContent = tr.cdpOff;
+        banner.classList.add('show');
+      } else {
+        cdpPill.className = 'pill';
+        cdpTxt.textContent = tr.checking;
+      }
+
+      const wPill = document.getElementById('pill-watcher');
+      const wTxt = document.getElementById('txt-watcher');
+      if (s?.watcher?.alive) {
+        wPill.className = 'pill ok';
+        wTxt.textContent = tr.watcherOn(s.watcher.pid);
+      } else if (s) {
+        wPill.className = 'pill';
+        wTxt.textContent = tr.watcherOff;
+      }
+    }
+
+    function formatCompanion(c, tr) {
+      if (!c || !c.installed) return tr.notInstalled;
+      const ver = c.version ? ` v${c.version}` : '';
+      return `${c.enabled ? tr.installed : tr.disabled}${ver}`;
+    }
+
+    function renderGroups() {
+      const tr = t();
+      const cfg = state.config || {};
+      const root = document.getElementById('groups-root');
+      root.innerHTML = '';
+
+      for (const grp of GROUPS) {
+        const isCollapsed = Boolean(collapsed[grp.id]);
+        const card = document.createElement('div');
+        card.className = 'group' + (isCollapsed ? ' collapsed' : '');
+
+        const head = document.createElement('button');
+        head.type = 'button';
+        head.className = 'group-head';
+        head.innerHTML = `<span class="group-head-left"><span>${grp.icon}</span><span>${tr[grp.titleKey]}</span><span class="group-count">${tr.count(grp.keys.length)}</span></span><span class="group-chev">▼</span>`;
+        head.addEventListener('click', () => {
+          collapsed[grp.id] = !collapsed[grp.id];
+          try { localStorage.setItem(COLLAPSED_KEY, JSON.stringify(collapsed)); } catch {}
+          card.classList.toggle('collapsed', collapsed[grp.id]);
+        });
+        card.appendChild(head);
+
+        const body = document.createElement('div');
+        body.className = 'group-body';
+
+        for (const key of grp.keys) {
+          const spec = tr.items[key];
+          if (!spec) continue;
+          const [title, desc, opts] = spec;
+          const curVal = cfg[key];
+          const row = document.createElement('div');
+          const dimmed =
+            (key === 'effortAccent' && cfg.effortSliderStyle !== 'claude') ||
+            (key === 'performanceBackdrop' && cfg.effortSliderStyle !== 'liangwufeng');
+          if (!opts) {
+            row.className = 'row bool-row' + (dimmed ? ' dimmed' : '');
+            const info = document.createElement('div');
+            info.className = 'row-info';
+            info.innerHTML = `<div class="row-title">${title}</div><div class="row-desc">${desc}</div>`;
+            const sw = document.createElement('button');
+            sw.type = 'button';
+            sw.className = 'switch' + (curVal ? ' on' : '');
+            sw.setAttribute('aria-pressed', String(Boolean(curVal)));
+            sw.addEventListener('click', () => saveSetting(key, !curVal));
+            row.appendChild(info);
+            row.appendChild(sw);
+          } else {
+            row.className = 'row' + (dimmed ? ' dimmed' : '');
+            const info = document.createElement('div');
+            info.className = 'row-info';
+            info.innerHTML = `<div class="row-title">${title}</div><div class="row-desc">${desc}</div>`;
+            const seg = document.createElement('div');
+            seg.className = 'seg';
+            for (const [val, label] of opts) {
+              const b = document.createElement('button');
+              b.type = 'button';
+              b.className = 'seg-btn' + (curVal === val ? ' active' : '');
+              b.textContent = label;
+              b.addEventListener('click', () => {
+                if (curVal !== val) saveSetting(key, val);
+              });
+              seg.appendChild(b);
+            }
+            row.appendChild(info);
+            row.appendChild(seg);
+          }
+          body.appendChild(row);
+        }
+
+        if (grp.showMeta && state.status) {
+          const meta = document.createElement('div');
+          meta.className = 'meta-list';
+          const pages = state.status.cdp?.pages || [];
+          const winCount = pages.filter((p) => p.kind === 'window').length;
+          const swarmCount = pages.filter((p) => p.kind === 'swarm').length;
+          meta.innerHTML = `
+            <div class="meta-item"><span>${tr.targetsLabel}</span><span class="meta-val">${winCount} Main · ${swarmCount} Swarm</span></div>
+            <div class="meta-item"><span>${tr.capsuleLabel}</span><span class="meta-val">${formatCompanion(state.status.companions?.capsule, tr)}</span></div>
+            <div class="meta-item"><span>${tr.bridgeLabel}</span><span class="meta-val">${formatCompanion(state.status.companions?.bridge, tr)}</span></div>
+          `;
+          body.appendChild(meta);
+        }
+
+        card.appendChild(body);
+        root.appendChild(card);
+      }
+    }
+
+    async function saveSetting(key, value) {
+      const tr = t();
+      try {
+        const res = await apiFetch('/api/config', {
+          method: 'POST',
+          body: JSON.stringify({ key, value }),
+        });
+        const data = await res.json();
+        if (!res.ok || !data.ok) {
+          showToast(tr.fail(key, data?.error || 'invalid'), true);
+          return;
+        }
+        state.config = data.config || { ...state.config, [key]: value };
+        renderHeader();
+        renderGroups();
+        showToast(tr.saved(key));
+      } catch (err) {
+        showToast(tr.fail(key, err.message || String(err)), true);
+      }
+    }
+
+    async function refreshStatus() {
+      try {
+        const res = await apiFetch('/api/status', { method: 'GET' });
+        const data = await res.json();
+        if (data && data.ok) {
+          state.status = data;
+          state.config = data.config || state.config;
+          renderHeader();
+          renderGroups();
+        }
+      } catch (err) {
+        showToast(String(err.message || err), true);
+      }
+    }
+
+    async function postAction(endpoint, btnId) {
+      const tr = t();
+      const btn = document.getElementById(btnId);
+      const label = btn ? btn.textContent.replace(/^✦\s*/, '') : endpoint;
+      if (btn) btn.disabled = true;
+      try {
+        const res = await apiFetch(endpoint, { method: 'POST', body: '{}' });
+        const data = await res.json();
+        if (!res.ok || !data.ok) {
+          showToast(tr.fail(label, data?.reason || data?.error || res.status), true);
+        } else {
+          if (data.config) state.config = data.config;
+          showToast(tr.ok(label));
+          await refreshStatus();
+        }
+      } catch (err) {
+        showToast(tr.fail(label, err.message || String(err)), true);
+      } finally {
+        if (btn) btn.disabled = false;
+      }
+    }
+
+    document.getElementById('btn-refresh').addEventListener('click', () => refreshStatus());
+    document.getElementById('btn-reinject').addEventListener('click', () => postAction('/api/reinject', 'btn-reinject'));
+    document.getElementById('btn-remove').addEventListener('click', () => postAction('/api/remove', 'btn-remove'));
+    document.getElementById('btn-reset').addEventListener('click', () => postAction('/api/reset', 'btn-reset'));
+    document.getElementById('btn-relaunch').addEventListener('click', () => postAction('/api/relaunch', 'btn-relaunch'));
+
+    refreshStatus();
+    setInterval(refreshStatus, 6000);
+  </script>
+</body>
+</html>
