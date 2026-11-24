@@ -5152,6 +5152,26 @@
           [false, ui.offLabel || 'Off'],
         ],
       },
+      rewindPanel: {
+        key: 'rewindPanel',
+        title: ui.setRewindPanelTitle || 'Rewind Timeline Panel',
+        desc: ui.setRewindPanelDesc || 'Type /rewind or press Esc twice in composer to open the inline Claude Code-style rewind bar.',
+        opts: [
+          [true, ui.onLabel || 'On'],
+          [false, ui.offLabel || 'Off'],
+        ],
+      },
+      undoConfirmMode: {
+        key: 'undoConfirmMode',
+        title: ui.setUndoConfirmTitle || 'Undo Button Behavior',
+        desc: ui.setUndoConfirmDesc || 'Behavior when clicking Undo on a turn: open the Rewind bar, keep native confirm, or auto-confirm.',
+        opts: [
+          ['picker', ui.optUndoPicker || 'Rewind Picker (Default)'],
+          ['prompt', ui.optUndoPrompt || 'Ask (Native Dialog)'],
+          ['auto_both', ui.optUndoAutoBoth || 'Auto (Code + Chat)'],
+          ['auto_chat', ui.optUndoAutoChat || 'Auto (Chat Only)'],
+        ],
+      },
     };
 
     const groups = [
@@ -5163,7 +5183,7 @@
       {
         id: 'interaction',
         title: ui.grpInteraction || 'Slider, Caret & Mascot',
-        keys: ['effortSliderStyle', 'effortAccent', 'performanceBackdrop', 'smoothCaret', 'mascot', 'homeRipple'],
+        keys: ['effortSliderStyle', 'effortAccent', 'performanceBackdrop', 'smoothCaret', 'mascot', 'homeRipple', 'rewindPanel', 'undoConfirmMode'],
       },
       {
         id: 'telemetry',
@@ -5310,6 +5330,46 @@
     syncQueued = false;
   }
 
+  // ── Feature host ─────────────────────────────────────────────────────
+  // Self-contained features live in ui-<feature>.js and register on
+  // globalThis.__agCsFeatures.<name> = { create(ctx) }. Each instance may expose
+  // sync(), onClick(ev), onKeyDown(ev) -> boolean (consumed), onEscape(ev, info), destroy().
+  const FEATURE_ORDER = ['rewind'];
+  const featureCtx = {
+    getCfg: () => cfg,
+    getUi: () => uiText(getLang()),
+    isDestroyed: () => destroyed,
+  };
+  const features = [];
+  for (const name of FEATURE_ORDER) {
+    const mod = globalThis.__agCsFeatures && globalThis.__agCsFeatures[name];
+    if (!mod || typeof mod.create !== 'function') continue;
+    try {
+      const inst = mod.create(featureCtx);
+      if (inst) features.push(inst);
+    } catch (e) {
+      if (typeof console !== 'undefined' && console.error) console.error('[agy-claude-style] feature init failed:', name, e);
+    }
+  }
+  function forEachFeature(method, ...args) {
+    for (const f of features) {
+      if (typeof f[method] !== 'function') continue;
+      try {
+        f[method](...args);
+      } catch {}
+    }
+  }
+  function featuresConsume(method, ev) {
+    for (const f of features) {
+      if (typeof f[method] !== 'function') continue;
+      try {
+        if (f[method](ev)) return true;
+      } catch {}
+    }
+    return false;
+  }
+  const FEATURE_OWN_SELECTORS = features.map((f) => f.ownSelector).filter(Boolean);
+
   function isOwnPluginNode(target) {
     const el = target && target.closest ? target : target?.parentElement;
     if (!el || !el.closest) return false;
@@ -5317,7 +5377,8 @@
       el.closest(
         '.ag-cs-home-panel-seat, .ag-cs-ripple-host, .ag-cs-crab, .ag-cs-inline-stats, .ag-cs-context-ring, .ag-cs-ctx-popover, .ag-cs-effort-popover, .ag-cs-perf-backdrop, .ag-cs-smooth-caret, .ag-cs-turn-bar, .ag-cs-hud-top-bar, .ag-cs-hud-bottom-bar, .ag-cs-hud-footer-chip, #' +
           SETTINGS_SEC_ID +
-          ', #ag-claude-style-css'
+          ', #ag-claude-style-css' +
+          (FEATURE_OWN_SELECTORS.length ? ', ' + FEATURE_OWN_SELECTORS.join(', ') : '')
       )
     );
   }
@@ -5341,6 +5402,7 @@
     syncRipple();
     syncComposers();
     ensureSettingsSection();
+    forEachFeature('sync');
   }
 
   function scheduleSync() {
@@ -5426,6 +5488,7 @@
   }
 
   function onDocClick(ev) {
+    if (featuresConsume('onClick', ev)) return;
     const effortBadge = findClickedEffortBadge(ev);
     if (effortBadge) {
       ev.stopPropagation();
@@ -5451,9 +5514,12 @@
   }
 
   function onDocKeyDown(ev) {
+    if (featuresConsume('onKeyDown', ev)) return;
     if (ev.key === 'Escape') {
+      const hadPopover = Boolean(openPopover || openEffortPop);
       if (openPopover) closeContextPopover();
       if (openEffortPop) closeEffortPopover();
+      forEachFeature('onEscape', ev, { hadPopover });
       return;
     }
     if (
@@ -5794,6 +5860,7 @@
         unmountPanelSeat,
         unmountCrab,
         restoreGreetings,
+        () => forEachFeature('destroy'),
         () => domTranslator && typeof domTranslator.destroy === 'function' && domTranslator.destroy(),
       ]) {
         try {
@@ -5816,7 +5883,7 @@
       });
       document
         .querySelectorAll(
-          '.ag-cs-inline-stats, .ag-cs-context-ring, .ag-cs-hud-top-bar, .ag-cs-hud-bottom-bar, .ag-cs-hud-rim-progress, .ag-cs-hud-footer-chip, .ag-cs-perf-backdrop, #' + SETTINGS_SEC_ID
+          '.ag-cs-inline-stats, .ag-cs-context-ring, .ag-cs-hud-top-bar, .ag-cs-hud-bottom-bar, .ag-cs-hud-rim-progress, .ag-cs-hud-footer-chip, .ag-cs-perf-backdrop, .ag-cs-rewind-bar, .ag-cs-rewind-notice, .ag-cs-rewind-backdrop, #' + SETTINGS_SEC_ID
         )
         .forEach((el) => el.remove());
       const html = document.documentElement;

@@ -21,6 +21,8 @@
   "sidebarRestyle": true,
   "sidebarCompact": false,
   "placeholderStyle": "studio",
+  "rewindPanel": true,
+  "undoConfirmMode": "picker",
   "autoRelaunchWithCdp": true,
   "exitOnHostClose": false
 }
