@@ -441,6 +441,7 @@
         renderPricingMeta(d.pricing || null);
         renderModelHealth(d.modelHealth || null);
         renderWeeklyQuotaCard(lastWeeklyQuota);
+        void refreshSubagents();
         const todayText = document.getElementById('heat-today-text');
         const filterTodayBtn = document.getElementById('btn-filter-today');
         if (lastTodaySummary) {
@@ -637,6 +638,105 @@
       healthHead.addEventListener('click', () => {
         document.getElementById('sec-health').classList.toggle('collapsed');
       });
+    }
+    const subagentsHead = document.getElementById('subagents-head');
+    if (subagentsHead) {
+      subagentsHead.addEventListener('click', () => {
+        document.getElementById('sec-subagents')?.classList.toggle('collapsed');
+      });
+    }
+
+    function renderSubagentTree(tree) {
+      const listEl = document.getElementById('subagent-list');
+      const sumEl = document.getElementById('subagent-summary');
+      if (!listEl || !sumEl) return;
+      if (!tree || !tree.available) {
+        sumEl.textContent = '未连接 LS';
+        listEl.innerHTML = '<div style="text-align:center;color:var(--muted-fg);padding:8px 0;font-size:11px;">暂未连接到 Language Server，无法读取实时任务树</div>';
+        return;
+      }
+      const items = [...(tree.running || []), ...(tree.recent || [])];
+      const activeSubs = items.reduce((acc, it) => acc + (Number(it.activeSubagentCount) || 0), 0);
+      sumEl.textContent =
+        (tree.running?.length || 0) > 0
+          ? `${tree.running.length} 运行中${activeSubs > 0 ? ` · ${activeSubs} 子代理` : ''}`
+          : items.length > 0
+          ? `空闲 · 最近 ${items.length} 个`
+          : '暂无任务';
+
+      if (items.length === 0) {
+        listEl.innerHTML = '<div style="text-align:center;color:var(--muted-fg);padding:8px 0;font-size:11px;">暂无活跃或近期对话</div>';
+        return;
+      }
+
+      listEl.innerHTML = '';
+      for (const item of items) {
+        const isRun = item.runState === 'RUN_STATE_RUNNING' || item.runState === 'RUN_STATE_CANCELLING';
+        const card = document.createElement('div');
+        card.className = 'subagent-tree-item';
+        const head = document.createElement('div');
+        head.className = 'subagent-tree-head';
+        const title = document.createElement('span');
+        title.className = 'subagent-tree-title';
+        title.textContent = item.title || 'Untitled Conversation';
+        title.title = `${item.title || ''} (${item.id || ''})`;
+        const badge = document.createElement('span');
+        badge.className = 'subagent-badge' + (isRun ? ' is-running' : '');
+        badge.textContent = isRun
+          ? `运行中${item.subagentCount ? ` · ${item.subagentCount} 子代理` : ''}`
+          : item.subagentCount
+          ? `${item.subagentCount} 子代理`
+          : `${item.stepCount || 0} 步`;
+        head.appendChild(title);
+        head.appendChild(badge);
+        card.appendChild(head);
+
+        const subs = Array.isArray(item.subagents) ? item.subagents : [];
+        if (subs.length > 0) {
+          const children = document.createElement('div');
+          children.className = 'subagent-tree-children';
+          for (const sub of subs) {
+            const row = document.createElement('div');
+            row.className = 'subagent-child-row';
+            const st = document.createElement('span');
+            st.className = 'subagent-tree-title';
+            st.textContent = `${sub.kind === 'swarm' ? '🐝' : '↳'} ${sub.title || 'Subagent'}`;
+            const sb = document.createElement('span');
+            sb.className =
+              'subagent-badge' +
+              (sub.state === 'running' || sub.state === 'cancelling'
+                ? ' is-running'
+                : sub.state === 'error'
+                ? ' is-error'
+                : sub.kind === 'swarm'
+                ? ' is-swarm'
+                : '');
+            sb.textContent =
+              sub.state === 'running'
+                ? '运行中'
+                : sub.state === 'cancelling'
+                ? '停止中'
+                : sub.state === 'error'
+                ? '异常'
+                : sub.state === 'stopped'
+                ? '已中止'
+                : `已完成 · ${sub.stepCount || 0}步`;
+            row.appendChild(st);
+            row.appendChild(sb);
+            children.appendChild(row);
+          }
+          card.appendChild(children);
+        }
+        listEl.appendChild(card);
+      }
+    }
+
+    async function refreshSubagents() {
+      try {
+        const res = await app.apiFetch('/api/subagents', { method: 'GET' });
+        const tree = await res.json();
+        renderSubagentTree(tree);
+      } catch {}
     }
     const pricingBtn = document.getElementById('btn-dash-pricing');
     if (pricingBtn) {

@@ -10,6 +10,7 @@ import { queryTelemetryDashboard } from './lib/telemetry-db.mjs';
 import { createPricingStore } from './lib/pricing.mjs';
 import { createQuotaTracker } from './lib/quota-tracker.mjs';
 import { fetchSshRemoteRequests, listConfiguredSshHosts } from './lib/ssh-remote.mjs';
+import { fetchSubagentTree } from './lib/subagent-tree.mjs';
 import {
   buildProxyLaunchOptions,
   detectHostProxyRuntime,
@@ -414,6 +415,10 @@ async function startPanelSidecar() {
   app.api('/api/pricing/refresh', guardApi(async () => {
     return await pricingStore.refresh({ force: true });
   }), 'POST');
+
+  app.api('/api/subagents', guardApi(async () => {
+    return await fetchSubagentTree();
+  }), 'GET');
 
   app.api('/api/telemetry', guardApi(async (data) => {
     const cfg = cdp.readConfig();
