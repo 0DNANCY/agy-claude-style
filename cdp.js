@@ -102,7 +102,7 @@ const DEFAULT_CONFIG = {
   proxyEnabled: false,
   proxyUrl: '',
   proxyBypass: 'localhost,127.0.0.1,::1',
-  proxyForceHttp1: false,
+  proxyForceHttp1: true,
   proxyColdStartAlert: true,
   autoRelaunchWithCdp: true,
   exitOnHostClose: false,
@@ -1506,11 +1506,14 @@ async function ensureAntigravityWithCdp(opts = {}) {
       return { ok: true, action: 'waiting-cdp', pids };
     }
     if (shouldRelaunch) {
-      const res = await relaunchFn({
+      const relaunchOpts = {
         port: opts.port ?? 0,
         waitMs: opts.waitMs,
         appPath: opts.appPath,
-      });
+      };
+      if (Array.isArray(opts.extraArgs) && opts.extraArgs.length) relaunchOpts.extraArgs = opts.extraArgs;
+      if (opts.extraEnv && Object.keys(opts.extraEnv).length) relaunchOpts.extraEnv = opts.extraEnv;
+      const res = await relaunchFn(relaunchOpts);
       if (res && res.relaunched) {
         return { ok: true, action: 'relaunched' };
       }
@@ -1519,7 +1522,10 @@ async function ensureAntigravityWithCdp(opts = {}) {
     return { ok: false, action: 'running-without-cdp', pids };
   }
 
-  const launched = launchFn({ port: opts.port ?? 0, appPath: opts.appPath });
+  const launchOpts = { port: opts.port ?? 0, appPath: opts.appPath };
+  if (Array.isArray(opts.extraArgs) && opts.extraArgs.length) launchOpts.extraArgs = opts.extraArgs;
+  if (opts.extraEnv && Object.keys(opts.extraEnv).length) launchOpts.extraEnv = opts.extraEnv;
+  const launched = launchFn(launchOpts);
   if (launched) {
     return { ok: true, action: 'launched' };
   }
@@ -1654,9 +1660,13 @@ if (cfg.isWin && !process.env.AGY_RELAUNCH_STAGE2 && process.env.AGY_RELAUNCH_CO
         await sleep(250);
       }
       log('cdpPortReady=' + Boolean(cfg.portFile && fs.existsSync(cfg.portFile)));
-      try {
-        execFileSync('/usr/bin/osascript', ['-e', 'tell application "Antigravity" to activate'], { timeout: 3000, stdio: 'ignore' });
-      } catch {}
+      // Bring Antigravity to foreground via /usr/bin/open (no osascript -> no macOS Automation prompt)
+      if (cfg.appPath && fs.existsSync(cfg.appPath)) {
+        try {
+          const act = spawn('/usr/bin/open', ['-a', cfg.appPath], { detached: true, stdio: 'ignore' });
+          act.unref();
+        } catch {}
+      }
     } else {
       log('fallback open -a ' + (cfg.appPath || 'Antigravity'));
       const child = spawn('/usr/bin/open', ['-a', cfg.appPath || 'Antigravity', '--args', ...(cfg.launchArgs || [])], {
@@ -1782,6 +1792,222 @@ async function relaunchAntigravityWithCdp(opts = {}) {
   return { relaunched: launched, reason: launched ? 'ok' : 'executable-not-found' };
 }
 
+const RELAUNCH_GUARD_FILE = path.join(STATE_DIR, 'relaunch-guard.json');
+const AUTO_RELAUNCH_COOLDOWN_MS = 120000;
+const AUTO_RELAUNCH_MAX_FAILURES = 2;
+
+function defaultRelaunchGuard() {
+  return {
+    lastAttemptAt: 0,
+    lastPidSig: '',
+    consecutiveFailures: 0,
+    tripped: false,
+    trippedAt: 0,
+    lastReason: '',
+    lastSuccessAt: 0,
+  };
+}
+
+function readRelaunchGuard(guardPath = RELAUNCH_GUARD_FILE) {
+  try {
+    if (!fs.existsSync(guardPath)) return defaultRelaunchGuard();
+    const parsed = JSON.parse(fs.readFileSync(guardPath, 'utf8'));
+    if (!parsed || typeof parsed !== 'object') return defaultRelaunchGuard();
+    return {
+      ...defaultRelaunchGuard(),
+      lastAttemptAt: Number(parsed.lastAttemptAt) || 0,
+      lastPidSig: String(parsed.lastPidSig || ''),
+      consecutiveFailures: Math.max(0, Number(parsed.consecutiveFailures) || 0),
+      tripped: Boolean(parsed.tripped),
+      trippedAt: Number(parsed.trippedAt) || 0,
+      lastReason: String(parsed.lastReason || ''),
+      lastSuccessAt: Number(parsed.lastSuccessAt) || 0,
+    };
+  } catch {
+    return defaultRelaunchGuard();
+  }
+}
+
+function writeRelaunchGuard(state, guardPath = RELAUNCH_GUARD_FILE) {
+  try {
+    writeFileAtomic(guardPath, JSON.stringify({ ...defaultRelaunchGuard(), ...(state || {}) }, null, 2) + '\n');
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function evaluateAutoRelaunchGuard(
+  guard,
+  {
+    pidSig = '',
+    nowMs = Date.now(),
+    cooldownMs = AUTO_RELAUNCH_COOLDOWN_MS,
+    maxFailures = AUTO_RELAUNCH_MAX_FAILURES,
+  } = {}
+) {
+  const g = { ...defaultRelaunchGuard(), ...(guard || {}) };
+  if (g.tripped || g.consecutiveFailures >= maxFailures) {
+    return { allowed: false, reason: 'circuit-breaker', consecutiveFailures: g.consecutiveFailures };
+  }
+  if (pidSig && g.lastPidSig === pidSig) {
+    return { allowed: false, reason: 'same-pid', consecutiveFailures: g.consecutiveFailures };
+  }
+  if (g.lastAttemptAt > 0 && nowMs - g.lastAttemptAt < cooldownMs) {
+    return {
+      allowed: false,
+      reason: 'cooldown',
+      remainingCooldownMs: Math.max(0, cooldownMs - (nowMs - g.lastAttemptAt)),
+      consecutiveFailures: g.consecutiveFailures,
+    };
+  }
+  return { allowed: true, reason: 'ok', consecutiveFailures: g.consecutiveFailures };
+}
+
+function recordAutoRelaunchAttempt(
+  { pidSig = '', nowMs = Date.now(), reason = 'cold-start-no-cdp', maxFailures = AUTO_RELAUNCH_MAX_FAILURES } = {},
+  guardPath = RELAUNCH_GUARD_FILE
+) {
+  const prev = readRelaunchGuard(guardPath);
+  const consecutiveFailures = prev.consecutiveFailures + 1;
+  const tripped = consecutiveFailures >= maxFailures;
+  const next = {
+    ...prev,
+    lastAttemptAt: nowMs,
+    lastPidSig: String(pidSig || ''),
+    consecutiveFailures,
+    tripped,
+    trippedAt: tripped ? nowMs : prev.trippedAt,
+    lastReason: String(reason || ''),
+  };
+  writeRelaunchGuard(next, guardPath);
+  return next;
+}
+
+function resetRelaunchGuard({ markSuccess = false, reason = '', nowMs = Date.now() } = {}, guardPath = RELAUNCH_GUARD_FILE) {
+  const prev = readRelaunchGuard(guardPath);
+  const dirty = prev.consecutiveFailures > 0 || prev.tripped || Boolean(prev.lastPidSig) || prev.lastAttemptAt > 0;
+  if (!dirty && !markSuccess) return prev;
+  const next = {
+    ...defaultRelaunchGuard(),
+    lastSuccessAt: markSuccess ? nowMs : prev.lastSuccessAt,
+    lastReason: String(reason || (markSuccess ? 'cdp-connected' : '')),
+  };
+  if (dirty || (markSuccess && prev.lastSuccessAt === 0)) {
+    writeRelaunchGuard(next, guardPath);
+  }
+  return next;
+}
+
+function readEffectiveLaunchConfig(configPath = CONFIG_FILE, homeDir = os.homedir()) {
+  const cfg = readConfig(configPath);
+  if (cfg.proxyEnabled && cfg.proxyUrl) return cfg;
+  if (!CONFIG_FILE_ENV && homeDir) {
+    const nativeCfgPath = path.join(homeDir, '.gemini', 'antigravity', 'plugin_data', 'agy-claude-style', 'config.json');
+    if (path.resolve(nativeCfgPath).toLowerCase() !== path.resolve(configPath).toLowerCase() && fs.existsSync(nativeCfgPath)) {
+      const nativeCfg = readConfig(nativeCfgPath);
+      if (nativeCfg.proxyEnabled && nativeCfg.proxyUrl) {
+        return {
+          ...cfg,
+          proxyEnabled: nativeCfg.proxyEnabled,
+          proxyUrl: nativeCfg.proxyUrl,
+          proxyBypass: nativeCfg.proxyBypass,
+          proxyForceHttp1: nativeCfg.proxyForceHttp1,
+        };
+      }
+    }
+  }
+  return cfg;
+}
+
+function buildProxyLaunchOptionsFromConfig(cfg = {}) {
+  if (!cfg || cfg.proxyEnabled !== true) return { args: [], env: {} };
+  const raw = typeof cfg.proxyUrl === 'string' ? cfg.proxyUrl.trim() : '';
+  if (!raw || raw.length > 256 || /[\x00-\x1f\x7f\s'"`\\;$|&<>]/.test(raw)) return { args: [], env: {} };
+  let parsed;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    return { args: [], env: {} };
+  }
+  if (!['http:', 'https:', 'socks5:', 'socks5h:'].includes(parsed.protocol) || !parsed.hostname) {
+    return { args: [], env: {} };
+  }
+  if ((parsed.pathname && parsed.pathname !== '/') || parsed.search || parsed.hash) {
+    return { args: [], env: {} };
+  }
+  const auth = parsed.username ? `${parsed.username}${parsed.password ? `:${parsed.password}` : ''}@` : '';
+  const host = parsed.hostname.includes(':') && !parsed.hostname.startsWith('[') ? `[${parsed.hostname}]` : parsed.hostname;
+  const port = parsed.port ? `:${parsed.port}` : '';
+  const normalized = `${parsed.protocol}//${auth}${host}${port}`;
+
+  const rawBypass = String(cfg.proxyBypass || 'localhost,127.0.0.1,::1').trim();
+  const safeBypass = /[\x00-\x1f\x7f'"`\\$|&<>]/.test(rawBypass) ? 'localhost,127.0.0.1,::1' : rawBypass;
+  const parts = safeBypass.split(/[;,\s]+/).map((s) => s.trim()).filter(Boolean);
+  const seen = new Set(parts.map((p) => p.toLowerCase()));
+  for (const req of ['localhost', '127.0.0.1', '::1']) {
+    if (!seen.has(req)) {
+      parts.unshift(req);
+      seen.add(req);
+    }
+  }
+  const bypass = parts.join(',');
+  const chromiumBypass = parts.map((s) => (s === '::1' ? '[::1]' : s)).join(';');
+  const noProxy = bypass.includes('[::1]') ? bypass : `${bypass},[::1]`;
+  const args = [`--proxy-server=${normalized}`, `--proxy-bypass-list=${chromiumBypass}`];
+  const env = {
+    HTTP_PROXY: normalized,
+    HTTPS_PROXY: normalized,
+    ALL_PROXY: normalized,
+    NO_PROXY: noProxy,
+    http_proxy: normalized,
+    https_proxy: normalized,
+    all_proxy: normalized,
+    no_proxy: noProxy,
+  };
+  if (cfg.proxyForceHttp1 !== false) env.GODEBUG = 'http2client=0';
+  return { args, env };
+}
+
+function hasConfiguredProxyFlag(pids, cfg = {}, { inspectCmdFn = inspectProcessCommand } = {}) {
+  const proxyOpts = buildProxyLaunchOptionsFromConfig(cfg);
+  const expectedArg = proxyOpts.args.find((a) => a.startsWith('--proxy-server='));
+  if (!expectedArg) {
+    return { required: false, matched: true, inspected: false, expectedUrl: '' };
+  }
+  const expectedUrl = expectedArg.slice('--proxy-server='.length);
+  const list = Array.isArray(pids) ? pids : [];
+  let inspectedAny = false;
+  for (const pid of list) {
+    const cmd = inspectCmdFn(pid);
+    if (!cmd) continue;
+    inspectedAny = true;
+    const m = String(cmd).match(/--proxy-server=(?:"([^"]+)"|'([^']+)'|(\S+))/);
+    const activeUrl = m ? String(m[1] || m[2] || m[3] || '').trim() : '';
+    if (activeUrl === expectedUrl) {
+      return { required: true, matched: true, inspected: true, expectedUrl };
+    }
+  }
+  if (!inspectedAny) {
+    return { required: true, matched: true, inspected: false, expectedUrl };
+  }
+  return { required: true, matched: false, inspected: true, expectedUrl };
+}
+
+function cleanupLegacyMacLauncher({ homeDir = os.homedir(), platform = process.platform } = {}) {
+  if (platform !== 'darwin') return { removed: false, path: '' };
+  const legacyPath = path.join(homeDir, 'Applications', 'Antigravity (AGY Claude Style).app');
+  try {
+    if (!fs.existsSync(legacyPath)) return { removed: false, path: legacyPath };
+    const stat = fs.lstatSync(legacyPath);
+    if (!stat.isDirectory() && !stat.isSymbolicLink()) return { removed: false, path: legacyPath };
+    fs.rmSync(legacyPath, { recursive: true, force: true });
+    return { removed: true, path: legacyPath };
+  } catch {
+    return { removed: false, path: legacyPath };
+  }
+}
+
 function formatCdpUnavailableMessage({ running, port }) {
   const launchHint = IS_MAC
     ? 'open -a Antigravity --args --remote-debugging-port=0（或运行 ./launch.sh）'
@@ -1817,6 +2043,7 @@ module.exports = {
   validateConfigSetting,
   writeFileAtomic,
   readConfig,
+  readEffectiveLaunchConfig,
   updateConfigSetting,
   readPort,
   SWARM_SIDECAR_URL_PREFIX,
@@ -1842,6 +2069,17 @@ module.exports = {
   launchAntigravityWithCdp,
   scheduleDetachedRelaunch,
   relaunchAntigravityWithCdp,
+  RELAUNCH_GUARD_FILE,
+  AUTO_RELAUNCH_COOLDOWN_MS,
+  AUTO_RELAUNCH_MAX_FAILURES,
+  readRelaunchGuard,
+  writeRelaunchGuard,
+  evaluateAutoRelaunchGuard,
+  recordAutoRelaunchAttempt,
+  resetRelaunchGuard,
+  buildProxyLaunchOptionsFromConfig,
+  hasConfiguredProxyFlag,
+  cleanupLegacyMacLauncher,
   ensureAntigravityWithCdp,
   formatCdpUnavailableMessage,
   CdpSession,

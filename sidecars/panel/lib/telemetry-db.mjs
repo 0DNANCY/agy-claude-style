@@ -268,7 +268,9 @@ export function parseTranscriptJsonl(rawText = '', conversationId = '', sourceLa
     const outputTokens = Math.max(0, Number(obj.output_tokens ?? obj.usage?.output_tokens ?? 0) || 0);
     if (inputTokens === 0 && outputTokens === 0 && cacheReadTokens === 0 && obj.status !== 'ERROR') continue;
 
-    const totalIn = Math.max(inputTokens, cacheReadTokens);
+    // In Antigravity transcript.jsonl, input_tokens is uncached (fresh) input tokens
+    // and cache_read_tokens is cached input tokens, so total input = fresh + cached.
+    const totalIn = inputTokens + cacheReadTokens;
     const cacheHitPct = totalIn > 0 ? Math.min(100, (cacheReadTokens / totalIn) * 100) : 0;
     const tsMs = Date.parse(obj.created_at || '') || 0;
     let responseMs = null;

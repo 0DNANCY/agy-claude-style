@@ -566,6 +566,7 @@
             if (matched && Number.isInteger(matched.stepIndex)) {
               await svc.revertToCascadeStep({ cascadeId, stepIndex: matched.stepIndex, keepCodeChanges: true });
               reverted = true;
+              if (typeof ctx.scheduleSync === 'function') ctx.scheduleSync();
             }
           }
           closeActiveEditor();

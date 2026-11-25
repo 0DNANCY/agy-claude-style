@@ -15,18 +15,21 @@ const taskProgress = require('../features/task-progress.js');
 test('telemetry-db detects short-interval cache drop anomalies and exempts post-compaction calls', () => {
   const baseMs = Date.parse('2026-11-24T04:00:00Z');
   const jsonl = [
-    JSON.stringify({ step_index: 1, type: 'PLANNER_RESPONSE', status: 'DONE', created_at: new Date(baseMs).toISOString(), model: 'gemini-4-neon-high', input_tokens: 20000, cache_read_tokens: 18000, output_tokens: 400 }),
+    JSON.stringify({ step_index: 1, type: 'PLANNER_RESPONSE', status: 'DONE', created_at: new Date(baseMs).toISOString(), model: 'gemini-4-neon-high', input_tokens: 2000, cache_read_tokens: 18000, output_tokens: 400 }),
     // 30s later, cache hit drops from 90% -> 10% with similar input size => anomaly!
-    JSON.stringify({ step_index: 2, type: 'PLANNER_RESPONSE', status: 'DONE', created_at: new Date(baseMs + 30_000).toISOString(), model: 'gemini-4-neon-high', input_tokens: 21000, cache_read_tokens: 2100, output_tokens: 300 }),
+    JSON.stringify({ step_index: 2, type: 'PLANNER_RESPONSE', status: 'DONE', created_at: new Date(baseMs + 30_000).toISOString(), model: 'gemini-4-neon-high', input_tokens: 18900, cache_read_tokens: 2100, output_tokens: 300 }),
     // Recover cache to 85%
-    JSON.stringify({ step_index: 3, type: 'PLANNER_RESPONSE', status: 'DONE', created_at: new Date(baseMs + 60_000).toISOString(), model: 'gemini-4-neon-high', input_tokens: 22000, cache_read_tokens: 18700, output_tokens: 200 }),
+    JSON.stringify({ step_index: 3, type: 'PLANNER_RESPONSE', status: 'DONE', created_at: new Date(baseMs + 60_000).toISOString(), model: 'gemini-4-neon-high', input_tokens: 3300, cache_read_tokens: 18700, output_tokens: 200 }),
     // Checkpoint compaction => next call drops cache but MUST NOT be flagged as anomaly
     JSON.stringify({ step_index: 4, type: 'CHECKPOINT', status: 'DONE', created_at: new Date(baseMs + 70_000).toISOString() }),
-    JSON.stringify({ step_index: 5, type: 'PLANNER_RESPONSE', status: 'DONE', created_at: new Date(baseMs + 90_000).toISOString(), model: 'gemini-4-neon-high', input_tokens: 8000, cache_read_tokens: 500, output_tokens: 250 }),
+    JSON.stringify({ step_index: 5, type: 'PLANNER_RESPONSE', status: 'DONE', created_at: new Date(baseMs + 90_000).toISOString(), model: 'gemini-4-neon-high', input_tokens: 7500, cache_read_tokens: 500, output_tokens: 250 }),
   ].join('\n');
 
   const rows = telemetry.parseTranscriptJsonl(jsonl, 'convo-1', 'local');
   assert.equal(rows.length, 4);
+  assert.equal(rows[0].inputTokens, 20000);
+  assert.equal(Number(rows[0].cacheHitPct.toFixed(1)), 90);
+  assert.equal(Number(rows[1].cacheHitPct.toFixed(1)), 10);
   const anomalies = telemetry.detectCacheDropAnomalies(rows);
   assert.equal(anomalies.size, 1);
   assert.ok(anomalies.has('local:convo-1:2'));
@@ -47,8 +50,8 @@ test('telemetry-db queryTelemetryDashboard aggregates local brain dir and filter
     fs.writeFileSync(
       path.join(logDir, 'transcript.jsonl'),
       [
-        JSON.stringify({ step_index: 1, type: 'PLANNER_RESPONSE', status: 'DONE', created_at: new Date(now - 60_000).toISOString(), model: 'claude-sonnet-4-5', input_tokens: 10000, cache_read_tokens: 9000, output_tokens: 500 }),
-        JSON.stringify({ step_index: 2, type: 'PLANNER_RESPONSE', status: 'DONE', created_at: new Date(now - 20_000).toISOString(), model: 'claude-sonnet-4-5', input_tokens: 11000, cache_read_tokens: 1000, output_tokens: 500 }),
+        JSON.stringify({ step_index: 1, type: 'PLANNER_RESPONSE', status: 'DONE', created_at: new Date(now - 60_000).toISOString(), model: 'claude-sonnet-4-5', input_tokens: 1000, cache_read_tokens: 9000, output_tokens: 500 }),
+        JSON.stringify({ step_index: 2, type: 'PLANNER_RESPONSE', status: 'DONE', created_at: new Date(now - 20_000).toISOString(), model: 'claude-sonnet-4-5', input_tokens: 10000, cache_read_tokens: 1000, output_tokens: 500 }),
       ].join('\n'),
       'utf8'
     );
@@ -378,9 +381,15 @@ test('task-progress: summarizeSteps computes cumulative and live model wait time
   assert.equal(taskProgress.formatClock(14800), '14s');
   assert.equal(taskProgress.formatClock(75000), '1m 15s');
   assert.equal(taskProgress.formatClock(3720000), '1h 2m');
+
+  // Regression: floating card can be dragged anywhere inside full viewport bounds (never locked to chat pane)
+  const freeLeft = taskProgress.clampFloatPos(40, 20, null, { minX: 8, maxX: 1108, minY: 8, maxY: 700 });
+  assert.deepEqual(freeLeft, { x: 40, y: 20 });
+  const clampedEdge = taskProgress.clampFloatPos(-50, 9999, null, { minX: 8, maxX: 1108, minY: 8, maxY: 700 });
+  assert.deepEqual(clampedEdge, { x: 8, y: 700 });
 });
 
-test('hide-on-close: classifies Cmd+W vs Cmd+Q/Reload and respects hidden state', () => {
+test('hide-on-close: never hijacks Cmd+W/Ctrl+W tab shortcuts, allows Quit/Reload, and intercepts beforeunload', () => {
   const hideOnClose = require('../features/hide-on-close.js');
   const cdp = require('../cdp.js');
 
@@ -388,9 +397,10 @@ test('hide-on-close: classifies Cmd+W vs Cmd+Q/Reload and respects hidden state'
   assert.ok(cdp.RUNTIME_PARTS.includes('features/hide-on-close.js'));
   assert.equal(typeof cdp.hideAntigravityWindow, 'function');
 
-  assert.equal(hideOnClose.classifyShortcut({ metaKey: true, key: 'w' }, true), 'hide-window');
+  // Cmd+W / Ctrl+W must pass through natively so extension/editor tabs close normally
+  assert.equal(hideOnClose.classifyShortcut({ metaKey: true, key: 'w' }, true), 'none');
   assert.equal(hideOnClose.classifyShortcut({ metaKey: true, shiftKey: true, key: 'w' }, true), 'none');
-  assert.equal(hideOnClose.classifyShortcut({ ctrlKey: true, key: 'w' }, false), 'hide-window');
+  assert.equal(hideOnClose.classifyShortcut({ ctrlKey: true, key: 'w' }, false), 'none');
   assert.equal(hideOnClose.classifyShortcut({ ctrlKey: true, shiftKey: true, key: 'w' }, false), 'none');
   assert.equal(hideOnClose.classifyShortcut({ metaKey: true, key: 'q' }, true), 'allow-unload');
   assert.equal(hideOnClose.classifyShortcut({ metaKey: true, key: 'r' }, true), 'allow-unload');
@@ -400,6 +410,62 @@ test('hide-on-close: classifies Cmd+W vs Cmd+Q/Reload and respects hidden state'
   assert.equal(hideOnClose.shouldInterceptBeforeUnload({ enabled: false, nowMs: 5000, allowRealUnloadUntil: 0, isHidden: false }), false);
   assert.equal(hideOnClose.shouldInterceptBeforeUnload({ enabled: true, nowMs: 5000, allowRealUnloadUntil: 7000, isHidden: false }), false);
   assert.equal(hideOnClose.shouldInterceptBeforeUnload({ enabled: true, nowMs: 5000, allowRealUnloadUntil: 0, isHidden: true }), false);
+});
+
+test('cdp: persistent auto-relaunch guard enforces same-PID dedup, 120s cooldown, 2-fail breaker, proxy args, and legacy launcher cleanup', () => {
+  const cdp = require('../cdp.js');
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-cs-guard-'));
+  const guardPath = path.join(tmpDir, 'relaunch-guard.json');
+  try {
+    // 1. Fresh guard allows relaunch
+    const g0 = cdp.readRelaunchGuard(guardPath);
+    assert.deepEqual(cdp.evaluateAutoRelaunchGuard(g0, { pidSig: '101', nowMs: 1_000_000 }).allowed, true);
+
+    // 2. First attempt -> blocks same-PID and 120s cooldown on new PID
+    const g1 = cdp.recordAutoRelaunchAttempt({ pidSig: '101', nowMs: 1_000_000 }, guardPath);
+    assert.equal(g1.consecutiveFailures, 1);
+    assert.equal(g1.tripped, false);
+    assert.equal(cdp.evaluateAutoRelaunchGuard(g1, { pidSig: '101', nowMs: 1_200_000 }).reason, 'same-pid');
+    assert.equal(cdp.evaluateAutoRelaunchGuard(g1, { pidSig: '202', nowMs: 1_060_000 }).reason, 'cooldown');
+    assert.equal(cdp.evaluateAutoRelaunchGuard(g1, { pidSig: '202', nowMs: 1_125_000 }).allowed, true);
+
+    // 3. Second consecutive failure -> trips circuit breaker permanently until reset
+    const g2 = cdp.recordAutoRelaunchAttempt({ pidSig: '202', nowMs: 1_125_000 }, guardPath);
+    assert.equal(g2.consecutiveFailures, 2);
+    assert.equal(g2.tripped, true);
+    assert.equal(cdp.evaluateAutoRelaunchGuard(g2, { pidSig: '303', nowMs: 9_999_999 }).reason, 'circuit-breaker');
+
+    // 4. Reset on CDP connect / manual relaunch restores clean state
+    const gReset = cdp.resetRelaunchGuard({ markSuccess: true, nowMs: 1_200_000 }, guardPath);
+    assert.equal(gReset.tripped, false);
+    assert.equal(gReset.consecutiveFailures, 0);
+    assert.equal(cdp.evaluateAutoRelaunchGuard(gReset, { pidSig: '303', nowMs: 1_200_001 }).allowed, true);
+
+    // 5. Proxy launch options builder matches proxy config
+    const pOff = cdp.buildProxyLaunchOptionsFromConfig({ proxyEnabled: false, proxyUrl: 'http://127.0.0.1:7897' });
+    assert.deepEqual(pOff.args, []);
+    const pOn = cdp.buildProxyLaunchOptionsFromConfig({
+      proxyEnabled: true,
+      proxyUrl: 'http://127.0.0.1:7897',
+      proxyBypass: 'localhost,127.0.0.1,::1',
+      proxyForceHttp1: true,
+    });
+    assert.ok(pOn.args.includes('--proxy-server=http://127.0.0.1:7897'));
+    assert.equal(pOn.env.GODEBUG, 'http2client=0');
+
+    // 6. Legacy macOS dual .app launcher cleanup
+    const fakeHome = path.join(tmpDir, 'home');
+    const legacyApp = path.join(fakeHome, 'Applications', 'Antigravity (AGY Claude Style).app');
+    fs.mkdirSync(legacyApp, { recursive: true });
+    assert.equal(cdp.cleanupLegacyMacLauncher({ homeDir: fakeHome, platform: 'win32' }).removed, false);
+    assert.equal(cdp.cleanupLegacyMacLauncher({ homeDir: fakeHome, platform: 'darwin' }).removed, true);
+    assert.equal(fs.existsSync(legacyApp), false);
+
+    // 7. Detached relaunch uses /usr/bin/open (no /usr/bin/osascript invocation)
+    assert.equal(/\/osascript\b|['"]osascript['"]/.test(cdp.scheduleDetachedRelaunch.toString()), false);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
 });
 
 test('branch-edit: builds Antigravity forkConversation payload with sourceCascadeId, forkAtStepIndex, and targetForkWorkspace', () => {
@@ -473,7 +539,44 @@ test('quota-tracker: tracks daily weekly-quota burn, midnight carry-over, and mi
   assert.equal(sum.pools.find((p) => p.name === 'Gemini Pro').consumedTodayPct, 11);
   assert.equal(sum.pools.find((p) => p.name === 'Claude').consumedTodayPct, 4.5);
 
-  // Mid-day weekly reset on Gemini: resetSec advances and remaining jumps to 96% (4% burned post-reset -> 15% total)
+  // Reservation dip + cache-hit refund bounce within same cycle must NOT double-count consumption:
+  // Gemini 69 -> 66.2 -> 68.5 -> 65.0 must equal exact net burn from 80 -> 65.0 = 15% (not 18.8%!)
+  const day2Bounce1 = new Date(2026, 10, 24, 13, 0, 0).getTime();
+  ({ store } = qt.recordQuotaSample(
+    store,
+    [
+      { name: 'Gemini Pro', remainingPct: 66.2, resetSec: pools1[0].resetSec },
+      { name: 'Claude', remainingPct: 60.5, resetSec: pools1[1].resetSec },
+    ],
+    day2Bounce1
+  ));
+  ({ store } = qt.recordQuotaSample(
+    store,
+    [
+      { name: 'Gemini Pro', remainingPct: 68.5, resetSec: pools1[0].resetSec },
+      { name: 'Claude', remainingPct: 60.5, resetSec: pools1[1].resetSec },
+    ],
+    day2Bounce1 + 60_000
+  ));
+  ({ store } = qt.recordQuotaSample(
+    store,
+    [
+      { name: 'Gemini Pro', remainingPct: 65.0, resetSec: pools1[0].resetSec },
+      { name: 'Claude', remainingPct: 60.5, resetSec: pools1[1].resetSec },
+    ],
+    day2Bounce1 + 120_000
+  ));
+  sum = qt.summarizeWeeklyQuota(
+    store,
+    [
+      { name: 'Gemini Pro', remainingPct: 65.0, resetSec: pools1[0].resetSec },
+      { name: 'Claude', remainingPct: 60.5, resetSec: pools1[1].resetSec },
+    ],
+    day2Bounce1 + 120_000
+  );
+  assert.equal(sum.pools.find((p) => p.name === 'Gemini Pro').consumedTodayPct, 15);
+
+  // Mid-day weekly reset on Gemini: resetSec advances and remaining jumps to 96% (4% burned post-reset -> 19% total)
   const day2Eve = new Date(2026, 10, 24, 18, 0, 0).getTime();
   const pools4 = [
     { name: 'Gemini Pro', remainingPct: 96, resetSec: pools1[0].resetSec + 7 * 86400 },
@@ -481,9 +584,9 @@ test('quota-tracker: tracks daily weekly-quota burn, midnight carry-over, and mi
   ];
   ({ store } = qt.recordQuotaSample(store, pools4, day2Eve));
   sum = qt.summarizeWeeklyQuota(store, pools4, day2Eve);
-  assert.equal(sum.pools.find((p) => p.name === 'Gemini Pro').consumedTodayPct, 15);
+  assert.equal(sum.pools.find((p) => p.name === 'Gemini Pro').consumedTodayPct, 19);
   assert.ok(sum.byDate['2026-11-24']);
-  assert.equal(sum.byDate['2026-11-24'].maxConsumedPct, 15);
+  assert.equal(sum.byDate['2026-11-24'].maxConsumedPct, 19);
 });
 
 test('telemetry-db extracts ground-truth TTFT (field 11) from gen_metadata protobuf and computes avgTtftMs', () => {
@@ -1031,4 +1134,266 @@ test('windows compatibility: parseWin32AntigravityProcesses excludes sidecars/ch
   assert.equal(cleanEnv.AGY_RELAUNCH_CODE, undefined);
   assert.equal(cleanEnv.AGY_RELAUNCH_STAGE2, undefined);
   assert.equal(cleanEnv.HTTPS_PROXY, 'http://127.0.0.1:7897');
+});
+
+test('usage-core: computeStreamingSpeed excludes TTFT and falls back cleanly for buffered responses', () => {
+  const usageCore = require('../usage-core.js');
+  // Genuine streaming duration
+  assert.deepEqual(
+    usageCore.computeStreamingSpeed({ outputTokens: 200, streamSec: 2, ttftSec: 10, totalSec: 12 }),
+    { speed: 100, effectiveSec: 2, mode: 'stream' }
+  );
+  // Host erroneously puts totalSec (incl. TTFT) into streamSec -> strip TTFT
+  assert.deepEqual(
+    usageCore.computeStreamingSpeed({ outputTokens: 200, streamSec: 12, ttftSec: 10, totalSec: 12 }),
+    { speed: 100, effectiveSec: 2, mode: 'stream' }
+  );
+  // Missing streamSec, derive totalSec - ttftSec
+  assert.deepEqual(
+    usageCore.computeStreamingSpeed({ outputTokens: 300, streamSec: 0, ttftSec: 8, totalSec: 11 }),
+    { speed: 100, effectiveSec: 3, mode: 'stream' }
+  );
+  // Buffered fallback when no TTFT split exists
+  assert.deepEqual(
+    usageCore.computeStreamingSpeed({ outputTokens: 100, streamSec: 0, ttftSec: 0, totalSec: 4 }),
+    { speed: 25, effectiveSec: 4, mode: 'buffered' }
+  );
+});
+
+test('file-actions: preserves # in paths, rejects non-local file:// hosts, and uses verbatim explorer.exe /select on Windows', async () => {
+  const fa = await import('../sidecars/panel/lib/file-actions.mjs');
+  // Preserve literal '#' inside directory/filename while stripping trailing #L12:C3 anchor
+  assert.equal(fa.stripLineColAnchor('/Users/dev/C#/Program.cs#L42:C5'), '/Users/dev/C#/Program.cs');
+  assert.equal(fa.stripLineColAnchor('/Users/dev/C#/Program.cs'), '/Users/dev/C#/Program.cs');
+  assert.equal(fa.resolveLocalFilePath('file:///Users/dev/C#/app.cs#L10', { platform: 'darwin' }), '/Users/dev/C#/app.cs');
+  // Reject non-local remote file:// host BEFORE fileURLToPath
+  assert.throws(() => fa.resolveLocalFilePath('file://evil.example.com/share/a.txt', { platform: 'darwin' }), /Non-local/);
+
+  // Windows reveal passes /select,"<path>" verbatim directly to explorer.exe
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-cs file '));
+  const f = path.join(tmpDir, 'hello world.txt');
+  fs.writeFileSync(f, 'ok', 'utf8');
+  try {
+    let called = null;
+    await fa.revealLocalFile(f, {
+      platform: 'win32',
+      execFn: async (cmd, args, opts) => {
+        called = { cmd, args, opts };
+      },
+    });
+    assert.equal(called.cmd, 'explorer.exe');
+    assert.deepEqual(called.args, [`/select,"${f}"`]);
+    assert.equal(called.opts.windowsVerbatimArguments, true);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('panel main: resolveCdpPollStatus tolerates transient poll timeouts before reporting needsCdpRestart', async () => {
+  const panelMain = await import('../sidecars/panel/main.mjs');
+  const tracker = { lastOkAt: 0, lastPort: null, lastPages: [], consecutiveMisses: 0 };
+
+  const ok = panelMain.resolveCdpPollStatus({ port: 51234, pagesList: [{ id: '1' }], nowMs: 1000, tracker });
+  assert.equal(ok.connected, true);
+  assert.equal(ok.needsCdpRestart, false);
+
+  // 1st and 2nd transient failures within 20s keep connected=true (reconnecting=true)
+  const miss1 = panelMain.resolveCdpPollStatus({ port: 51234, pagesList: null, nowMs: 5000, tracker });
+  assert.equal(miss1.connected, true);
+  assert.equal(miss1.reconnecting, true);
+  assert.equal(miss1.needsCdpRestart, false);
+
+  const miss2 = panelMain.resolveCdpPollStatus({ port: 51234, pagesList: null, nowMs: 9000, tracker });
+  assert.equal(miss2.connected, true);
+  assert.equal(miss2.needsCdpRestart, false);
+
+  // 3rd consecutive failure transitions cleanly to disconnected
+  const miss3 = panelMain.resolveCdpPollStatus({ port: 51234, pagesList: null, nowMs: 13000, tracker });
+  assert.equal(miss3.connected, false);
+  assert.equal(miss3.needsCdpRestart, true);
+
+  // Missing port file immediately disconnects
+  const noPort = panelMain.resolveCdpPollStatus({ port: null, pagesList: null, nowMs: 14000, tracker });
+  assert.equal(noPort.connected, false);
+  assert.equal(noPort.needsCdpRestart, true);
+});
+
+test('usage-core: preserves post-/compact estimatedAfterCompaction even when checkpoint step follows lastStepIndex', () => {
+  const usageCore = require('../usage-core.js');
+  const baseSteps = [
+    { step: { case: 'userInput', value: { userResponse: 'hello' } }, status: 3 },
+    { step: { case: 'plannerResponse', value: { response: 'world' } }, status: 3 },
+    { step: { case: 'userInput', value: { userResponse: '/compact ' } }, status: 3 },
+    { step: { case: 'checkpoint', value: { checkpointIndex: 10 } }, status: 3 },
+  ];
+  const baseGm = [
+    {
+      stepIndices: [1],
+      metadata: {
+        value: {
+          usage: { inputTokens: 2000, cacheReadTokens: 420000, outputTokens: 250, responseOutputTokens: 230 },
+          chatStartMetadata: {
+            checkpointIndex: 9,
+            contextWindowMetadata: { estimatedTokensUsed: 405000, maxContextTokens: 512000 },
+          },
+        },
+      },
+    },
+  ];
+
+  // Immediately after manual /compact, cwUsage.lastStepIndex may still point to step 1 (before checkpoint @ 3).
+  const postCompact = usageCore.analyzeActiveConversation(
+    {
+      trajectory: {
+        cascadeId: 'compact-test',
+        steps: baseSteps,
+        generatorMetadata: baseGm,
+        contextWindowUsage: {
+          estimatedAfterCompaction: true,
+          estimatedTokensUsed: 25000,
+          maxContextTokens: 512000,
+          generatorMetadataIndex: 0,
+          lastStepIndex: 1,
+        },
+      },
+    },
+    { cascadeId: 'compact-test' }
+  );
+  assert.equal(postCompact.contextUsed, 25000);
+  assert.equal(postCompact.maxContextTokens, 512000);
+  assert.equal(postCompact.contextEstimatedAfterCompaction, true);
+  assert.equal(postCompact.compactionGmIdx, 0);
+  assert.equal(postCompact.checkpointIdx, 10);
+
+  // Once the next real request (gmIdx 1 > 0) arrives, measured tokens replace the estimate.
+  const nextTurn = usageCore.analyzeActiveConversation(
+    {
+      trajectory: {
+        cascadeId: 'compact-test',
+        steps: [
+          ...baseSteps,
+          { step: { case: 'userInput', value: { userResponse: 'next question' } }, status: 3 },
+          { step: { case: 'plannerResponse', value: { response: 'next answer' } }, status: 3 },
+        ],
+        generatorMetadata: [
+          ...baseGm,
+          {
+            stepIndices: [5],
+            metadata: {
+              value: {
+                usage: { inputTokens: 4000, cacheReadTokens: 23000, outputTokens: 300, responseOutputTokens: 280 },
+                chatStartMetadata: {
+                  checkpointIndex: 10,
+                  contextWindowMetadata: { estimatedTokensUsed: 27280, maxContextTokens: 512000 },
+                },
+              },
+            },
+          },
+        ],
+        contextWindowUsage: {
+          estimatedAfterCompaction: true,
+          estimatedTokensUsed: 25000,
+          maxContextTokens: 512000,
+          generatorMetadataIndex: 0,
+          lastStepIndex: 3,
+        },
+      },
+    },
+    { cascadeId: 'compact-test' }
+  );
+  assert.equal(nextTurn.contextUsed, 27280);
+  assert.equal(nextTurn.contextEstimatedAfterCompaction, false);
+});
+
+test('ui-runtime: rewind viewport recovery hooks into autoscroll-viewport and load-older-messages-button', () => {
+  const src = fs.readFileSync(new URL('../ui-runtime.js', import.meta.url), 'utf8');
+  assert.ok(src.includes('function syncRewindViewportRecovery()'));
+  assert.ok(src.includes('function clearStalePostRewindMinHeight('));
+  assert.ok(src.includes('function measureLastVisibleContentBottom('));
+  assert.ok(src.includes('button[data-testid="load-older-messages-button"]'));
+  assert.ok(src.includes('function nudgeAutoscrollViewport('));
+  assert.ok(src.includes('cancelRewindRecoveryTimers()'));
+  assert.ok(src.includes('stepCount > 0'));
+});
+
+test('cdp: hasConfiguredProxyFlag detects missing proxy on CDP-enabled host and passes when matched', () => {
+  const cdp = require('../cdp.js');
+  const cfg = { proxyEnabled: true, proxyUrl: 'http://127.0.0.1:7897' };
+  const missing = cdp.hasConfiguredProxyFlag([100], cfg, {
+    inspectCmdFn: () => '/Applications/Antigravity.app/Contents/MacOS/Antigravity --remote-debugging-port=0',
+  });
+  assert.equal(missing.required, true);
+  assert.equal(missing.inspected, true);
+  assert.equal(missing.matched, false);
+
+  const matched = cdp.hasConfiguredProxyFlag([100], cfg, {
+    inspectCmdFn: () =>
+      '/Applications/Antigravity.app/Contents/MacOS/Antigravity --remote-debugging-port=0 --proxy-server=http://127.0.0.1:7897',
+  });
+  assert.equal(matched.required, true);
+  assert.equal(matched.inspected, true);
+  assert.equal(matched.matched, true);
+
+  const disabled = cdp.hasConfiguredProxyFlag([100], { proxyEnabled: false, proxyUrl: 'http://127.0.0.1:7897' });
+  assert.equal(disabled.required, false);
+  assert.equal(disabled.matched, true);
+});
+
+test('panel sidecar: maybeAutoRelaunchForProxyColdStart relaunches once when reachable and respects guard/unreachable', async () => {
+  const cdp = require('../cdp.js');
+  const panelMod = await import('../sidecars/panel/main.mjs');
+  let relaunches = 0;
+  let recordedGuard = { consecutiveFailures: 0, tripped: false, lastPidSig: '', lastAttemptAt: 0 };
+
+  const unreachable = await panelMod.maybeAutoRelaunchForProxyColdStart({
+    readConfigFn: () => ({ proxyEnabled: true, proxyUrl: 'http://127.0.0.1:7897', proxyForceHttp1: true }),
+    detectRuntimeFn: () => ({ inspected: true, hostPid: 7777, coldStartMismatch: true }),
+    testConnectivityFn: async () => ({ ok: false, error: 'ECONNREFUSED' }),
+    readGuardFn: () => recordedGuard,
+    evalGuardFn: cdp.evaluateAutoRelaunchGuard,
+    recordGuardFn: ({ pidSig, nowMs }) => {
+      recordedGuard = { ...recordedGuard, lastPidSig: pidSig, lastAttemptAt: nowMs };
+    },
+    relaunchFn: async () => {
+      relaunches++;
+      return { relaunched: true };
+    },
+    nowMs: 100_000,
+  });
+  assert.equal(unreachable.triggered, false);
+  assert.equal(unreachable.reason, 'proxy-unreachable');
+  assert.equal(relaunches, 0);
+
+  const ok = await panelMod.maybeAutoRelaunchForProxyColdStart({
+    readConfigFn: () => ({ proxyEnabled: true, proxyUrl: 'http://127.0.0.1:7897', proxyForceHttp1: true }),
+    detectRuntimeFn: () => ({ inspected: true, hostPid: 7777, coldStartMismatch: true }),
+    testConnectivityFn: async () => ({ ok: true }),
+    readGuardFn: () => recordedGuard,
+    evalGuardFn: cdp.evaluateAutoRelaunchGuard,
+    recordGuardFn: ({ pidSig, nowMs }) => {
+      recordedGuard = { ...recordedGuard, lastPidSig: pidSig, lastAttemptAt: nowMs };
+    },
+    relaunchFn: async () => {
+      relaunches++;
+      return { relaunched: true };
+    },
+    nowMs: 100_000,
+  });
+  assert.equal(ok.triggered, true);
+  assert.equal(relaunches, 1);
+
+  const blocked = await panelMod.maybeAutoRelaunchForProxyColdStart({
+    readConfigFn: () => ({ proxyEnabled: true, proxyUrl: 'http://127.0.0.1:7897', proxyForceHttp1: true }),
+    detectRuntimeFn: () => ({ inspected: true, hostPid: 7777, coldStartMismatch: true }),
+    testConnectivityFn: async () => ({ ok: true }),
+    readGuardFn: () => recordedGuard,
+    evalGuardFn: cdp.evaluateAutoRelaunchGuard,
+    relaunchFn: async () => {
+      relaunches++;
+      return { relaunched: true };
+    },
+    nowMs: 105_000,
+  });
+  assert.equal(blocked.triggered, false);
+  assert.equal(relaunches, 1);
 });

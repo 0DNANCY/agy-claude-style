@@ -86,18 +86,75 @@ function readWatcherStatus() {
   }
 }
 
+const CDP_TRANSIENT_GRACE_MISSES = 2;
+const CDP_TRANSIENT_GRACE_MS = 20_000;
+const cdpPollTracker = {
+  lastOkAt: 0,
+  lastPort: null,
+  lastPages: [],
+  consecutiveMisses: 0,
+};
+
+function resolveCdpPollStatus({ port, pagesList = null, nowMs = Date.now(), tracker = cdpPollTracker } = {}) {
+  if (port && Array.isArray(pagesList)) {
+    tracker.lastOkAt = nowMs;
+    tracker.lastPort = port;
+    tracker.lastPages = pagesList;
+    tracker.consecutiveMisses = 0;
+    return {
+      connected: true,
+      reconnecting: false,
+      port,
+      pages: pagesList,
+      needsCdpRestart: false,
+    };
+  }
+  if (!port) {
+    tracker.consecutiveMisses = CDP_TRANSIENT_GRACE_MISSES + 1;
+    tracker.lastPort = null;
+    tracker.lastPages = [];
+    return {
+      connected: false,
+      reconnecting: false,
+      port: null,
+      pages: [],
+      needsCdpRestart: true,
+    };
+  }
+  tracker.consecutiveMisses = (tracker.consecutiveMisses || 0) + 1;
+  const withinGrace =
+    tracker.lastPort === port &&
+    tracker.lastOkAt > 0 &&
+    nowMs - tracker.lastOkAt <= CDP_TRANSIENT_GRACE_MS &&
+    tracker.consecutiveMisses <= CDP_TRANSIENT_GRACE_MISSES;
+  if (withinGrace) {
+    return {
+      connected: true,
+      reconnecting: true,
+      port,
+      pages: tracker.lastPages || [],
+      needsCdpRestart: false,
+    };
+  }
+  return {
+    connected: false,
+    reconnecting: false,
+    port: null,
+    pages: [],
+    needsCdpRestart: true,
+  };
+}
+
 async function getPanelStatus() {
   const config = cdp.readConfig();
   const watcher = readWatcherStatus();
   const port = cdp.readPort();
-  let activePort = null;
-  let pages = [];
+  let pagesList = null;
 
   if (port) {
     try {
       const list = await cdp.listPages(port);
-      activePort = port;
-      pages = list.map((p) => {
+      pagesList = list.map((p) => {
         const url = String(p.url || '');
         const isSwarm = url.toLowerCase().startsWith(cdp.SWARM_SIDECAR_URL_PREFIX);
         return {
@@ -106,23 +163,30 @@ async function getPanelStatus() {
           kind: isSwarm ? 'swarm' : 'window',
         };
       });
-    } catch {}
+    } catch {
+      pagesList = null;
+    }
   }
+  const cdpState = resolveCdpPollStatus({ port, pagesList });
+  const pages = cdpState.pages;
 
   return {
     ok: true,
     version: cdp.PLUGIN_VERSION,
+    platform: process.platform,
     config,
     defaults: cdp.DEFAULT_CONFIG,
     stateDir: cdp.STATE_DIR,
     configFile: cdp.CONFIG_FILE,
     watcher,
+    relaunchGuard: typeof cdp.readRelaunchGuard === 'function' ? cdp.readRelaunchGuard() : null,
     cdp: {
-      connected: Boolean(activePort),
-      port: activePort,
+      connected: cdpState.connected,
+      reconnecting: cdpState.reconnecting,
+      port: cdpState.port,
       pageCount: pages.length,
       pagesCount: pages.length,
-      needsCdpRestart: !activePort,
+      needsCdpRestart: cdpState.needsCdpRestart,
       pages,
     },
     companions: {
@@ -191,6 +255,63 @@ async function resetConfig() {
   return { ok: true, config: cdp.readConfig() };
 }
 
+async function maybeAutoRelaunchForProxyColdStart({
+  readConfigFn = cdp.readConfig,
+  detectRuntimeFn = detectHostProxyRuntime,
+  testConnectivityFn = testProxyConnectivity,
+  readGuardFn = cdp.readRelaunchGuard,
+  evalGuardFn = cdp.evaluateAutoRelaunchGuard,
+  recordGuardFn = cdp.recordAutoRelaunchAttempt,
+  relaunchFn = cdp.relaunchAntigravityWithCdp,
+  nowMs = Date.now(),
+} = {}) {
+  const cfg = readConfigFn();
+  if (!cfg || cfg.proxyEnabled !== true) return { triggered: false, reason: 'disabled' };
+  const normalizedUrl = normalizeProxyUrl(cfg.proxyUrl);
+  if (!normalizedUrl) return { triggered: false, reason: 'invalid-url' };
+
+  const runtime = detectRuntimeFn({
+    proxyEnabled: true,
+    proxyUrl: normalizedUrl,
+    proxyForceHttp1: cfg.proxyForceHttp1 !== false,
+  });
+  if (!runtime?.inspected || !runtime.coldStartMismatch) {
+    return { triggered: false, reason: 'already-matched' };
+  }
+
+  const hostPid = Number(runtime.hostPid) || 0;
+  const guardPidSig = hostPid > 0 ? `proxy:${hostPid}` : 'proxy:unknown';
+  if (typeof readGuardFn === 'function' && typeof evalGuardFn === 'function') {
+    const evalRes = evalGuardFn(readGuardFn(), { pidSig: guardPidSig, nowMs });
+    if (!evalRes.allowed) {
+      return { triggered: false, reason: evalRes.reason || 'guard-blocked' };
+    }
+  }
+
+  const conn = await testConnectivityFn(normalizedUrl, { timeoutMs: 1500 });
+  if (!conn?.ok) {
+    return { triggered: false, reason: 'proxy-unreachable', error: conn?.error || '' };
+  }
+
+  if (typeof recordGuardFn === 'function') {
+    recordGuardFn({ pidSig: guardPidSig, reason: 'sidecar-cold-start-no-proxy', nowMs });
+  }
+
+  const proxyOpts = buildProxyLaunchOptions({
+    proxyEnabled: true,
+    proxyUrl: normalizedUrl,
+    proxyBypass: cfg.proxyBypass,
+    proxyForceHttp1: cfg.proxyForceHttp1 !== false,
+  });
+  const res = await relaunchFn({
+    port: 0,
+    detached: true,
+    extraArgs: proxyOpts.args,
+    extraEnv: proxyOpts.env,
+  });
+  return { triggered: Boolean(res?.relaunched), reason: res?.relaunched ? 'relaunched' : res?.reason || 'failed' };
+}
+
 async function startPanelSidecar() {
   const { Response, SidecarApp } = await import('sidecar_sdk');
   const app = new SidecarApp();
@@ -245,6 +366,9 @@ async function startPanelSidecar() {
   }), 'POST');
   app.api('/api/relaunch', guardApi(async () => {
     const cfg = cdp.readConfig();
+    if (typeof cdp.resetRelaunchGuard === 'function') {
+      cdp.resetRelaunchGuard({ reason: 'manual-relaunch' });
+    }
     const proxyOpts = buildProxyLaunchOptions({
       proxyEnabled: Boolean(cfg.proxyEnabled),
       proxyUrl: cfg.proxyUrl,
@@ -280,6 +404,13 @@ async function startPanelSidecar() {
   }, 60_000);
   if (typeof quotaTimer.unref === 'function') quotaTimer.unref();
 
+  if (String(process.env.ANTIGRAVITY_LS_ADDRESS || '').trim() !== 'test.invalid') {
+    const autoProxyTimer = setTimeout(() => {
+      void maybeAutoRelaunchForProxyColdStart().catch(() => {});
+    }, 1500);
+    if (typeof autoProxyTimer.unref === 'function') autoProxyTimer.unref();
+  }
+
   app.api('/api/pricing/refresh', guardApi(async () => {
     return await pricingStore.refresh({ force: true });
   }), 'POST');
@@ -301,23 +432,29 @@ async function startPanelSidecar() {
       lastSshSync = sshInfo;
     }
     const extraRequests = includeSsh && sshInfo.ok ? sshInfo.requests : [];
-    const [dash, weeklyQuota] = await Promise.all([
-      Promise.resolve(
-        queryTelemetryDashboard({
-          range,
-          date,
-          conversationId,
-          model,
-          status,
-          search,
-          offset,
-          limit,
-          extraRequests,
-          priceLookup: pricingStore.lookupPrice,
-        })
-      ),
-      quotaTracker.sampleNow({ force: Boolean(data?.syncSsh) }),
-    ]);
+    // Decouple local SQLite/JSONL dashboard load from remote quota RPC so dashboard renders instantly.
+    const dash = queryTelemetryDashboard({
+      range,
+      date,
+      conversationId,
+      model,
+      status,
+      search,
+      offset,
+      limit,
+      extraRequests,
+      priceLookup: pricingStore.lookupPrice,
+    });
+    let weeklyQuota;
+    if (data?.syncSsh) {
+      weeklyQuota = await Promise.race([
+        quotaTracker.sampleNow({ force: true }),
+        new Promise((resolveTimeout) => setTimeout(() => resolveTimeout(quotaTracker.getSummary()), 2500)),
+      ]);
+    } else {
+      weeklyQuota = quotaTracker.getSummary();
+      void quotaTracker.sampleNow({ force: false });
+    }
     return {
       ...dash,
       weeklyQuota,
@@ -433,8 +570,10 @@ export {
   isLocalHostRequest,
   inspectCompanionPlugin,
   readWatcherStatus,
+  resolveCdpPollStatus,
   getPanelStatus,
   applyConfigUpdate,
   resetConfig,
+  maybeAutoRelaunchForProxyColdStart,
   startPanelSidecar,
 };

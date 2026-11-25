@@ -8,9 +8,11 @@
       connected: (p, n) => `CDP :${p} · ${n} 目标`,
       waitingPort: '等待 CDP', disconnected: '未连接',
       btnReinject: '✦ 立即应用并刷新', btnRemove: '还原原生', btnReset: '恢复默认', btnRefresh: '刷新状态',
-      btnRelaunch: '一键带调试端口重启', relaunching: '正在重启 Antigravity…',
+      btnRelaunch: '立即重启启用', relaunching: '正在重启 Antigravity…',
       cdpTitle: '未检测到 Antigravity 调试端口',
-      cdpDesc: 'Antigravity 2.33+ 默认关闭 CDP 调试端口，点击下方按钮可带参安全重启。',
+      cdpDesc: '正常打开原版 Antigravity 时可开启「冷启动自动重启启用」，或点击下方按钮立即带参安全重启。',
+      cdpTrippedDesc: '冷启动自动重启连续 2 次未能连上调试端口，已触发熔断保护。请点击下方按钮手动重启启用。',
+      cdpCooldownDesc: (sec) => `冷启动自动重启冷却保护中（约 ${sec}s），也可随时点击下方按钮立即手动重启启用。`,
       proxyColdTitle: '独立代理本次冷启动未生效',
       proxyColdRelaunch: '✦ 一键带代理与 CDP 重启',
       studioConflictTitle: '检测到与 agy-claude-studio 插件冲突',
@@ -71,7 +73,8 @@
         undoConfirmMode: ['撤销确认方式', '回退前弹出模式选择器、二次确认或直接执行'],
         headerExtensionsBar: ['顶栏扩展菜单与收藏', '工具栏扩展菜单（右键关闭侧栏），★ 收藏固定至顶栏'],
         sidebarExtensionsSection: ['左侧栏「扩展」收藏区', '默认收起，已收藏扩展常驻显示并可直达主面板'],
-        hideOnClose: ['关闭窗口挂后台', 'macOS: Cmd+W/× 隐藏；Windows: Ctrl+W 最小化免重载（因宿主限制原生 × 会销毁窗口，Alt+F4 正常退出）'],
+        hideOnClose: ['关闭窗口挂后台', '仅拦截关闭窗口行为并隐藏至后台免重载，绝不劫持 Cmd+W/Ctrl+W 关闭标签页（Cmd+Q / Alt+F4 正常退出）'],
+        autoRelaunchWithCdp: ['冷启动自动重启启用', '直接打开原版 Antigravity 未检测到 CDP 时，自动带调试端口与代理重启一次（120s 冷却 + 2 次失败熔断）'],
       },
       options: {
         language: [['zh-CN', '简体中文'], ['zh-TW', '繁體中文'], ['yue', '粵語'], ['en', 'English'], ['ja', '日本語']],
@@ -92,9 +95,11 @@
       connected: (p, n) => `CDP :${p} · ${n} targets`,
       waitingPort: 'Waiting for CDP', disconnected: 'Disconnected',
       btnReinject: '✦ Apply & Refresh Now', btnRemove: 'Restore Native', btnReset: 'Reset Defaults', btnRefresh: 'Refresh',
-      btnRelaunch: 'Relaunch with Debug Port', relaunching: 'Relaunching Antigravity…',
+      btnRelaunch: 'Relaunch Now', relaunching: 'Relaunching Antigravity…',
       cdpTitle: 'Antigravity Debug Port Not Detected',
-      cdpDesc: 'Antigravity 2.33+ disables CDP by default. Click below to relaunch safely with CDP.',
+      cdpDesc: 'Enable Cold-Start Auto-Relaunch below or click to relaunch Antigravity with CDP safely.',
+      cdpTrippedDesc: 'Cold-start auto-relaunch hit 2 consecutive failures (circuit breaker active). Click below to relaunch manually.',
+      cdpCooldownDesc: (sec) => `Auto-relaunch cooldown active (~${sec}s remaining). You can still relaunch manually below.`,
       proxyColdTitle: 'Standalone Proxy Not Active on Cold Start',
       proxyColdRelaunch: '✦ Relaunch with Proxy & CDP',
       studioConflictTitle: 'Conflict with agy-claude-studio Detected',
@@ -150,7 +155,8 @@
         undoConfirmMode: ['Undo Confirm Mode', 'Mode picker, prompt, or instant revert'],
         headerExtensionsBar: ['Header Extensions Menu & Pins', 'Extensions menu (right-click closes side pane); ★ pins stay on bar'],
         sidebarExtensionsSection: ['Sidebar Extensions & Favorites', 'Collapsed by default; ★ favorites stay visible for main panel'],
-        hideOnClose: ['Hide to Background on Close', 'macOS: Cmd+W/× hides; Windows: Ctrl+W minimizes without reload (native × destroys window per host; Alt+F4 quits)'],
+        hideOnClose: ['Hide to Background on Close', 'Intercepts window close only (never hijacks Cmd+W/Ctrl+W tab closing; Cmd+Q / Alt+F4 quits)'],
+        autoRelaunchWithCdp: ['Cold-Start Auto-Relaunch', 'Auto-relaunch stock Antigravity once with CDP (+ proxy) if debug port is missing (120s cooldown & 2-fail breaker)'],
       },
       options: {
         language: [['zh-CN', '简体中文'], ['zh-TW', '繁體中文'], ['yue', '粵語'], ['en', 'English'], ['ja', '日本語']],
@@ -197,7 +203,7 @@
       icon: '⚡',
       titleKey: 'grpPowertools',
       defaultOpen: true,
-      keys: ['taskProgressCard', 'stageCollapse', 'windowUnreadTitle', 'branchSession', 'messageEdit', 'fileContextMenu', 'rewindPanel', 'undoConfirmMode', 'headerExtensionsBar', 'sidebarExtensionsSection', 'hideOnClose'],
+      keys: ['taskProgressCard', 'stageCollapse', 'windowUnreadTitle', 'branchSession', 'messageEdit', 'fileContextMenu', 'rewindPanel', 'undoConfirmMode', 'headerExtensionsBar', 'sidebarExtensionsSection', 'hideOnClose', 'autoRelaunchWithCdp'],
     },
   ];
 
@@ -223,6 +229,7 @@
     'headerExtensionsBar',
     'sidebarExtensionsSection',
     'hideOnClose',
+    'autoRelaunchWithCdp',
     'rewindPanel',
   ]);
 
@@ -325,6 +332,20 @@
           : t.disconnected;
         document.getElementById('meta-line').textContent = t.metaLine(lastStatus.version || '2.1.0', Boolean(lastStatus.watcher?.alive));
         document.getElementById('cdp-banner').classList.toggle('show', !isConnected);
+        if (!isConnected) {
+          const guard = lastStatus.relaunchGuard || null;
+          const descEl = document.getElementById('cdp-banner-desc');
+          if (descEl) {
+            if (guard?.tripped) {
+              descEl.textContent = t.cdpTrippedDesc;
+            } else if (guard?.lastAttemptAt && Date.now() - guard.lastAttemptAt < 120000) {
+              const remSec = Math.max(1, Math.ceil((120000 - (Date.now() - guard.lastAttemptAt)) / 1000));
+              descEl.textContent = t.cdpCooldownDesc(remSec);
+            } else {
+              descEl.textContent = t.cdpDesc;
+            }
+          }
+        }
         const proxyBanner = document.getElementById('proxy-cold-banner');
         const pr = lastStatus.proxyRuntime || null;
         const cfg = app.getConfig();

@@ -1,7 +1,8 @@
 // Hide-on-Close for AGY Claude Style.
-// Intercepts window close (red × button / Cmd+W) and hides Antigravity cleanly to background
-// instead of destroying the main BrowserWindow (preventing reload prompts when returning).
-// Real Quit (Cmd+Q, Dock Quit while hidden, Alt+F4) and Reload (Cmd+R / F5) still work normally.
+// Intercepts actual window close events (beforeunload / electronNative.close) and hides Antigravity
+// cleanly to background instead of destroying the main BrowserWindow.
+// Never hijacks Cmd+W / Ctrl+W shortcuts so native tab / extension-tab closing continues to work.
+// Real Quit (Cmd+Q, Dock Quit while hidden, Alt+F4) and Reload (Cmd+R / F5) pass through normally.
 // Registers on globalThis.__agCsFeatures.hideOnClose.
 (function (root, factory) {
   const feature = factory();
@@ -33,13 +34,8 @@
     if (!isMac && hasCtrl && !hasMeta && !hasAlt && (key === 'r' || code === 'keyr')) return 'allow-unload';
     if (key === 'f5' || code === 'f5') return 'allow-unload';
 
-    // Window Close shortcut (Cmd+W on macOS, Ctrl+W on Windows/Linux)
-    if (isMac && hasMeta && !hasCtrl && !hasAlt && !hasShift && (key === 'w' || code === 'keyw')) {
-      return 'hide-window';
-    }
-    if (!isMac && hasCtrl && !hasMeta && !hasAlt && !hasShift && (key === 'w' || code === 'keyw')) {
-      return 'hide-window';
-    }
+    // Never intercept Cmd+W / Ctrl+W: let Antigravity close active editor/extension tabs natively.
+    // Only actual BrowserWindow close events (beforeunload / electronNative.close) are intercepted.
     return 'none';
   }
 
@@ -114,12 +110,6 @@
       const action = classifyShortcut(ev, isMac);
       if (action === 'allow-unload') {
         allowRealUnloadUntil = Date.now() + 3000;
-        return;
-      }
-      if (action === 'hide-window' && isEnabled()) {
-        ev.preventDefault();
-        ev.stopImmediatePropagation();
-        hideToBackground();
       }
     }
 

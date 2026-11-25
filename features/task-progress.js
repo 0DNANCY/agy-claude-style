@@ -694,14 +694,43 @@
     } catch {}
   }
 
-  function clampFloatPos(x, y, el) {
-    const w = el?.offsetWidth || 276;
+  function getViewportBounds(el) {
+    const w = el?.offsetWidth || 284;
     const h = el?.offsetHeight || 120;
-    const maxX = Math.max(8, (window.innerWidth || 1200) - w - 8);
-    const maxY = Math.max(8, (window.innerHeight || 800) - h - 8);
+    const winW = (typeof window !== 'undefined' && window.innerWidth) || 1200;
+    const winH = (typeof window !== 'undefined' && window.innerHeight) || 800;
     return {
-      x: Math.round(Math.max(8, Math.min(maxX, x))),
-      y: Math.round(Math.max(8, Math.min(maxY, y))),
+      minX: 8,
+      maxX: Math.max(8, winW - w - 8),
+      minY: 8,
+      maxY: Math.max(8, winH - h - 8),
+      w,
+      h,
+    };
+  }
+
+  function getDefaultFloatPos(el) {
+    const vp = getViewportBounds(el);
+    try {
+      const conv = typeof document !== 'undefined' ? document.querySelector('[data-testid="conversation-view"]') : null;
+      const r = conv && typeof conv.getBoundingClientRect === 'function' ? conv.getBoundingClientRect() : null;
+      if (r && r.width >= vp.w + 16 && r.height >= 80) {
+        const x = Math.round(Math.max(vp.minX, Math.min(vp.maxX, r.right - vp.w - 18)));
+        const y = Math.round(Math.max(vp.minY, Math.min(vp.maxY, Math.max(58, r.top + 14))));
+        return { x, y };
+      }
+    } catch {}
+    return {
+      x: Math.max(vp.minX, vp.maxX - 10),
+      y: Math.max(vp.minY, Math.min(vp.maxY, 58)),
+    };
+  }
+
+  function clampFloatPos(x, y, el, explicitBounds = null) {
+    const b = explicitBounds || getViewportBounds(el);
+    return {
+      x: Math.round(Math.max(b.minX, Math.min(b.maxX, x))),
+      y: Math.round(Math.max(b.minY, Math.min(b.maxY, y))),
     };
   }
 
@@ -734,6 +763,28 @@
       }
     }
 
+    let layoutRo = null;
+    let observedConv = null;
+    function observeConversationLayout(convEl) {
+      if (observedConv === convEl) return;
+      if (layoutRo) {
+        try { layoutRo.disconnect(); } catch {}
+        layoutRo = null;
+      }
+      observedConv = convEl || null;
+      if (!convEl || typeof ResizeObserver !== 'function') return;
+      try {
+        layoutRo = new ResizeObserver(() => {
+          if (cardEl && cardEl.isConnected && cardEl.classList.contains('is-floating') && !isDragging) {
+            applyFloatPosition(cardEl);
+          }
+        });
+        layoutRo.observe(convEl);
+      } catch {
+        layoutRo = null;
+      }
+    }
+
     function applyFloatPosition(el) {
       if (!el || !el.classList.contains('is-floating')) {
         if (el) {
@@ -749,9 +800,10 @@
         el.style.top = `${clamped.y}px`;
         el.style.right = 'auto';
       } else {
-        el.style.left = '';
-        el.style.top = '58px';
-        el.style.right = '18px';
+        const def = getDefaultFloatPos(el);
+        el.style.left = `${def.x}px`;
+        el.style.top = `${def.y}px`;
+        el.style.right = 'auto';
       }
     }
 
@@ -1035,7 +1087,7 @@
 
       const badgeTone = isWarning ? 'warning' : info.running ? 'active' : info.status === 'error' ? 'critical' : '';
 
-      const hostParent = docked ? overview : convoView;
+      const hostParent = docked ? overview : document.body || convoView;
       if (!cardEl || !cardEl.isConnected || cardEl.parentElement !== hostParent) {
         if (cardEl) cardEl.remove();
         cardEl = document.createElement('section');
@@ -1046,6 +1098,7 @@
       cardEl.classList.toggle('is-docked', docked);
       cardEl.classList.toggle('is-floating', !docked);
       cardEl.classList.toggle('is-collapsed', collapsed);
+      observeConversationLayout(!docked ? convoView : null);
       applyFloatPosition(cardEl);
 
       const sig = JSON.stringify({
@@ -1390,7 +1443,10 @@
     return {
       ownSelector: '.ag-cs-progress-card',
       sync,
-      destroy: removeCard,
+      destroy() {
+        observeConversationLayout(null);
+        removeCard();
+      },
     };
   }
 
@@ -1402,6 +1458,7 @@
     summarizeSteps,
     formatStepDur,
     formatClock,
+    clampFloatPos,
     jumpToConversation,
   };
 });

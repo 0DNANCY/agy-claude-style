@@ -7,11 +7,11 @@
       document.getElementById('ssh-badge').textContent = cfg.sshRemoteStats ? '已开启' : '关闭';
 
       document.getElementById('sw-proxy-enabled').checked = Boolean(cfg.proxyEnabled);
-      const coldAlertEl = document.getElementById('sw-proxy-cold-alert');
-      if (coldAlertEl) coldAlertEl.checked = cfg.proxyColdStartAlert !== false;
       document.getElementById('inp-proxy-url').value = cfg.proxyUrl || '';
-      document.getElementById('inp-proxy-bypass').value = cfg.proxyBypass || 'localhost,127.0.0.1,::1';
-      document.getElementById('sw-proxy-h1').checked = Boolean(cfg.proxyForceHttp1);
+      const bypassEl = document.getElementById('inp-proxy-bypass');
+      if (bypassEl) bypassEl.value = cfg.proxyBypass || 'localhost,127.0.0.1,::1';
+      const h1El = document.getElementById('sw-proxy-h1');
+      if (h1El) h1El.checked = cfg.proxyForceHttp1 !== false;
       document.getElementById('proxy-badge').textContent = cfg.proxyEnabled ? '已开启' : '关闭';
 
       const box = document.getElementById('proxy-runtime-box');
@@ -22,7 +22,7 @@
         } else if (pr.coldStartMismatch) {
           box.style.display = 'block';
           box.className = 'proxy-runtime-box is-warn';
-          box.textContent = `⚠ ${pr.reason}。请点击下方「带代理与 CDP 重启 Antigravity」使其生效。`;
+          box.textContent = `⚠ ${pr.reason}。请点击下方「保存并重启生效」。`;
         } else if (pr.active) {
           box.style.display = 'block';
           box.className = 'proxy-runtime-box is-ok';
@@ -63,18 +63,29 @@
       }
     });
 
-    document.getElementById('sw-proxy-enabled').addEventListener('change', (ev) => app.saveOne('proxyEnabled', ev.target.checked));
-    const swColdAlert = document.getElementById('sw-proxy-cold-alert');
-    if (swColdAlert) {
-      swColdAlert.addEventListener('change', (ev) => app.saveOne('proxyColdStartAlert', ev.target.checked));
-    }
-    document.getElementById('sw-proxy-h1').addEventListener('change', (ev) => app.saveOne('proxyForceHttp1', ev.target.checked));
-    document.getElementById('btn-proxy-save').addEventListener('click', () =>
+    const saveProxyFields = () =>
       app.saveUpdates({
         proxyUrl: document.getElementById('inp-proxy-url').value.trim(),
-        proxyBypass: document.getElementById('inp-proxy-bypass').value.trim() || 'localhost,127.0.0.1,::1',
+        proxyBypass: document.getElementById('inp-proxy-bypass')?.value.trim() || 'localhost,127.0.0.1,::1',
+      });
+
+    document.getElementById('sw-proxy-enabled').addEventListener('change', (ev) =>
+      app.saveUpdates({
+        proxyEnabled: ev.target.checked,
+        proxyUrl: document.getElementById('inp-proxy-url').value.trim(),
       })
     );
+    const inpProxyUrl = document.getElementById('inp-proxy-url');
+    inpProxyUrl.addEventListener('change', saveProxyFields);
+    inpProxyUrl.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter') saveProxyFields();
+    });
+    const inpProxyBypass = document.getElementById('inp-proxy-bypass');
+    if (inpProxyBypass) inpProxyBypass.addEventListener('change', saveProxyFields);
+    const swProxyH1 = document.getElementById('sw-proxy-h1');
+    if (swProxyH1) {
+      swProxyH1.addEventListener('change', (ev) => app.saveOne('proxyForceHttp1', ev.target.checked));
+    }
     document.getElementById('btn-proxy-test').addEventListener('click', async () => {
       const note = document.getElementById('proxy-note');
       const proxyUrl = document.getElementById('inp-proxy-url').value.trim();
@@ -91,8 +102,8 @@
       await app.saveUpdates({
         proxyEnabled: true,
         proxyUrl: document.getElementById('inp-proxy-url').value.trim(),
-        proxyBypass: document.getElementById('inp-proxy-bypass').value.trim() || 'localhost,127.0.0.1,::1',
-        proxyForceHttp1: document.getElementById('sw-proxy-h1').checked,
+        proxyBypass: document.getElementById('inp-proxy-bypass')?.value.trim() || 'localhost,127.0.0.1,::1',
+        proxyForceHttp1: swProxyH1 ? swProxyH1.checked : true,
       });
       await app.postAction('/api/relaunch', 'btnRelaunch');
     });

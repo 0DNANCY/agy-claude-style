@@ -73,7 +73,7 @@ export function buildProxyLaunchOptions({
   proxyEnabled = false,
   proxyUrl = '',
   proxyBypass = DEFAULT_PROXY_BYPASS,
-  proxyForceHttp1 = false,
+  proxyForceHttp1 = true,
 } = {}) {
   if (!proxyEnabled) return { args: [], env: {} };
   const normalized = normalizeProxyUrl(proxyUrl);

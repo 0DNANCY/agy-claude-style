@@ -186,6 +186,12 @@ function startMcpPluginHost() {
   try {
     fs.mkdirSync(stateDir, { recursive: true });
   } catch {}
+  try {
+    const cleaned = cdpApi.cleanupLegacyMacLauncher?.();
+    if (cleaned?.removed) {
+      appendSafeLog(`[cleanup] removed legacy macOS launcher: ${cleaned.path}`);
+    }
+  } catch {}
   const hostLease = registerMcpHost({
     stateDir,
     pid: process.pid,
@@ -227,7 +233,7 @@ function startMcpPluginHost() {
         forceExitOnHostClose: false,
         startupGraceEnabled: false,
         allowGracefulDuplicateExit: true,
-        allowAutoRelaunch: false,
+        allowAutoRelaunch: true,
         manageProcessExit: false,
         enableConsole: false,
         logFile,

@@ -8,7 +8,8 @@ import { dirname } from 'node:path';
 
 const MAX_STORED_DAYS = 90;
 const MIN_DROP_PCT = 0.05;
-const RESET_JUMP_PCT = 3.0;
+const FULL_RESET_MIN_PREV_PCT = 90.0;
+const FULL_RESET_TARGET_PCT = 99.5;
 
 function round1(n) {
   return Math.round((Number(n) || 0) * 10) / 10;
@@ -123,6 +124,8 @@ export function recordQuotaSample(store, pools = [], nowMs = Date.now()) {
         : 0;
       dayRec[pool.name] = {
         firstPct: canCarryOver ? prior.lastPct : curPct,
+        cycleStartPct: canCarryOver ? prior.lastPct : curPct,
+        priorCyclesBurnPct: 0,
         lastPct: curPct,
         consumedPct: initialConsumed,
         resetSec: curResetSec,
@@ -137,33 +140,52 @@ export function recordQuotaSample(store, pools = [], nowMs = Date.now()) {
 
     const prevPct = Number(existing.lastPct);
     const prevResetSec = Number(existing.resetSec || 0);
-    const resetAdvanced = prevResetSec > 0 && curResetSec > prevResetSec + 3600;
-    const jumpedUp = curPct > prevPct + RESET_JUMP_PCT;
+    // Backfill cycle fields for legacy records written before cycleStartPct existed
+    if (typeof existing.cycleStartPct !== 'number') {
+      existing.cycleStartPct = typeof existing.firstPct === 'number' ? existing.firstPct : prevPct;
+    }
+    if (typeof existing.priorCyclesBurnPct !== 'number') {
+      existing.priorCyclesBurnPct = 0;
+    }
 
-    if (resetAdvanced || jumpedUp) {
-      // Mid-day weekly quota reset: keep prior burn, plus any post-reset burn below 100%.
+    const resetAdvanced = prevResetSec > 0 && curResetSec > prevResetSec + 3600;
+    const jumpedToFull = prevPct <= FULL_RESET_MIN_PREV_PCT && curPct >= FULL_RESET_TARGET_PCT;
+
+    if (resetAdvanced || jumpedToFull) {
+      // True mid-day weekly quota reset: lock previous cycle's net burn and start new cycle at 100%.
+      const prevCycleBurn = Math.max(0, round1(existing.cycleStartPct - prevPct));
+      existing.priorCyclesBurnPct = round1(existing.priorCyclesBurnPct + prevCycleBurn);
+      existing.cycleStartPct = 100;
       const postResetBurn = curPct < 100 - MIN_DROP_PCT ? round1(100 - curPct) : 0;
-      existing.consumedPct = round1((existing.consumedPct || 0) + postResetBurn);
+      existing.consumedPct = round1(existing.priorCyclesBurnPct + postResetBurn);
       existing.lastPct = curPct;
       if (curResetSec > 0) existing.resetSec = curResetSec;
+      else if (jumpedToFull) existing.resetSec = 0;
       existing.lastAtMs = nowMs;
       existing.sampleCount = (existing.sampleCount || 0) + 1;
       changed = true;
-    } else if (prevPct - curPct >= MIN_DROP_PCT) {
-      existing.consumedPct = round1((existing.consumedPct || 0) + (prevPct - curPct));
-      existing.lastPct = curPct;
-      if (curResetSec > 0) existing.resetSec = curResetSec;
-      existing.lastAtMs = nowMs;
-      existing.sampleCount = (existing.sampleCount || 0) + 1;
-      changed = true;
-    } else if (curResetSec > 0 && curResetSec !== prevResetSec) {
-      existing.resetSec = curResetSec;
-      existing.lastAtMs = nowMs;
-      changed = true;
-    } else if (Math.abs(curPct - prevPct) >= MIN_DROP_PCT) {
-      existing.lastPct = curPct;
-      existing.lastAtMs = nowMs;
-      changed = true;
+    } else {
+      // Same weekly cycle: use true net burn (cycleStartPct - curPct) so reservation dips & refunds
+      // or slight upward jitter never double-count consumption.
+      if (curPct > existing.cycleStartPct) {
+        // Quota recovered slightly above initial baseline in the same cycle (e.g. rolling expiry or initial dip)
+        existing.cycleStartPct = curPct;
+      }
+      const nextCycleBurn = existing.cycleStartPct - curPct >= MIN_DROP_PCT
+        ? round1(existing.cycleStartPct - curPct)
+        : 0;
+      const nextConsumed = round1(existing.priorCyclesBurnPct + nextCycleBurn);
+      const pctChanged = Math.abs(curPct - prevPct) >= MIN_DROP_PCT;
+      const resetChanged = curResetSec > 0 && curResetSec !== prevResetSec;
+      const consumedChanged = Math.abs(nextConsumed - Number(existing.consumedPct || 0)) >= MIN_DROP_PCT;
+      if (pctChanged || resetChanged || consumedChanged) {
+        existing.consumedPct = nextConsumed;
+        existing.lastPct = curPct;
+        if (curResetSec > 0) existing.resetSec = curResetSec;
+        existing.lastAtMs = nowMs;
+        if (pctChanged) existing.sampleCount = (existing.sampleCount || 0) + 1;
+        changed = true;
+      }
     }
   }
 

@@ -686,11 +686,10 @@
       if (span.textContent !== formatted) span.textContent = formatted;
     }
 
-    function findActiveRunningHeader(resp, workedBtn, workedVisible) {
-      if (workedBtn && workedVisible) return workedBtn;
-      const groups = Array.from(resp.querySelectorAll('[data-testid="tool-group-collapsible"]')).filter(isElementVisible);
-      if (groups.length > 0) return groups[groups.length - 1];
-      return null;
+    function findActiveRunningHeader(workedBtn, workedVisible) {
+      // Only attach turn-wide summary onto the real outer worked-for-collapsible row,
+      // never onto an inner tool-group-collapsible ("Explored file, ran command").
+      return workedBtn && workedVisible ? workedBtn : null;
     }
 
     function sync() {
@@ -748,9 +747,11 @@
             } catch {}
           }
 
-          const liveHeader = findActiveRunningHeader(resp, workedBtn, workedVisible);
-          const liveBadge = liveHeader ? formatStageBadge(mergedStats, zh) : '';
-          syncInlineWorkedMeta(liveHeader, liveBadge, resp);
+          const liveHeader = findActiveRunningHeader(workedBtn, workedVisible);
+          const nativeLiveText = liveHeader?.querySelector?.('span:not(.ag-cs-stage-meta-inline)')?.textContent || '';
+          const hasNativeLiveUpdates = /\d+\s*(?:updates?\b|条进度|條進度)/i.test(nativeLiveText);
+          const liveStats = hasNativeLiveUpdates ? { ...mergedStats, updateCount: 0 } : mergedStats;
+          syncInlineWorkedMeta(liveHeader, liveHeader ? formatStageBadge(liveStats, zh) : '', resp);
           continue;
         }
 

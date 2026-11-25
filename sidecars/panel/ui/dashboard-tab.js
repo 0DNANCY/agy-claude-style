@@ -148,14 +148,47 @@
     }
 
     function renderWeeklyQuotaCard(wq) {
+      const labelEl = document.getElementById('kpi-weekly-label');
       const poolsEl = document.getElementById('kpi-weekly-pools');
       const subEl = document.getElementById('kpi-weekly-sub');
       if (!poolsEl || !subEl) return;
       if (!wq) {
+        if (labelEl) labelEl.textContent = '当日消耗周额度';
         poolsEl.innerHTML = '<span class="kpi-val" style="font-size:13px;color:var(--muted-fg);">待面板服务重载</span>';
         subEl.textContent = '开关插件或重启 Antigravity 后启用';
         return;
       }
+
+      // When filtering a specific historical date via heatmap click, show that date's snapshot
+      const isHistoricalDate = Boolean(selectedHeatDate && selectedHeatDate !== wq.date);
+      if (isHistoricalDate) {
+        if (labelEl) labelEl.textContent = `当日消耗周额度 · ${selectedHeatDate}`;
+        const dayRec = wq.byDate?.[selectedHeatDate];
+        if (!dayRec || !Array.isArray(dayRec.pools) || dayRec.pools.length === 0) {
+          poolsEl.innerHTML = '<span class="kpi-val" style="font-size:13px;color:var(--muted-fg);">无采样数据</span>';
+          subEl.textContent = '该日期暂无周额度记录';
+          return;
+        }
+        subEl.textContent = '按日筛选历史快照';
+        poolsEl.innerHTML = dayRec.pools
+          .map((p) => {
+            const burned = Number(p.consumedPct ?? p.consumedTodayPct ?? 0);
+            const hasRem = typeof p.lastPct === 'number';
+            const rem = hasRem ? Number(p.lastPct) : null;
+            const cls = burned > 0 ? ' is-burned' : '';
+            return `
+              <div class="kpi-weekly-pill${cls}" title="${escapeHtml(p.name)}：${selectedHeatDate} 消耗 ${burned.toFixed(1)}% 周额度${hasRem ? `，当日末次采样剩余 ${rem.toFixed(1)}%` : ''}">
+                <span class="kw-name">${escapeHtml(shortPoolName(p.name))}</span>
+                <span class="kw-burn">-${burned.toFixed(1)}%</span>
+                ${hasRem ? `<span class="kw-rem">余 ${rem.toFixed(0)}%</span>` : ''}
+              </div>
+            `;
+          })
+          .join('');
+        return;
+      }
+
+      if (labelEl) labelEl.textContent = selectedHeatDate ? `当日消耗周额度 · 今日` : '当日消耗周额度';
       if (!wq.available || !Array.isArray(wq.pools) || wq.pools.length === 0) {
         poolsEl.innerHTML = '<span class="kpi-val" style="font-size:13.5px;color:var(--muted-fg);">暂无周额度数据</span>';
         subEl.textContent = '仅订阅配额模式可用';
@@ -412,9 +445,15 @@
         const filterTodayBtn = document.getElementById('btn-filter-today');
         if (lastTodaySummary) {
           const td = lastTodaySummary;
+          const burnedPools =
+            lastWeeklyQuota?.available && Array.isArray(lastWeeklyQuota.pools)
+              ? lastWeeklyQuota.pools.filter((p) => Number(p.consumedTodayPct || 0) > 0)
+              : [];
           const todayBurnPart =
-            lastWeeklyQuota?.available && lastWeeklyQuota.pools?.length
-              ? ` · 周额度 ${lastWeeklyQuota.pools.map((p) => `-${Number(p.consumedTodayPct || 0).toFixed(1)}%`).join('/')}`
+            burnedPools.length > 0
+              ? ` · 周额度 ${burnedPools.map((p) => `${shortPoolName(p.name)} -${Number(p.consumedTodayPct || 0).toFixed(1)}%`).join(' / ')}`
+              : lastWeeklyQuota?.available && lastWeeklyQuota.pools?.length
+              ? ' · 周额度 -0.0%'
               : '';
           todayText.innerHTML = td.count > 0
             ? `今日 <b>${td.count} 次</b> · ${fmtTokens(td.tokens)} tok · 缓存 ${td.cacheHitPct}% · $${Number(td.costUsd || 0).toFixed(2)}${escapeHtml(todayBurnPart)}`

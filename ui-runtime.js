@@ -317,6 +317,10 @@
           if (isAppRootStore(p.store)) bestRootStore = bestRootStore || p.store;
           else if (!fallbackStore) fallbackStore = p.store;
         }
+        if (p && p.value && typeof p.value === 'object') {
+          if (!cachedSvc && typeof p.value.getCascadeTrajectory === 'function') cachedSvc = p.value;
+          if (!cachedTrajCtx && isTrajectoriesContext(p.value)) cachedTrajCtx = p.value;
+        }
         for (let d = f.dependencies && f.dependencies.firstContext; d; d = d.next) {
           const v = d.memoizedValue;
           if (!v || typeof v !== 'object') continue;
@@ -390,7 +394,13 @@
     if (fromCached) return fromCached;
 
     const probes = [];
-    if (scopeEl) probes.push(scopeEl);
+    if (scopeEl) {
+      const scopedFooter = scopeEl.querySelector?.('.agy-composer-footer');
+      if (scopedFooter) probes.push(scopedFooter);
+      probes.push(scopeEl);
+    }
+    const footer = document.querySelector('.agy-composer-footer');
+    if (footer && !probes.includes(footer)) probes.push(footer);
     const cv = document.querySelector('[data-testid="conversation-view"]');
     if (cv && !probes.includes(cv)) probes.push(cv);
     const ib = document.querySelector('[data-testid="agent-input-box"]');
@@ -398,12 +408,20 @@
 
     for (const el of probes) {
       const key = Object.keys(el).find((k) => k.startsWith('__reactFiber$'));
-      for (let f = key && el[key], depth = 0; f && depth < 80; f = f.return, depth++) {
+      for (let f = key && el[key], depth = 0; f && depth < 100; f = f.return, depth++) {
+        const contexts = [];
+        if (f.memoizedProps && f.memoizedProps.value && typeof f.memoizedProps.value === 'object') {
+          contexts.push(f.memoizedProps.value);
+        }
         for (let d = f.dependencies && f.dependencies.firstContext; d; d = d.next) {
-          const v = d.memoizedValue;
-          if (!v || typeof v !== 'object') continue;
+          if (d.memoizedValue && typeof d.memoizedValue === 'object') contexts.push(d.memoizedValue);
+        }
+        for (const v of contexts) {
           if (!cachedTrajCtx && isTrajectoriesContext(v)) {
             cachedTrajCtx = v;
+            const hit = peekFromTrajCtx(v);
+            if (hit) return hit;
+          } else if (isTrajectoriesContext(v)) {
             const hit = peekFromTrajCtx(v);
             if (hit) return hit;
           }
@@ -628,7 +646,8 @@
             (Array.isArray(traj?.generatorMetadata) && traj.generatorMetadata.length > 0) ||
             !hasUsableAgentState(liveState))
         ) {
-          return attachLiveContextWindowUsage(res, liveState);
+          const freshLiveState = liveProv ? liveProv.getState?.() || liveState : liveState;
+          return attachLiveContextWindowUsage(res, freshLiveState);
         }
       } catch (err) {
         if (isCloudOnlyTrajectoryError(err)) {
@@ -2271,7 +2290,7 @@
     const liveLastStep = liveSteps.length > 0 ? liveSteps[liveSteps.length - 1] : null;
     const liveCw = liveState?.contextWindowUsage || null;
     const liveSig = liveState
-      ? `${liveSlice?.totalStepsLength || liveSteps.length}:${liveSteps.length}:${liveState.status || 0}:${liveState.fullyIdle ? 1 : 0}:${liveLastStep?.status || 0}:${liveLastStep?.metadata?.modelUsage?.outputTokens || 0}:${liveLastStep?.step?.value?.thinking?.length || 0}:${liveLastStep?.step?.value?.response?.length || 0}:${liveCw?.estimatedTokensUsed || 0}:${liveCw?.estimatedAfterCompaction ? 1 : 0}:${liveCw?.generatorMetadataIndex ?? -1}:${liveCw?.lastStepIndex ?? -1}`
+      ? `${liveSlice?.totalStepsLength || liveSteps.length}:${liveSteps.length}:${liveState.status || 0}:${liveState.fullyIdle ? 1 : 0}:${liveLastStep?.status || 0}:${liveLastStep?.metadata?.modelUsage?.outputTokens || 0}:${liveLastStep?.step?.value?.thinking?.length || 0}:${liveLastStep?.step?.value?.response?.length || 0}:${liveCw?.estimatedTokensUsed || 0}:${liveCw?.maxContextTokens || 0}:${liveCw?.estimatedAfterCompaction ? 1 : 0}:${liveCw?.generatorMetadataIndex ?? -1}:${liveCw?.lastStepIndex ?? -1}`
       : '';
     const stepCount = Math.max(
       Number(sum?.stepCount || 0),
@@ -2375,7 +2394,14 @@
           cascadeId,
           knownLimits: knownMax > 0 ? { maxContextTokens: knownMax } : undefined,
         });
-        if (entry.data && entry.data.totalSteps > 0 && analyzed && analyzed.totalSteps === 0 && analyzed.totalCalls === 0) {
+        if (
+          entry.data &&
+          entry.data.totalSteps > 0 &&
+          stepCount > 0 &&
+          analyzed &&
+          analyzed.totalSteps === 0 &&
+          analyzed.totalCalls === 0
+        ) {
           return entry.data;
         }
         if (
@@ -5497,6 +5523,309 @@
     );
   }
 
+  let imeComposing = false;
+  let imeSafetyTimer = null;
+  let imePendingSync = false;
+  let scrollingUntil = 0;
+  let scrollFlushTimer = null;
+
+  function onDocCompositionStart() {
+    imeComposing = true;
+    if (imeSafetyTimer) clearTimeout(imeSafetyTimer);
+    imeSafetyTimer = setTimeout(() => {
+      imeSafetyTimer = null;
+      if (imeComposing) {
+        imeComposing = false;
+        if (imePendingSync && !destroyed) {
+          imePendingSync = false;
+          scheduleSync();
+        }
+      }
+    }, 10000);
+  }
+
+  function onDocCompositionEnd(ev) {
+    imeComposing = false;
+    if (imeSafetyTimer) {
+      clearTimeout(imeSafetyTimer);
+      imeSafetyTimer = null;
+    }
+    onDocCaretEvent(ev);
+    if (imePendingSync && !destroyed) {
+      imePendingSync = false;
+      setTimeout(() => {
+        if (!destroyed && !imeComposing) scheduleSync();
+      }, 16);
+    }
+  }
+
+  function onDocScrollThrottled(ev) {
+    onDocCaretEvent(ev);
+    const t = ev?.target;
+    const isChatScroll =
+      t &&
+      typeof t.closest === 'function' &&
+      Boolean(t.closest('[data-testid="autoscroll-viewport"], [data-testid="conversation-view"]'));
+    if (!isChatScroll) return;
+    scrollingUntil = Date.now() + 180;
+    if (scrollFlushTimer) clearTimeout(scrollFlushTimer);
+    scrollFlushTimer = setTimeout(() => {
+      scrollFlushTimer = null;
+      if (!destroyed && !imeComposing) scheduleSync();
+    }, 200);
+  }
+
+  // ── Rewind / Message-Deletion Viewport Recovery ────────────────────────
+  // Antigravity paginates long conversations into a tail slice (`load-older-messages-button`)
+  // and disables scroll anchoring (`overflow-anchor: none`) on `[data-testid="autoscroll-viewport"]`.
+  // When Rewind deletes messages, the rendered slice can shrink sharply or empty out while
+  // earlier turns remain unloaded/offscreen until the user manually scrolls up and down.
+  const rewindViewportState = {
+    cascadeId: '',
+    lastMsgCount: 0,
+    lastTurnCount: 0,
+    lastScrollHeight: 0,
+    lastStepCount: 0,
+    recoverTimer: null,
+    recoverRaf: 0,
+    recoverTries: 0,
+    lastClickAt: 0,
+    pendingRewindUntil: 0,
+  };
+
+  function cancelRewindRecoveryTimers() {
+    if (rewindViewportState.recoverTimer) {
+      clearTimeout(rewindViewportState.recoverTimer);
+      rewindViewportState.recoverTimer = null;
+    }
+    if (rewindViewportState.recoverRaf) {
+      if (typeof cancelAnimationFrame === 'function') cancelAnimationFrame(rewindViewportState.recoverRaf);
+      rewindViewportState.recoverRaf = 0;
+    }
+  }
+
+  function nudgeAutoscrollViewport(av, targetScrollTop) {
+    if (!av) return;
+    const maxScroll = Math.max(0, (av.scrollHeight || 0) - (av.clientHeight || 0));
+    const target = Math.max(0, Math.min(maxScroll, Number.isFinite(targetScrollTop) ? targetScrollTop : maxScroll));
+    try {
+      if (target > 0) {
+        av.scrollTop = Math.max(0, target - 1);
+        av.dispatchEvent(new Event('scroll', { bubbles: false }));
+        if (typeof requestAnimationFrame === 'function') {
+          if (rewindViewportState.recoverRaf) cancelAnimationFrame(rewindViewportState.recoverRaf);
+          rewindViewportState.recoverRaf = requestAnimationFrame(() => {
+            rewindViewportState.recoverRaf = 0;
+            if (destroyed || !av.isConnected) return;
+            const freshMax = Math.max(0, (av.scrollHeight || 0) - (av.clientHeight || 0));
+            av.scrollTop = Math.min(freshMax, target);
+            av.dispatchEvent(new Event('scroll', { bubbles: false }));
+          });
+        } else {
+          av.scrollTop = target;
+          av.dispatchEvent(new Event('scroll', { bubbles: false }));
+        }
+      } else {
+        av.scrollTop = 0;
+        av.dispatchEvent(new Event('scroll', { bubbles: false }));
+      }
+    } catch {}
+  }
+
+  function clearStalePostRewindMinHeight(av, isRunning) {
+    if (!av || isRunning) return false;
+    const col = av.querySelector('.relative.flex.flex-col');
+    if (!col) return false;
+    let cleared = false;
+    for (const child of Array.from(col.children)) {
+      const mh = String(child?.style?.minHeight || '');
+      if (mh && /cqh|vh/i.test(mh)) {
+        child.style.minHeight = '';
+        cleared = true;
+      }
+    }
+    return cleared;
+  }
+
+  function measureLastVisibleContentBottom(av) {
+    if (!av || typeof av.getBoundingClientRect !== 'function') return null;
+    const col = av.querySelector('.relative.flex.flex-col');
+    if (col) {
+      const children = Array.from(col.children);
+      for (let i = children.length - 1; i >= 0; i--) {
+        const ch = children[i];
+        if (!ch || ch.tagName === 'H1' || ch.classList?.contains('sr-only')) continue;
+        // Antigravity wraps each turn in div.flex.items-start (which may carry min-height: calc(75cqh - 50px));
+        // measure its actual inner content container so artificial min-height does not count as real content.
+        const inner = ch.firstElementChild || ch;
+        const r = inner.getBoundingClientRect();
+        if (r.height > 2) return r.bottom;
+      }
+    }
+    const msgs = av.querySelectorAll('[data-testid="user-input-step"], [data-testid="agent-response"]');
+    if (msgs.length > 0) {
+      const last = msgs[msgs.length - 1];
+      const r = last.getBoundingClientRect();
+      if (r.height > 0) return r.bottom;
+    }
+    return null;
+  }
+
+  function runRewindViewportRecovery(expectedCid, prevScrollHeight) {
+    if (destroyed) return;
+    const cv = document.querySelector('[data-testid="conversation-view"]');
+    const cid = cv ? normalizeCascadeId(cv.getAttribute('data-cascade-id')) || resolveCascadeId(null) : '';
+    if (!cv || (expectedCid && cid && cid !== expectedCid)) {
+      cancelRewindRecoveryTimers();
+      return;
+    }
+    const av = cv.querySelector('[data-testid="autoscroll-viewport"]');
+    if (!av) return;
+
+    const isRunning = Boolean(cv.querySelector('[data-testid="input-cancel-button"]'));
+    const col = av.querySelector('.relative.flex.flex-col');
+    const msgs = av.querySelectorAll('[data-testid="user-input-step"], [data-testid="agent-response"]');
+    const msgCount = msgs.length;
+    const turnCount = col ? col.children.length : msgCount;
+    const loadOlderBtn = av.querySelector('button[data-testid="load-older-messages-button"]');
+    const canLoadOlder = Boolean(
+      loadOlderBtn && !loadOlderBtn.disabled && loadOlderBtn.getAttribute('aria-disabled') !== 'true'
+    );
+
+    // 1. Clear stale idle min-height: calc(75cqh - 50px) spacer that leaves a 500-650px white void below the rewound turn.
+    const clearedMinHeight = clearStalePostRewindMinHeight(av, isRunning);
+
+    const clientH = av.clientHeight || 0;
+    const scrollH = av.scrollHeight || 0;
+    const maxScroll = Math.max(0, scrollH - clientH);
+    const isStarved = msgCount === 0 || (clientH > 0 && scrollH <= clientH + 80);
+
+    // 2. If rewinding emptied/starved the current pagination slice, pull earlier messages automatically.
+    let clickedLoadOlder = false;
+    if (canLoadOlder && isStarved && Date.now() - rewindViewportState.lastClickAt >= 180) {
+      try {
+        rewindViewportState.lastClickAt = Date.now();
+        loadOlderBtn.click();
+        clickedLoadOlder = true;
+      } catch {}
+    }
+
+    // 3. Align the ACTUAL last real message bottom near the bottom of the viewport (never scroll into a blank spacer).
+    const avRect = typeof av.getBoundingClientRect === 'function' ? av.getBoundingClientRect() : null;
+    const contentBottom = measureLastVisibleContentBottom(av);
+    const blankGapBelow =
+      avRect && avRect.height > 0 && contentBottom !== null ? avRect.bottom - contentBottom : 0;
+    const shrankSharply = prevScrollHeight > 0 && scrollH < prevScrollHeight - 60;
+    const overshot = (av.scrollTop || 0) > maxScroll + 1;
+
+    if (!isRunning && avRect && avRect.height > 0 && contentBottom !== null && blankGapBelow > 120 && (av.scrollTop || 0) > 0) {
+      // Pull earlier messages smoothly back down into view so no huge white gap remains below the last message.
+      const desiredTarget = Math.max(0, (av.scrollTop || 0) - (blankGapBelow - 48));
+      nudgeAutoscrollViewport(av, desiredTarget);
+    } else if (overshot || clearedMinHeight || shrankSharply || msgCount === 0) {
+      const target =
+        !isRunning && avRect && contentBottom !== null && blankGapBelow > 80
+          ? Math.max(0, (av.scrollTop || 0) - (blankGapBelow - 48))
+          : maxScroll;
+      nudgeAutoscrollViewport(av, target);
+    }
+
+    rewindViewportState.lastMsgCount = msgCount;
+    rewindViewportState.lastTurnCount = turnCount;
+    rewindViewportState.lastScrollHeight = av.scrollHeight || 0;
+
+    // 4. Schedule bounded follow-up passes (160ms, 360ms) so async React effects (Q1b/hXc) cannot re-introduce blank space.
+    const needsFollowUp =
+      clickedLoadOlder ||
+      (canLoadOlder && isStarved) ||
+      (!isRunning && blankGapBelow > 120) ||
+      rewindViewportState.recoverTries < 2;
+    if (needsFollowUp && rewindViewportState.recoverTries < 4) {
+      rewindViewportState.recoverTries += 1;
+      if (rewindViewportState.recoverTimer) clearTimeout(rewindViewportState.recoverTimer);
+      rewindViewportState.recoverTimer = setTimeout(() => {
+        rewindViewportState.recoverTimer = null;
+        runRewindViewportRecovery(expectedCid, rewindViewportState.lastScrollHeight);
+      }, rewindViewportState.recoverTries <= 2 ? 160 : 240);
+    }
+  }
+
+  function syncRewindViewportRecovery() {
+    const cv = document.querySelector('[data-testid="conversation-view"]');
+    if (!cv) {
+      rewindViewportState.cascadeId = '';
+      rewindViewportState.lastMsgCount = 0;
+      rewindViewportState.lastTurnCount = 0;
+      rewindViewportState.lastScrollHeight = 0;
+      rewindViewportState.lastStepCount = 0;
+      cancelRewindRecoveryTimers();
+      return;
+    }
+    const av = cv.querySelector('[data-testid="autoscroll-viewport"]');
+    if (!av) return;
+    const cid = normalizeCascadeId(cv.getAttribute('data-cascade-id')) || resolveCascadeId(null) || '__active__';
+    const col = av.querySelector('.relative.flex.flex-col');
+    const msgs = av.querySelectorAll('[data-testid="user-input-step"], [data-testid="agent-response"]');
+    const msgCount = msgs.length;
+    const turnCount = col ? col.children.length : msgCount;
+    const scrollH = av.scrollHeight || 0;
+    const cachedStepCount = Number(activeTrajCache.get(cid)?.data?.totalSteps || 0);
+    const loadOlderBtn = av.querySelector('button[data-testid="load-older-messages-button"]');
+    const canLoadOlder = Boolean(
+      loadOlderBtn && !loadOlderBtn.disabled && loadOlderBtn.getAttribute('aria-disabled') !== 'true'
+    );
+    const isRunning = Boolean(cv.querySelector('[data-testid="input-cancel-button"]'));
+
+    if (rewindViewportState.cascadeId !== cid) {
+      cancelRewindRecoveryTimers();
+      rewindViewportState.cascadeId = cid;
+      rewindViewportState.lastMsgCount = msgCount;
+      rewindViewportState.lastTurnCount = turnCount;
+      rewindViewportState.lastScrollHeight = scrollH;
+      rewindViewportState.lastStepCount = cachedStepCount;
+      rewindViewportState.recoverTries = 0;
+      if (msgCount === 0 && canLoadOlder) {
+        runRewindViewportRecovery(cid, scrollH);
+      }
+      return;
+    }
+
+    const prevMsgCount = rewindViewportState.lastMsgCount;
+    const prevTurnCount = rewindViewportState.lastTurnCount;
+    const prevScrollH = rewindViewportState.lastScrollHeight;
+    const prevStepCount = rewindViewportState.lastStepCount;
+
+    const msgDropped = msgCount < prevMsgCount;
+    const turnDropped = turnCount < prevTurnCount;
+    const stepsDropped = cachedStepCount > 0 && prevStepCount > 0 && cachedStepCount < prevStepCount;
+    const starvedEmptySlice = msgCount === 0 && canLoadOlder;
+    const recentRewindClick =
+      Date.now() < rewindViewportState.pendingRewindUntil && (msgDropped || turnDropped || scrollH < prevScrollH - 60);
+
+    // Also catch idle giant blank gap below the very last message (e.g. >35% of viewport height) when scrolled past it.
+    let giantIdleBlankGap = false;
+    if (!isRunning && (av.scrollTop || 0) > 0 && typeof av.getBoundingClientRect === 'function') {
+      const avRect = av.getBoundingClientRect();
+      const contentBottom = measureLastVisibleContentBottom(av);
+      if (avRect.height > 200 && contentBottom !== null) {
+        const gap = avRect.bottom - contentBottom;
+        if (gap > Math.max(180, avRect.height * 0.35) && (msgDropped || turnDropped || stepsDropped || Date.now() < rewindViewportState.pendingRewindUntil || scrollH < prevScrollH - 40)) {
+          giantIdleBlankGap = true;
+        }
+      }
+    }
+
+    rewindViewportState.lastMsgCount = msgCount;
+    rewindViewportState.lastTurnCount = turnCount;
+    rewindViewportState.lastScrollHeight = scrollH;
+    if (cachedStepCount > 0) rewindViewportState.lastStepCount = cachedStepCount;
+
+    if (msgDropped || turnDropped || stepsDropped || starvedEmptySlice || recentRewindClick || giantIdleBlankGap) {
+      rewindViewportState.recoverTries = 0;
+      runRewindViewportRecovery(cid, prevScrollH);
+    }
+  }
+
   function runSync() {
     if (destroyed) return;
     if (!document.getElementById('ag-claude-style-css') && typeof globalThis.__agCsEnsureStyle === 'function') {
@@ -5519,13 +5848,36 @@
       unmountPanelSeat();
     }
     syncRipple();
-    syncComposers();
+    if (imeComposing) {
+      // Never mutate composer DOM / smooth caret while IME composition is active (prevents Windows IME flicker)
+      imePendingSync = true;
+    } else {
+      syncComposers();
+    }
     ensureSettingsSection();
-    forEachFeature('sync');
+    if (Date.now() >= scrollingUntil) {
+      syncRewindViewportRecovery();
+      forEachFeature('sync');
+    }
   }
 
   function scheduleSync() {
     if (destroyed || syncQueued) return;
+    if (imeComposing) {
+      imePendingSync = true;
+      return;
+    }
+    const scrollWait = scrollingUntil - Date.now();
+    if (scrollWait > 0) {
+      syncQueued = true;
+      syncIsRaf = false;
+      syncTimer = setTimeout(() => {
+        syncTimer = null;
+        syncQueued = false;
+        runSync();
+      }, Math.min(200, scrollWait + 16));
+      return;
+    }
     syncQueued = true;
     if (!document.hidden && typeof requestAnimationFrame === 'function') {
       syncIsRaf = true;
@@ -5622,6 +5974,13 @@
       closeEffortPopover();
     }
     const submitBtn = ev?.target?.closest ? ev.target.closest('button') : null;
+    if (submitBtn) {
+      const btnTid = String(submitBtn.getAttribute('data-testid') || '');
+      const btnText = String(submitBtn.textContent || '').trim();
+      if (btnTid === 'revert-button' || /\b(rewind|revert)\b|回退|撤销到此处|撤銷到此處/i.test(btnText)) {
+        rewindViewportState.pendingRewindUntil = Date.now() + 4000;
+      }
+    }
     if (submitBtn && submitBtn.closest && submitBtn.closest('[data-testid="agent-input-box"]')) {
       const tid = String(submitBtn.getAttribute('data-testid') || '');
       const bType = String(submitBtn.getAttribute('type') || '');
@@ -5789,6 +6148,10 @@
   let charDataThrottleTimer = null;
   const observer = new MutationObserver((mutations) => {
     if (mutations.length === 0 || mutations.every(isIgnorableMutation)) return;
+    if (imeComposing) {
+      imePendingSync = true;
+      return;
+    }
     const onlyCharData = mutations.every((m) => isIgnorableMutation(m) || m.type === 'characterData');
     if (onlyCharData) {
       if (!charDataThrottleTimer) {
@@ -5813,9 +6176,10 @@
     ['selectionchange', onDocCaretEvent],
     ['focusin', onDocCaretEvent],
     ['focusout', onDocCaretEvent],
-    ['scroll', onDocCaretEvent],
+    ['scroll', onDocScrollThrottled],
+    ['compositionstart', onDocCompositionStart],
     ['compositionupdate', onDocCaretEvent],
-    ['compositionend', onDocCaretEvent],
+    ['compositionend', onDocCompositionEnd],
     ['transitionend', onDocTransitionEnd],
   ];
 
@@ -5826,6 +6190,17 @@
     coreTornDown = true;
     destroyed = true;
     cancelScheduledSync();
+    if (imeSafetyTimer) {
+      clearTimeout(imeSafetyTimer);
+      imeSafetyTimer = null;
+    }
+    if (scrollFlushTimer) {
+      clearTimeout(scrollFlushTimer);
+      scrollFlushTimer = null;
+    }
+    cancelRewindRecoveryTimers();
+    imeComposing = false;
+    imePendingSync = false;
     if (pollTimer !== null) {
       clearInterval(pollTimer);
       pollTimer = null;

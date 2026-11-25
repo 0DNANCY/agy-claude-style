@@ -1001,14 +1001,22 @@
 
       if (!hasCallUsage) continue;
 
-      const stream = durSec(val.streamingDuration) || durSec(lastRetry?.streamingDuration);
+      const rawStream = durSec(val.streamingDuration) || durSec(lastRetry?.streamingDuration);
       const ttft = durSec(val.timeToFirstToken) || durSec(lastRetry?.timeToFirstToken);
+      const totalDur = durSec(val.totalDuration) || durSec(lastRetry?.totalDuration);
       if (ttft > 0) {
         lastTtft = ttft;
         ttftSum += ttft;
         ttftCount++;
       }
-      const speed = stream > 0.05 && out > 0 ? Math.round(out / stream) : 0;
+      const speedCalc = computeStreamingSpeed({
+        outputTokens: out,
+        streamSec: rawStream,
+        ttftSec: ttft,
+        totalSec: totalDur,
+      });
+      const stream = speedCalc.effectiveSec;
+      const speed = speedCalc.speed;
       if (speed > 0) {
         lastSpeed = speed;
         latestValidSpeed = speed;
@@ -1058,6 +1066,7 @@
     const cwUsage = t.contextWindowUsage && typeof t.contextWindowUsage === 'object' ? t.contextWindowUsage : null;
     let appliedCompactionEstimate = false;
     let compactionLastStepArrIdx = -1;
+    let compactionGmIdx = -1;
     if (cwUsage) {
       const cwEstTokens = Number(cwUsage.estimatedTokensUsed || 0);
       const cwMaxTokens = Number(cwUsage.maxContextTokens || 0);
@@ -1083,6 +1092,7 @@
         activeContextUsed = cwEstTokens;
         latestCwUsed = cwEstTokens;
         appliedCompactionEstimate = true;
+        compactionGmIdx = cwGmIdx;
         if (cwLastStepIdx >= 0) {
           compactionLastStepArrIdx = resolveArrIdx(cwLastStepIdx);
           if (compactionLastStepArrIdx >= 0) {
@@ -1106,10 +1116,17 @@
 
     // Capture modelInfo.maxTokens across steps (used in remote/cloud mode where contextWindowMetadata is omitted)
     let hasCheckpointStep = false;
+    let latestCheckpointArrIdx = -1;
+    let latestCheckpointStepNum = -1;
     for (let idx = 0; idx < steps.length; idx++) {
       const st = steps[idx];
       if (!st) continue;
-      if (st.step?.case === 'checkpoint') hasCheckpointStep = true;
+      if (st.step?.case === 'checkpoint') {
+        hasCheckpointStep = true;
+        latestCheckpointArrIdx = idx;
+        const cpNum = Number(st.step?.value?.checkpointIndex ?? -1);
+        if (cpNum >= 0) latestCheckpointStepNum = cpNum;
+      }
       const md = st.metadata || st.step?.value?.metadata;
       if (Number(md?.modelInfo?.maxTokens || 0) > 0) {
         latestModelInfoMaxTokens = Number(md.modelInfo.maxTokens);
@@ -1154,16 +1171,27 @@
           createdSec > 0 && viewableSec > createdSec && viewableSec - createdSec < 600
             ? viewableSec - createdSec
             : 0;
-        const stream =
+        const rawStream =
           viewableSec > 0 && finSec > viewableSec && finSec - viewableSec < 3600
             ? finSec - viewableSec
+            : 0;
+        const totalDur =
+          createdSec > 0 && finSec > createdSec && finSec - createdSec < 3600
+            ? finSec - createdSec
             : 0;
         if (ttft > 0) {
           lastTtft = ttft;
           ttftSum += ttft;
           ttftCount++;
         }
-        const speed = stream > 0.05 && out > 0 ? Math.round(out / stream) : 0;
+        const speedCalc = computeStreamingSpeed({
+          outputTokens: out,
+          streamSec: rawStream,
+          ttftSec: ttft,
+          totalSec: totalDur,
+        });
+        const stream = speedCalc.effectiveSec;
+        const speed = speedCalc.speed;
         if (speed > 0) {
           lastSpeed = speed;
           latestValidSpeed = speed;
@@ -1230,7 +1258,11 @@
           }, -1)
         : steps.length - 1;
     let lastMeasuredStepIdx = appliedCompactionEstimate
-      ? Math.max(lastCoveredArrIdx, compactionLastStepArrIdx >= 0 ? compactionLastStepArrIdx : steps.length - 1)
+      ? Math.max(
+          lastCoveredArrIdx,
+          latestCheckpointArrIdx,
+          compactionLastStepArrIdx >= 0 ? compactionLastStepArrIdx : steps.length - 1
+        )
       : lastCoveredArrIdx;
 
     for (let idx = lastMeasuredStepIdx + 1; idx < steps.length; idx++) {
@@ -1240,6 +1272,7 @@
         activeContextUsed = 0;
         latestCwUsed = 0;
         latestBreakdown = null;
+        appliedCompactionEstimate = false;
         lastMeasuredStepIdx = idx;
         continue;
       }
@@ -1253,6 +1286,7 @@
       const sResp = Number(mu.responseOutputTokens || Math.max(0, sOut - sThink) || 0);
       if (sInp + sCr + sCw > 0) {
         activeContextUsed = sInp + sCr + sCw + sResp;
+        appliedCompactionEstimate = false;
         lastMeasuredStepIdx = idx;
       }
     }
@@ -1415,13 +1449,17 @@
         }
       }
     }
-    if (contextUsed > sysTokens + toolsTokens + msgTokens && steps.length - 1 > maxBreakdownArrIdx) {
+    const postBreakdownStartIdx = Math.max(
+      maxBreakdownArrIdx + 1,
+      appliedCompactionEstimate && !latestBreakdown ? lastMeasuredStepIdx + 1 : 0
+    );
+    if (contextUsed > sysTokens + toolsTokens + msgTokens && steps.length - 1 >= postBreakdownStartIdx) {
       const extraTokens = contextUsed - (sysTokens + toolsTokens + msgTokens);
       let postChatWeight = 0;
       let postUserWeight = 0;
       let postToolWeight = 0;
       const postToolSteps = [];
-      for (let idx = maxBreakdownArrIdx + 1; idx < steps.length; idx++) {
+      for (let idx = postBreakdownStartIdx; idx < steps.length; idx++) {
         const st = steps[idx];
         if (!st) continue;
         const sc = st.step?.case || '';
@@ -1528,7 +1566,7 @@
     const displaySpeed = liveSpeed > 0 ? liveSpeed : lastCall?.speed > 0 ? lastCall.speed : latestValidSpeed;
     const isLiveSpeed = liveSpeed > 0;
 
-    const checkpointIdx = Number(latestChatStart?.checkpointIndex ?? -1);
+    const checkpointIdx = Math.max(Number(latestChatStart?.checkpointIndex ?? -1), latestCheckpointStepNum);
     const compactedSteps = Array.isArray(latestChatStart?.stepsCoveredByCheckpoint)
       ? latestChatStart.stepsCoveredByCheckpoint.length
       : 0;
@@ -1924,6 +1962,8 @@
       checkpointIdx,
       compactedSteps,
       truncationReason,
+      contextEstimatedAfterCompaction: appliedCompactionEstimate,
+      compactionGmIdx: appliedCompactionEstimate ? compactionGmIdx : -1,
       budgets: latestBudgets || {
         customizationTokenBudget: known.customizationTokenBudget || 20000,
         rulesTokenBudget: known.rulesTokenBudget || 20000,
@@ -2229,6 +2269,36 @@
   }
 
   // Compute remaining-usage telemetry for the bottom-right circular ring (.ag-cs-context-ring).
+  /**
+   * Compute genuine streaming TPS by excluding TTFT whenever possible, with buffered fallback.
+   */
+  function computeStreamingSpeed({ outputTokens = 0, streamSec = 0, ttftSec = 0, totalSec = 0 } = {}) {
+    const out = Number(outputTokens) || 0;
+    const s = Number(streamSec) || 0;
+    const t = Number(ttftSec) || 0;
+    const tot = Number(totalSec) || 0;
+    if (out <= 0) return { speed: 0, effectiveSec: 0, mode: 'none' };
+
+    // 1. Genuine streaming duration provided — guard against hosts that report totalSec as streamSec
+    if (s > 0.05) {
+      if (t > 0 && tot > 0 && Math.abs(s - tot) < 0.05 && tot - t > 0.05) {
+        const net = tot - t;
+        return { speed: Math.round(out / net), effectiveSec: net, mode: 'stream' };
+      }
+      return { speed: Math.round(out / s), effectiveSec: s, mode: 'stream' };
+    }
+    // 2. Derived streaming duration = totalSec - ttftSec (excludes TTFT wait)
+    if (tot > 0.05 && t > 0 && tot - t > 0.05) {
+      const net = tot - t;
+      return { speed: Math.round(out / net), effectiveSec: net, mode: 'stream' };
+    }
+    // 3. Buffered fallback when no separate streaming interval is available
+    if (tot > 0.05) {
+      return { speed: Math.round(out / tot), effectiveSec: tot, mode: 'buffered' };
+    }
+    return { speed: 0, effectiveSec: 0, mode: 'none' };
+  }
+
   function resolveQuotaCycle(quotaInfo, quotaCycleMode = 'auto') {
     if (!quotaInfo) return { pct: null, cycle: quotaCycleMode || 'auto' };
     const mode = quotaCycleMode === 'weekly' || quotaCycleMode === '5h' ? quotaCycleMode : 'auto';
@@ -2454,6 +2524,7 @@
     attachSubagentSummaries,
     normalizeQuotaData,
     getActiveQuotaInfo,
+    computeStreamingSpeed,
     resolveQuotaCycle,
     computeRingTelemetry,
     buildTelemetryReport,

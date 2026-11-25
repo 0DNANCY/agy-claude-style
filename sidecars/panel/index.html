@@ -119,7 +119,7 @@
       </div>
       <div class="kpi-card kpi-wide" id="kpi-weekly-card">
         <div class="kpi-wide-head">
-          <div class="kpi-label">当日消耗周额度</div>
+          <div class="kpi-label" id="kpi-weekly-label">当日消耗周额度</div>
           <div class="kpi-sub" id="kpi-weekly-sub">采样统计中…</div>
         </div>
         <div class="kpi-weekly-pools" id="kpi-weekly-pools">
@@ -224,43 +224,40 @@
 
     <div class="section">
       <div class="section-head" style="cursor:default;">
-        <span class="section-title">🌐 免 TUN 独立代理（默认关闭）</span>
+        <span class="section-title">🌐 免 TUN 独立代理</span>
         <span class="section-badge" id="proxy-badge">关闭</span>
       </div>
       <div class="section-body">
         <div class="proxy-runtime-box" id="proxy-runtime-box" style="display:none;"></div>
         <div class="row">
           <div class="row-label">
-            <div class="row-name">启用独立代理启动参数</div>
-            <div class="row-desc">仅注入 Antigravity 启动参数与环境变量，不改系统全局代理或应用签名</div>
+            <div class="row-name">启用独立代理</div>
+            <div class="row-desc">仅注入 Antigravity 进程，不改系统代理；冷启动自动接管</div>
           </div>
           <label class="switch"><input type="checkbox" id="sw-proxy-enabled" /><span class="switch-track"></span></label>
         </div>
-        <div class="row">
-          <div class="row-label">
-            <div class="row-name">冷启动未启用代理提醒</div>
-            <div class="row-desc">已开启独立代理但当前进程未携带代理参数时，在控制室顶部提示重启</div>
-          </div>
-          <label class="switch"><input type="checkbox" id="sw-proxy-cold-alert" /><span class="switch-track"></span></label>
-        </div>
         <div class="field-stack">
           <div class="field-label">代理地址（http / https / socks5）</div>
-          <input type="text" id="inp-proxy-url" placeholder="例如：http://127.0.0.1:7890 或 socks5://127.0.0.1:7891" />
-          <div class="field-label" style="margin-top:4px;">绕过列表（始终保留 localhost,127.0.0.1,::1）</div>
-          <input type="text" id="inp-proxy-bypass" placeholder="localhost,127.0.0.1,::1" />
-          <div class="row" style="border-top:none;padding:6px 0 2px;">
-            <div class="row-label">
-              <div class="row-name">强制 HTTP/1.1（GODEBUG=http2client=0）</div>
-              <div class="row-desc">排查代理下流式 EOF / HTTP2 断连时可开启</div>
-            </div>
-            <label class="switch"><input type="checkbox" id="sw-proxy-h1" /><span class="switch-track"></span></label>
-          </div>
+          <input type="text" id="inp-proxy-url" placeholder="例如：http://127.0.0.1:7897" />
           <div class="btn-2col" style="margin-top:4px;">
-            <button type="button" id="btn-proxy-save">保存配置</button>
             <button type="button" id="btn-proxy-test">测试连通性</button>
+            <button type="button" class="primary" id="btn-proxy-relaunch">✦ 保存并重启生效</button>
           </div>
-          <button type="button" class="primary" id="btn-proxy-relaunch">✦ 带代理与 CDP 重启 Antigravity</button>
           <div class="status-note" id="proxy-note">未测试</div>
+          <details style="margin-top:4px;">
+            <summary style="cursor:pointer;font-size:11.5px;font-weight:500;color:var(--muted-fg);user-select:none;">高级选项</summary>
+            <div class="field-stack" style="margin-top:6px;">
+              <div class="field-label">绕过列表（始终保留 localhost,127.0.0.1,::1）</div>
+              <input type="text" id="inp-proxy-bypass" placeholder="localhost,127.0.0.1,::1" />
+              <div class="row" style="border-top:none;padding:6px 0 0;">
+                <div class="row-label">
+                  <div class="row-name">强制 HTTP/1.1（默认开启）</div>
+                  <div class="row-desc">为 Go 后端注入 GODEBUG=http2client=0，避免混合代理端口断连</div>
+                </div>
+                <label class="switch"><input type="checkbox" id="sw-proxy-h1" /><span class="switch-track"></span></label>
+              </div>
+            </div>
+          </details>
         </div>
       </div>
     </div>
