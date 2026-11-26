@@ -66,6 +66,55 @@ test('telemetry-db queryTelemetryDashboard aggregates local brain dir and filter
   }
 });
 
+test('telemetry-db prefers real conversation titles from conversation_summaries.db and formats subagent titles', () => {
+  const { DatabaseSync } = require('node:sqlite');
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-cs-titles-'));
+  const tmpBrain = path.join(tmpRoot, 'brain');
+  const summaryDbPath = path.join(tmpRoot, 'conversation_summaries.db');
+  try {
+    const db = new DatabaseSync(summaryDbPath);
+    db.exec(`
+      CREATE TABLE conversation_summaries (
+        conversation_id TEXT PRIMARY KEY,
+        title TEXT NOT NULL DEFAULT '',
+        agent_name TEXT NOT NULL DEFAULT '',
+        parent_conversation_id TEXT NOT NULL DEFAULT ''
+      );
+    `);
+    const ins = db.prepare(
+      'INSERT INTO conversation_summaries (conversation_id, title, agent_name, parent_conversation_id) VALUES (?, ?, ?, ?)'
+    );
+    ins.run('c-main', 'Edgmr Robot Registry Installation', '', '');
+    ins.run('c-sub', '', 'coder', 'c-main');
+    db.close();
+
+    const now = Date.now();
+    const writeTranscript = (cid, firstUserText) => {
+      const logDir = path.join(tmpBrain, cid, '.system_generated', 'logs');
+      fs.mkdirSync(logDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(logDir, 'transcript.jsonl'),
+        [
+          JSON.stringify({ step_index: 0, type: 'USER_INPUT', content: `<USER_REQUEST>${firstUserText}</USER_REQUEST>` }),
+          JSON.stringify({ step_index: 1, type: 'PLANNER_RESPONSE', status: 'DONE', created_at: new Date(now - 5_000).toISOString(), model: 'gemini-4-neon', input_tokens: 1000, cache_read_tokens: 800, output_tokens: 200 }),
+        ].join('\n'),
+        'utf8'
+      );
+    };
+    writeTranscript('c-main', 'https://jihulab.com/ED/embodyde/raw-url');
+    writeTranscript('c-sub', 'raw internal subagent prompt');
+    writeTranscript('c-fallback', 'Fallback first prompt text');
+
+    const res = telemetry.queryTelemetryDashboard({ brainDir: tmpBrain, range: '24h', nowMs: now });
+    const byCid = new Map(res.requests.map((r) => [r.conversationId, r.conversationTitle]));
+    assert.equal(byCid.get('c-main'), 'Edgmr Robot Registry Installation');
+    assert.equal(byCid.get('c-sub'), 'Edgmr Robot Registry Installation · @coder');
+    assert.equal(byCid.get('c-fallback'), 'Fallback first prompt text');
+  } finally {
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});
+
 test('ui-task-progress parses leaf checklists, classifies retry reasons, and formats friendly tool labels', () => {
   const md = '- [x] Parent\n  - [x] Done leaf\n  - [/] Active leaf\n- [ ] Pending leaf';
   const items = taskProgress.parseChecklist(md);
@@ -1388,6 +1437,7 @@ test('panel sidecar: maybeAutoRelaunchForProxyColdStart relaunches once when rea
     testConnectivityFn: async () => ({ ok: true }),
     readGuardFn: () => recordedGuard,
     evalGuardFn: cdp.evaluateAutoRelaunchGuard,
+    isRelaunchInProgressFn: () => false,
     relaunchFn: async () => {
       relaunches++;
       return { relaunched: true };
@@ -1396,4 +1446,74 @@ test('panel sidecar: maybeAutoRelaunchForProxyColdStart relaunches once when rea
   });
   assert.equal(blocked.triggered, false);
   assert.equal(relaunches, 1);
+
+  // Concurrent relaunch in progress must skip without incrementing guard failures
+  let concurrentRecords = 0;
+  const skippedBusy = await panelMod.maybeAutoRelaunchForProxyColdStart({
+    readConfigFn: () => ({ proxyEnabled: true, proxyUrl: 'http://127.0.0.1:7897', proxyForceHttp1: true }),
+    detectRuntimeFn: () => ({ inspected: true, hostPid: 8888, coldStartMismatch: true }),
+    testConnectivityFn: async () => ({ ok: true }),
+    readGuardFn: () => ({ consecutiveFailures: 0, tripped: false, lastPidSig: '', lastAttemptAt: 0 }),
+    evalGuardFn: cdp.evaluateAutoRelaunchGuard,
+    isRelaunchInProgressFn: () => false,
+    recordGuardFn: () => {
+      concurrentRecords++;
+    },
+    relaunchFn: async () => ({ relaunched: false, skipped: true, reason: 'relaunch-in-progress' }),
+    nowMs: 200_000,
+  });
+  assert.equal(skippedBusy.triggered, false);
+  assert.equal(skippedBusy.reason, 'relaunch-in-progress');
+  assert.equal(concurrentRecords, 0);
+});
+
+test('cdp: cross-process relaunch lock blocks concurrent detached relaunches and reclaims stale locks', async () => {
+  const cdp = require('../cdp.js');
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-cs-rlock-'));
+  const lockPath = path.join(tmpDir, '.relaunch.lock');
+  try {
+    const t0 = 5_000_000;
+    const first = cdp.tryAcquireRelaunchLock({ lockPath, pid: 40001, nowMs: t0, isAliveFn: () => true });
+    assert.equal(first.acquired, true);
+    assert.equal(cdp.isRelaunchInProgress({ lockPath, nowMs: t0 + 500, isAliveFn: () => true }), true);
+
+    // Second concurrent attempt within handoff grace is blocked even if first PID already exited
+    const duringHandoff = cdp.tryAcquireRelaunchLock({ lockPath, pid: 40002, nowMs: t0 + 500, isAliveFn: () => false });
+    assert.equal(duringHandoff.acquired, false);
+    assert.equal(duringHandoff.reason, 'relaunch-in-progress');
+
+    // Detached relaunch respects lockPath and skips duplicate spawn
+    let spawnCount = 0;
+    const dupRes = await cdp.relaunchAntigravityWithCdp({
+      detached: true,
+      appPath: process.execPath,
+      lockPath,
+      nowMs: t0 + 500,
+      isAliveFn: () => true,
+      detectProcess: () => ({ running: true, pids: [55555] }),
+      spawn: () => {
+        spawnCount++;
+        return { unref() {} };
+      },
+    });
+    assert.equal(dupRes.relaunched, false);
+    assert.equal(dupRes.skipped, true);
+    assert.equal(dupRes.reason, 'relaunch-in-progress');
+    assert.equal(spawnCount, 0);
+
+    // Dead owner past handoff grace (3s) is automatically reclaimed
+    const reclaimed = cdp.tryAcquireRelaunchLock({ lockPath, pid: 40003, nowMs: t0 + 4000, isAliveFn: () => false });
+    assert.equal(reclaimed.acquired, true);
+    assert.equal(cdp.releaseRelaunchLock(lockPath, { ownerPid: 99999 }), false);
+    assert.equal(cdp.releaseRelaunchLock(lockPath, { ownerPid: 40003 }), true);
+    assert.equal(cdp.isRelaunchInProgress({ lockPath, nowMs: t0 + 4001, isAliveFn: () => true }), false);
+
+    // Verify detached helper includes SingletonLock wait and guards open -a behind portReady || childAlive
+    const helperSrc = cdp.scheduleDetachedRelaunch.toString();
+    assert.match(helperSrc, /singletonLockFile/);
+    assert.match(helperSrc, /lstatSync/);
+    assert.match(helperSrc, /\(portReady \|\| childAlive\)/);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
 });

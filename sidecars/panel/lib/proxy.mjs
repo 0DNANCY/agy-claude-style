@@ -211,6 +211,10 @@ export function detectHostProxyRuntime(
           if (/GODEBUG=[^\s]*http2client=0/i.test(envOut)) forceHttp1Active = true;
         } catch {}
       }
+      if (!inspected && env) {
+        inspected = true;
+        activeProxyUrl = normalizeProxyUrl(env.HTTPS_PROXY || env.https_proxy || env.HTTP_PROXY || env.http_proxy || env.ALL_PROXY || env.all_proxy || '') || '';
+      }
     } else if (platform === 'win32') {
       const psOut = String(
         execFileSyncFn(

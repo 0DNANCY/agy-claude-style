@@ -1,12 +1,12 @@
 // Subagent & Swarm tree fetcher for AGY Claude Style Aux Pane Dashboard.
 // Queries Antigravity Language Server ListConversations + GetAllCascadeTrajectories
 // over loopback HTTP (bypassing proxy/bad-ports) to build parent -> child subagent trees.
-import { request as httpRequest } from 'node:http';
+import { callLsRpcWithRecovery } from './ls-discovery.mjs';
 
-function callRpc(service, method, payload = {}, { env = process.env, fetchFn = null, timeoutMs = 2500 } = {}) {
+function callRpc(service, method, payload = {}, { env = process.env, fetchFn = null, timeoutMs = 2500, allowRediscover = true } = {}) {
   const addr = String(env?.ANTIGRAVITY_LS_ADDRESS || '').trim();
   const token = String(env?.ANTIGRAVITY_CSRF_TOKEN || '').trim();
-  if (!addr || addr === 'test.invalid') {
+  if (addr === 'test.invalid') {
     return Promise.resolve({ ok: false, reason: 'no_ls_address' });
   }
   const rpcPath = `/${service}/${method}`;
@@ -16,6 +16,7 @@ function callRpc(service, method, payload = {}, { env = process.env, fetchFn = n
     ...(token ? { 'x-antigravity-csrf-token': token, 'x-codeium-csrf-token': token } : {}),
   };
   if (typeof fetchFn === 'function') {
+    if (!addr) return Promise.resolve({ ok: false, reason: 'no_ls_address' });
     const url = `http://${addr}${rpcPath}`;
     const ctrl = typeof AbortController === 'function' ? new AbortController() : null;
     const timer = ctrl ? setTimeout(() => ctrl.abort(), timeoutMs) : null;
@@ -36,48 +37,11 @@ function callRpc(service, method, payload = {}, { env = process.env, fetchFn = n
       });
   }
 
-  const [host, portStr] = addr.split(':');
-  const port = Number(portStr) || 80;
-  const body = JSON.stringify(payload || {});
-  return new Promise((resolve) => {
-    const req = httpRequest(
-      {
-        hostname: host || '127.0.0.1',
-        port,
-        path: rpcPath,
-        method: 'POST',
-        headers: {
-          ...headers,
-          'Content-Length': Buffer.byteLength(body),
-        },
-        timeout: timeoutMs,
-      },
-      (res) => {
-        const chunks = [];
-        res.on('data', (c) => chunks.push(c));
-        res.on('end', () => {
-          if (res.statusCode < 200 || res.statusCode >= 300) {
-            resolve({ ok: false, reason: `http_${res.statusCode}` });
-            return;
-          }
-          try {
-            const data = JSON.parse(Buffer.concat(chunks).toString('utf8'));
-            resolve({ ok: true, data });
-          } catch {
-            resolve({ ok: false, reason: 'invalid_json' });
-          }
-        });
-      }
-    );
-    req.on('timeout', () => {
-      req.destroy();
-      resolve({ ok: false, reason: 'timeout' });
-    });
-    req.on('error', (err) => {
-      resolve({ ok: false, reason: err?.message || 'network_error' });
-    });
-    req.write(body);
-    req.end();
+  return callLsRpcWithRecovery(service, method, payload, {
+    lsAddress: addr,
+    csrfToken: token,
+    timeoutMs,
+    allowRediscover: allowRediscover && env === process.env,
   });
 }
 

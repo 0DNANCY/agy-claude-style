@@ -160,9 +160,49 @@ async function shouldRemoveUiOnShutdown({
   return await isHostStillAlive(reason, healthzUrl);
 }
 
+function detectNonDesktopHost({
+  env = process.env,
+  ppid = process.ppid,
+  inspectCmdFn = cdpApi.inspectProcessCommand,
+} = {}) {
+  if (String(env?.AGY_CLAUDE_STYLE_FORCE_WATCH || '').trim() === '1') {
+    return { nonDesktop: false, kind: 'desktop', reason: 'forced' };
+  }
+  const envCandidates = [
+    env?.AGY_CLAUDE_STYLE_PLUGIN_DATA,
+    env?.PLUGIN_DATA,
+    env?.ANTIGRAVITY_EXECUTABLE_DATA_DIR,
+    env?.ANTIGRAVITY_APP_DATA_DIR,
+    env?.JETSKI_APP_DATA_DIR,
+  ];
+  for (const raw of envCandidates) {
+    const val = String(raw || '').trim();
+    if (!val) continue;
+    const m = val.match(/(?:^|[\\/])(antigravity-(?:cli|ide))(?:[\\/]|$)/i);
+    if (m) {
+      return { nonDesktop: true, kind: m[1].toLowerCase(), reason: 'env-data-dir' };
+    }
+  }
+  if (Number.isInteger(ppid) && ppid > 1 && typeof inspectCmdFn === 'function') {
+    try {
+      const parentCmd = String(inspectCmdFn(ppid) || '').trim();
+      if (
+        parentCmd &&
+        /(?:^|[\\/])agy(?:\.exe)?(?:\s|$)/i.test(parentCmd) &&
+        !/Antigravity\.app|Antigravity\.exe|language_server/i.test(parentCmd)
+      ) {
+        return { nonDesktop: true, kind: 'antigravity-cli', reason: 'parent-process' };
+      }
+    } catch {}
+  }
+  return { nonDesktop: false, kind: 'desktop', reason: 'default' };
+}
+
 function startMcpPluginHost() {
   const serverVersion = readPluginVersion();
   const pluginName = readPluginName();
+  const hostContext = detectNonDesktopHost();
+  const passiveMcpOnly = Boolean(hostContext.nonDesktop);
   const healthzUrl = normalizeLsHealthzUrl(process.env.ANTIGRAVITY_LS_ADDRESS);
   const stateDir = cdpApi.STATE_DIR || PLUGIN_ROOT;
   const logFile = path.join(stateDir, 'watch.log');
@@ -183,20 +223,23 @@ function startMcpPluginHost() {
     } catch {}
   }
 
-  try {
-    fs.mkdirSync(stateDir, { recursive: true });
-  } catch {}
-  try {
-    const cleaned = cdpApi.cleanupLegacyMacLauncher?.();
-    if (cleaned?.removed) {
-      appendSafeLog(`[cleanup] removed legacy macOS launcher: ${cleaned.path}`);
-    }
-  } catch {}
-  const hostLease = registerMcpHost({
-    stateDir,
-    pid: process.pid,
-    lsAddress: process.env.ANTIGRAVITY_LS_ADDRESS || '',
-  });
+  let hostLease = { unregister() {} };
+  if (!passiveMcpOnly) {
+    try {
+      fs.mkdirSync(stateDir, { recursive: true });
+    } catch {}
+    try {
+      const cleaned = cdpApi.cleanupLegacyMacLauncher?.();
+      if (cleaned?.removed) {
+        appendSafeLog(`[cleanup] removed legacy macOS launcher: ${cleaned.path}`);
+      }
+    } catch {}
+    hostLease = registerMcpHost({
+      stateDir,
+      pid: process.pid,
+      lsAddress: process.env.ANTIGRAVITY_LS_ADDRESS || '',
+    });
+  }
 
   let controller = null;
   let reconcileInFlight = null;
@@ -307,36 +350,38 @@ function startMcpPluginHost() {
     }
   }
 
-  void triggerReconcile();
+  if (!passiveMcpOnly) {
+    void triggerReconcile();
 
-  try {
-    if (fs.existsSync(stateDir)) {
-      stateDirWatcher = fs.watch(stateDir, (_, filename) => {
-        if (shuttingDown) return;
-        if (!filename || filename === '.watch.pid') scheduleReconcile();
-      });
-      if (typeof stateDirWatcher.unref === 'function') stateDirWatcher.unref();
-    }
-  } catch {}
-
-  if (antigravityConfigPath) {
     try {
-      const configDir = path.dirname(antigravityConfigPath);
-      const configBase = path.basename(antigravityConfigPath);
-      if (fs.existsSync(configDir)) {
-        configWatcher = fs.watch(configDir, (_, filename) => {
+      if (fs.existsSync(stateDir)) {
+        stateDirWatcher = fs.watch(stateDir, (_, filename) => {
           if (shuttingDown) return;
-          if (!filename || String(filename) === configBase) scheduleReconcile();
+          if (!filename || filename === '.watch.pid') scheduleReconcile();
         });
-        if (typeof configWatcher.unref === 'function') configWatcher.unref();
+        if (typeof stateDirWatcher.unref === 'function') stateDirWatcher.unref();
       }
     } catch {}
-  }
 
-  standbyTimer = setInterval(() => {
-    void triggerReconcile();
-  }, standbyPollMs);
-  if (typeof standbyTimer.unref === 'function') standbyTimer.unref();
+    if (antigravityConfigPath) {
+      try {
+        const configDir = path.dirname(antigravityConfigPath);
+        const configBase = path.basename(antigravityConfigPath);
+        if (fs.existsSync(configDir)) {
+          configWatcher = fs.watch(configDir, (_, filename) => {
+            if (shuttingDown) return;
+            if (!filename || String(filename) === configBase) scheduleReconcile();
+          });
+          if (typeof configWatcher.unref === 'function') configWatcher.unref();
+        }
+      } catch {}
+    }
+
+    standbyTimer = setInterval(() => {
+      void triggerReconcile();
+    }, standbyPollMs);
+    if (typeof standbyTimer.unref === 'function') standbyTimer.unref();
+  }
 
   async function shutdownHost(reason = 'shutdown') {
     if (shuttingDown) return;
@@ -362,6 +407,9 @@ function startMcpPluginHost() {
     if (typeof forceTimer.unref === 'function') forceTimer.unref();
 
     try {
+      if (passiveMcpOnly) {
+        return;
+      }
       if (reconcileInFlight) {
         await Promise.race([
           reconcileInFlight.catch(() => {}),
@@ -493,6 +541,7 @@ module.exports = {
   readPluginVersion,
   readPluginName,
   resolveHostPluginConfigPath,
+  detectNonDesktopHost,
   isHostStillAlive,
   shouldRemoveUiOnShutdown,
   handleMcpJsonRpcMessage,

@@ -1822,8 +1822,8 @@
           </div>
           <div class="ag-cs-ctx-kpi">
             <span class="ag-cs-ctx-k">${escapeHtml(ui.kpiSpeed || 'Output Speed')}</span>
-            <span class="ag-cs-ctx-v">${(data?.displaySpeed || data?.lastSpeed) ? (data.displaySpeed || data.lastSpeed) + ' tok/s' : '—'}</span>
-            <span class="ag-cs-ctx-sub">${escapeHtml(ui.speedAvgShort || 'Avg')} ${data?.avgSpeed || 0} tok/s · TTFT ${(data?.avgTtft || data?.lastTtft || 0).toFixed(2)}s</span>
+            <span class="ag-cs-ctx-v">${(data?.displaySpeed || data?.lastSpeed) ? (data.displaySpeed || data.lastSpeed) + ' tok/s' : data?.lastRateStatus === 'buffered' ? (lang === 'en' ? 'Buffered' : '缓冲突发') : data?.lastRateStatus === 'short' ? (lang === 'en' ? 'Short' : '短样本') : '—'}</span>
+            <span class="ag-cs-ctx-sub">${escapeHtml(ui.speedAvgShort || 'Avg')} ${data?.avgSpeed || 0} tok/s${data?.e2eSpeed ? ' · E2E ' + data.e2eSpeed : ''} · TTFT ${(data?.ttftMedian || data?.avgTtft || data?.lastTtft || 0).toFixed(2)}s</span>
           </div>
           <div class="ag-cs-ctx-kpi">
             <span class="ag-cs-ctx-k">${escapeHtml(ui.kpiSessionTotal || 'Session Total')}</span>

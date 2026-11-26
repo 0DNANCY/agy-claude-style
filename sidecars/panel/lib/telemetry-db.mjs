@@ -1,10 +1,10 @@
 // Read-only local transcript telemetry aggregator for AGY Claude Style Aux Pane Dashboard.
 // Parses ~/.gemini/antigravity/brain/*/.system_generated/logs/transcript.jsonl with mtime caching,
 // computes reference USD cost, detects short-interval cache-drop anomalies, and builds a 53-week heatmap.
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { closeSync, existsSync, openSync, readdirSync, readSync, realpathSync, statSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, sep } from 'node:path';
 
 const require = createRequire(import.meta.url);
 let _DatabaseSync = undefined;
@@ -70,7 +70,19 @@ function parsePbMap(buf) {
   return map;
 }
 
-export function parseGenMetadataTtft(rawData) {
+function parsePbDurationMs(rawBuf, maxMs = 600_000) {
+  if (!rawBuf || !rawBuf.length) return null;
+  const dur = parsePbMap(rawBuf);
+  if (!dur.has(1) && !dur.has(2)) return null;
+  const sec = Number(dur.get(1)?.[0] || 0);
+  const nanos = Number(dur.get(2)?.[0] || 0);
+  if (!Number.isFinite(sec) || !Number.isFinite(nanos) || sec < 0 || nanos < 0 || nanos >= 1e9) return null;
+  const ms = Math.round((sec + nanos / 1e9) * 1000);
+  if (!Number.isFinite(ms) || ms < 0 || ms > maxMs) return null;
+  return ms;
+}
+
+export function parseGenMetadataTiming(rawData) {
   if (!rawData || !rawData.length) return null;
   const buf = Buffer.isBuffer(rawData) ? rawData : Buffer.from(rawData);
   const top = parsePbMap(buf);
@@ -89,18 +101,103 @@ export function parseGenMetadataTtft(rawData) {
     }
   }
   const m1 = parsePbMap(top.get(1)[0]);
-  if (!m1.has(11)) return null;
-  const dur = parsePbMap(m1.get(11)[0]);
-  const sec = Number(dur.get(1)?.[0] || 0);
-  const nanos = Number(dur.get(2)?.[0] || 0);
-  const ttftMs = Math.round((sec + nanos / 1e9) * 1000);
-  if (!Number.isFinite(ttftMs) || ttftMs < 0 || ttftMs > 600_000) return null;
-  return { stepIndices, ttftMs };
+  const ttftMs = m1.has(11) ? parsePbDurationMs(m1.get(11)[0], 600_000) : null;
+  const streamMs = m1.has(12) ? parsePbDurationMs(m1.get(12)[0], 3_600_000) : null;
+  if (ttftMs === null && streamMs === null) return null;
+  return { stepIndices, ttftMs, streamMs };
+}
+
+export function parseGenMetadataTtft(rawData) {
+  const timing = parseGenMetadataTiming(rawData);
+  if (!timing || timing.ttftMs === null) return null;
+  return { stepIndices: timing.stepIndices, ttftMs: timing.ttftMs };
+}
+
+const MAX_CACHE_ENTRIES = 160;
+const MAX_TRANSCRIPT_SCAN_BYTES = 32 * 1024 * 1024;
+const MAX_LINE_JSON_PARSE_BYTES = 256 * 1024;
+const OVERSIZED_EDGE_CHARS = 64 * 1024;
+const TRANSCRIPT_CHUNK_BYTES = 64 * 1024;
+
+function lruSet(map, key, value, max = MAX_CACHE_ENTRIES) {
+  if (map.has(key)) map.delete(key);
+  map.set(key, value);
+  while (map.size > max) {
+    const oldest = map.keys().next().value;
+    map.delete(oldest);
+  }
+}
+
+export function medianNumber(values) {
+  if (!Array.isArray(values) || values.length === 0) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
 }
 
 const dbTtftCache = new Map();
+const summaryTitlesCache = new Map();
 
-export function readConversationTtftMap(dbPath) {
+export function readConversationTitlesMap(summaryDbPath) {
+  const DatabaseSync = getDatabaseSync();
+  if (!DatabaseSync || !summaryDbPath || !existsSync(summaryDbPath)) return null;
+  let mtimeKey = '';
+  try {
+    const st = statSync(summaryDbPath);
+    const walPath = `${summaryDbPath}-wal`;
+    const walSt = existsSync(walPath) ? statSync(walPath) : null;
+    mtimeKey = `${st.mtimeMs}:${st.size}:${walSt ? `${walSt.mtimeMs}:${walSt.size}` : '0'}`;
+  } catch {
+    return null;
+  }
+  const cached = summaryTitlesCache.get(summaryDbPath);
+  if (cached && cached.mtimeKey === mtimeKey) return cached.map;
+
+  const map = new Map();
+  let db = null;
+  try {
+    db = new DatabaseSync(summaryDbPath, { readOnly: true });
+    const hasTable = db
+      .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='conversation_summaries'")
+      .get();
+    if (hasTable) {
+      const rows = db
+        .prepare('SELECT conversation_id, title, agent_name, parent_conversation_id FROM conversation_summaries')
+        .all();
+      const rawTitles = new Map();
+      for (const row of rows) {
+        const cid = String(row?.conversation_id || '').trim();
+        const title = String(row?.title || '').trim();
+        if (cid && title) rawTitles.set(cid, title);
+      }
+      for (const row of rows) {
+        const cid = String(row?.conversation_id || '').trim();
+        if (!cid) continue;
+        const title = String(row?.title || '').trim();
+        if (title) {
+          map.set(cid, title);
+          continue;
+        }
+        const agentName = String(row?.agent_name || '').trim();
+        if (agentName) {
+          const parentId = String(row?.parent_conversation_id || '').trim();
+          const parentTitle = parentId ? rawTitles.get(parentId) || '' : '';
+          map.set(cid, parentTitle ? `${parentTitle} · @${agentName}` : `@${agentName}`);
+        }
+      }
+    }
+  } catch {
+    return null;
+  } finally {
+    try {
+      if (db) db.close();
+    } catch {}
+  }
+  lruSet(summaryTitlesCache, summaryDbPath, { mtimeKey, map }, 16);
+  return map;
+}
+
+export function readConversationTimingMap(dbPath) {
   const DatabaseSync = getDatabaseSync();
   if (!DatabaseSync || !dbPath || !existsSync(dbPath)) return null;
   let mtimeKey = '';
@@ -113,9 +210,10 @@ export function readConversationTtftMap(dbPath) {
     return null;
   }
   const cached = dbTtftCache.get(dbPath);
-  if (cached && cached.mtimeKey === mtimeKey) return cached.map;
+  if (cached && cached.mtimeKey === mtimeKey) return cached;
 
-  const map = new Map();
+  const ttftMap = new Map();
+  const streamMap = new Map();
   let db = null;
   try {
     db = new DatabaseSync(dbPath, { readOnly: true });
@@ -125,10 +223,11 @@ export function readConversationTtftMap(dbPath) {
     if (hasTable) {
       const rows = db.prepare('SELECT data FROM gen_metadata ORDER BY idx ASC').all();
       for (const row of rows) {
-        const parsed = parseGenMetadataTtft(row.data);
+        const parsed = parseGenMetadataTiming(row.data);
         if (!parsed) continue;
         for (const sIdx of parsed.stepIndices) {
-          map.set(sIdx, parsed.ttftMs);
+          if (parsed.ttftMs !== null) ttftMap.set(sIdx, parsed.ttftMs);
+          if (parsed.streamMs !== null) streamMap.set(sIdx, parsed.streamMs);
         }
       }
     }
@@ -139,8 +238,13 @@ export function readConversationTtftMap(dbPath) {
       if (db) db.close();
     } catch {}
   }
-  dbTtftCache.set(dbPath, { mtimeKey, map });
-  return map;
+  const entry = { mtimeKey, ttftMap, streamMap };
+  lruSet(dbTtftCache, dbPath, entry, MAX_CACHE_ENTRIES);
+  return entry;
+}
+
+export function readConversationTtftMap(dbPath) {
+  return readConversationTimingMap(dbPath)?.ttftMap || null;
 }
 
 const DAY_MS = 86400000;
@@ -207,22 +311,88 @@ export function extractUserTitle(rawContent = '') {
   return body.length > 42 ? `${body.slice(0, 42)}…` : body;
 }
 
-export function parseTranscriptJsonl(rawText = '', conversationId = '', sourceLabel = 'local') {
+function projectOversizedTranscriptLine(edgeText) {
+  // Allowlist scalar projection over head+tail windows of huge (>256 KiB) JSONL lines so multi-MB
+  // tool/response bodies never hit JSON.parse or bloat the 192 MiB sidecar heap.
+  const typeMatch = edgeText.match(/"type"\s*:\s*"([A-Z0-9_]+)"/);
+  if (!typeMatch) return null;
+  const type = typeMatch[1];
+  if (
+    type !== 'PLANNER_RESPONSE' &&
+    type !== 'ERROR_MESSAGE' &&
+    type !== 'CHECKPOINT' &&
+    type !== 'USER_INPUT' &&
+    !/compact/i.test(type)
+  ) {
+    return null;
+  }
+  const numField = (name) => {
+    const m = edgeText.match(new RegExp(`"${name}"\\s*:\\s*(-?\\d+(?:\\.\\d+)?)`));
+    return m ? Number(m[1]) : undefined;
+  };
+  const strField = (name) => {
+    const m = edgeText.match(new RegExp(`"${name}"\\s*:\\s*"([^"\\\\]{0,256})"`));
+    return m ? m[1] : undefined;
+  };
+  return {
+    type,
+    step_index: numField('step_index'),
+    created_at: strField('created_at'),
+    completed_at: strField('completed_at'),
+    finished_at: strField('finished_at'),
+    model: strField('model'),
+    status: strField('status'),
+    input_tokens: numField('input_tokens'),
+    cache_read_tokens: numField('cache_read_tokens'),
+    cache_write_tokens: numField('cache_write_tokens'),
+    output_tokens: numField('output_tokens'),
+    duration_ms: numField('duration_ms'),
+    latency_ms: numField('latency_ms'),
+    elapsed_ms: numField('elapsed_ms'),
+    ttft_ms: numField('ttft_ms'),
+    time_to_first_token_ms: numField('time_to_first_token_ms'),
+    streaming_duration_ms: numField('streaming_duration_ms'),
+    stream_ms: numField('stream_ms'),
+    content: type === 'USER_INPUT' || type === 'ERROR_MESSAGE' ? strField('content') : undefined,
+  };
+}
+
+function parseLineToProjectedObj(line, needTitle, oversized = false) {
+  if (!line || line[0] !== '{') return null;
+  const isRelevant =
+    line.includes('"PLANNER_RESPONSE"') ||
+    line.includes('"ERROR_MESSAGE"') ||
+    line.includes('"CHECKPOINT"') ||
+    (needTitle && line.includes('"USER_INPUT"')) ||
+    /compact/i.test(line.slice(0, 180));
+  if (!isRelevant) {
+    // Retain only a tiny { type, created_at } anchor for next-step latency derivation without buffering body text.
+    const edge =
+      line.length > 1024 ? `${line.slice(0, 512)} ${line.slice(-512)}` : line;
+    const created = edge.match(/"created_at"\s*:\s*"([^"\\]{1,64})"/);
+    if (!created) return null;
+    const typeM = edge.match(/"type"\s*:\s*"([A-Z0-9_]+)"/);
+    return { type: typeM ? typeM[1] : 'STEP', created_at: created[1] };
+  }
+  if (oversized || line.length > MAX_LINE_JSON_PARSE_BYTES) {
+    const edgeText =
+      line.length > OVERSIZED_EDGE_CHARS * 2
+        ? `${line.slice(0, OVERSIZED_EDGE_CHARS)} ${line.slice(-OVERSIZED_EDGE_CHARS)}`
+        : line;
+    return projectOversizedTranscriptLine(edgeText);
+  }
+  try {
+    return JSON.parse(line);
+  } catch {
+    return null;
+  }
+}
+
+function buildRequestsFromProjectedObjs(parsedObjs, conversationId, sourceLabel) {
   const requests = [];
-  if (!rawText) return requests;
-  const lines = String(rawText).split(/\r?\n/);
   let lastErrorText = '';
   let sawCompactionBeforeNext = false;
   let conversationTitle = '';
-  const parsedObjs = [];
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i].trim();
-    if (!line || line[0] !== '{') continue;
-    try {
-      parsedObjs.push({ idx: i, obj: JSON.parse(line) });
-    } catch {}
-  }
 
   for (let p = 0; p < parsedObjs.length; p++) {
     const { idx: i, obj } = parsedObjs[p];
@@ -248,6 +418,7 @@ export function parseTranscriptJsonl(rawText = '', conversationId = '', sourceLa
         timestampMs: tsMs,
         responseMs: null,
         ttftMs: null,
+        streamMs: null,
         model: String(obj.model || 'unknown'),
         inputTokens: 0,
         cacheReadTokens: 0,
@@ -268,8 +439,6 @@ export function parseTranscriptJsonl(rawText = '', conversationId = '', sourceLa
     const outputTokens = Math.max(0, Number(obj.output_tokens ?? obj.usage?.output_tokens ?? 0) || 0);
     if (inputTokens === 0 && outputTokens === 0 && cacheReadTokens === 0 && obj.status !== 'ERROR') continue;
 
-    // In Antigravity transcript.jsonl, input_tokens is uncached (fresh) input tokens
-    // and cache_read_tokens is cached input tokens, so total input = fresh + cached.
     const totalIn = inputTokens + cacheReadTokens;
     const cacheHitPct = totalIn > 0 ? Math.min(100, (cacheReadTokens / totalIn) * 100) : 0;
     const tsMs = Date.parse(obj.created_at || '') || 0;
@@ -295,6 +464,11 @@ export function parseTranscriptJsonl(rawText = '', conversationId = '', sourceLa
     if (Number.isFinite(explicitTtft) && explicitTtft >= 0 && explicitTtft <= 600_000) {
       ttftMs = Math.round(explicitTtft);
     }
+    let streamMs = null;
+    const explicitStream = Number(obj.streaming_duration_ms ?? obj.stream_ms);
+    if (Number.isFinite(explicitStream) && explicitStream >= 0 && explicitStream <= 3_600_000) {
+      streamMs = Math.round(explicitStream);
+    }
     const model = String(obj.model || 'unknown').trim() || 'unknown';
     const isErr = String(obj.status || '').toUpperCase() === 'ERROR';
     const costUsd = estimateRequestCost({ model, inputTokens: totalIn, cacheReadTokens, outputTokens });
@@ -308,6 +482,7 @@ export function parseTranscriptJsonl(rawText = '', conversationId = '', sourceLa
       timestampMs: tsMs,
       responseMs,
       ttftMs,
+      streamMs,
       model,
       inputTokens: totalIn,
       cacheReadTokens,
@@ -327,6 +502,121 @@ export function parseTranscriptJsonl(rawText = '', conversationId = '', sourceLa
     r.conversationTitle = fallbackTitle;
   }
   return requests;
+}
+
+export function parseTranscriptJsonl(rawText = '', conversationId = '', sourceLabel = 'local') {
+  if (!rawText) return [];
+  const lines = String(rawText).split(/\r?\n/);
+  const parsedObjs = [];
+  let sawUserTitle = false;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    const obj = parseLineToProjectedObj(line, !sawUserTitle);
+    if (!obj) continue;
+    if (obj.type === 'USER_INPUT') sawUserTitle = true;
+    parsedObjs.push({ idx: i, obj });
+  }
+  return buildRequestsFromProjectedObjs(parsedObjs, conversationId, sourceLabel);
+}
+
+/**
+ * Bounded 64 KiB chunked streaming reader for local transcript.jsonl files.
+ * Keeps head + rolling tail windows for oversized (>256 KiB) lines so trailing token scalars
+ * are preserved without loading multi-MB bodies into V8 heap.
+ */
+export function parseTranscriptFileBounded(
+  filePath,
+  conversationId = '',
+  sourceLabel = 'local',
+  { maxBytes = MAX_TRANSCRIPT_SCAN_BYTES, chunkBytes = TRANSCRIPT_CHUNK_BYTES } = {}
+) {
+  let fd = null;
+  const parsedObjs = [];
+  let lineIdx = 0;
+  let sawUserTitle = false;
+  let truncated = false;
+  try {
+    fd = openSync(filePath, 'r');
+    const buf = Buffer.allocUnsafe(chunkBytes);
+    let carry = '';
+    let oversizedHead = '';
+    let oversizedTail = '';
+    let isOversized = false;
+    let totalRead = 0;
+
+    const emitLine = (text, oversized) => {
+      const idx = lineIdx++;
+      const trimmed = text.trim();
+      const obj = parseLineToProjectedObj(trimmed, !sawUserTitle, oversized);
+      if (!obj) return;
+      if (obj.type === 'USER_INPUT') sawUserTitle = true;
+      parsedObjs.push({ idx, obj });
+    };
+
+    const appendOversized = (part) => {
+      if (!part) return;
+      if (part.length >= OVERSIZED_EDGE_CHARS) {
+        oversizedTail = part.slice(-OVERSIZED_EDGE_CHARS);
+      } else {
+        const merged = oversizedTail + part;
+        oversizedTail = merged.length > OVERSIZED_EDGE_CHARS ? merged.slice(-OVERSIZED_EDGE_CHARS) : merged;
+      }
+    };
+
+    for (;;) {
+      const remaining = maxBytes - totalRead;
+      if (remaining <= 0) {
+        truncated = true;
+        break;
+      }
+      const n = readSync(fd, buf, 0, Math.min(chunkBytes, remaining), null);
+      if (n <= 0) break;
+      totalRead += n;
+      const chunkStr = buf.subarray(0, n).toString('utf8');
+      let start = 0;
+      for (;;) {
+        const nl = chunkStr.indexOf('\n', start);
+        if (nl === -1) break;
+        const piece = chunkStr.slice(start, nl);
+        start = nl + 1;
+        if (isOversized) {
+          appendOversized(piece);
+          emitLine(`${oversizedHead} ${oversizedTail}`, true);
+          oversizedHead = '';
+          oversizedTail = '';
+          isOversized = false;
+        } else {
+          emitLine(carry + piece, false);
+          carry = '';
+        }
+      }
+      const rem = chunkStr.slice(start);
+      if (isOversized) {
+        appendOversized(rem);
+      } else if (carry.length + rem.length > MAX_LINE_JSON_PARSE_BYTES) {
+        const combined = carry + rem;
+        oversizedHead = combined.slice(0, OVERSIZED_EDGE_CHARS);
+        oversizedTail = combined.slice(-OVERSIZED_EDGE_CHARS);
+        carry = '';
+        isOversized = true;
+      } else {
+        carry += rem;
+      }
+    }
+    if (isOversized) emitLine(`${oversizedHead} ${oversizedTail}`, true);
+    else if (carry) emitLine(carry, false);
+  } finally {
+    if (fd !== null) {
+      try {
+        closeSync(fd);
+      } catch {}
+    }
+  }
+  const rows = buildRequestsFromProjectedObjs(parsedObjs, conversationId, sourceLabel);
+  if (truncated) {
+    Object.defineProperty(rows, '_truncated', { value: true, enumerable: false });
+  }
+  return rows;
 }
 
 export function detectCacheDropAnomalies(requests = []) {
@@ -455,10 +745,13 @@ const fileCache = new Map();
 export function readLocalBrainRequests({
   brainDir = join(homedir(), '.gemini', 'antigravity', 'brain'),
   conversationsDir,
+  summaryDbPath,
   maxConversations = 160,
 } = {}) {
   if (!existsSync(brainDir)) return [];
   const convDir = conversationsDir || join(dirname(brainDir), 'conversations');
+  const resolvedSummaryDb = summaryDbPath || join(dirname(brainDir), 'conversation_summaries.db');
+  const titleMap = readConversationTitlesMap(resolvedSummaryDb);
   let entries = [];
   try {
     entries = readdirSync(brainDir, { withFileTypes: true }).filter((d) => d.isDirectory());
@@ -481,26 +774,44 @@ export function readLocalBrainRequests({
   const selected = candidates.slice(0, maxConversations);
   const all = [];
 
+  let realBrainRoot = brainDir;
+  try {
+    realBrainRoot = realpathSync(brainDir);
+  } catch {}
+  const rootPrefix = realBrainRoot.endsWith(sep) ? realBrainRoot : `${realBrainRoot}${sep}`;
+
   for (const c of selected) {
     const dbPath = join(convDir, `${c.id}.db`);
-    const ttftMap = readConversationTtftMap(dbPath);
+    const timing = readConversationTimingMap(dbPath);
+    const ttftMap = timing?.ttftMap || null;
+    const streamMap = timing?.streamMap || null;
+    const summaryTitle = titleMap?.get(c.id) || '';
     const cached = fileCache.get(c.logPath);
     let rows;
     if (cached && cached.mtimeMs === c.mtimeMs && cached.size === c.size) {
       rows = cached.rows;
     } else {
       try {
-        const raw = readFileSync(c.logPath, 'utf8');
-        rows = parseTranscriptJsonl(raw, c.id, 'local');
-        fileCache.set(c.logPath, { mtimeMs: c.mtimeMs, size: c.size, rows });
+        const realLog = realpathSync(c.logPath);
+        const withinRoot =
+          process.platform === 'win32'
+            ? realLog.toLowerCase().startsWith(rootPrefix.toLowerCase())
+            : realLog.startsWith(rootPrefix);
+        if (!withinRoot) continue;
+        rows = parseTranscriptFileBounded(realLog, c.id, 'local');
+        lruSet(fileCache, c.logPath, { mtimeMs: c.mtimeMs, size: c.size, rows }, MAX_CACHE_ENTRIES);
       } catch {
         continue;
       }
     }
     for (const r of rows) {
-      if (ttftMap && Number.isInteger(r.stepIndex) && ttftMap.has(r.stepIndex)) {
-        const dbTtft = ttftMap.get(r.stepIndex);
-        all.push(r.ttftMs === dbTtft ? r : { ...r, ttftMs: dbTtft });
+      const hasDbTtft = Boolean(ttftMap && Number.isInteger(r.stepIndex) && ttftMap.has(r.stepIndex));
+      const hasDbStream = Boolean(streamMap && Number.isInteger(r.stepIndex) && streamMap.has(r.stepIndex));
+      const nextTtft = hasDbTtft ? ttftMap.get(r.stepIndex) : r.ttftMs;
+      const nextStream = hasDbStream ? streamMap.get(r.stepIndex) : r.streamMs ?? null;
+      const nextTitle = summaryTitle || r.conversationTitle;
+      if (nextTtft !== r.ttftMs || nextStream !== (r.streamMs ?? null) || nextTitle !== r.conversationTitle) {
+        all.push({ ...r, ttftMs: nextTtft, streamMs: nextStream, conversationTitle: nextTitle });
       } else {
         all.push(r);
       }
@@ -572,6 +883,7 @@ export function buildModelHealth(requests = [], { range = '7d', selectedDate = '
         anomalyCount: 0,
         ttftSum: 0,
         ttftCount: 0,
+        ttftValues: [],
         errorTags: new Map(),
         slots: Array.from({ length: slotsN }, (_, idx) => ({
           idx,
@@ -599,6 +911,7 @@ export function buildModelHealth(requests = [], { range = '7d', selectedDate = '
     if (Number.isFinite(r.ttftMs) && r.ttftMs >= 0) {
       entry.ttftSum += r.ttftMs;
       entry.ttftCount += 1;
+      entry.ttftValues.push(r.ttftMs);
     }
 
     if (r.timestampMs >= windowStartMs && r.timestampMs <= windowEndMs) {
@@ -618,6 +931,8 @@ export function buildModelHealth(requests = [], { range = '7d', selectedDate = '
   const models = Array.from(byModel.values())
     .map((m) => {
       const avgTtftMs = m.ttftCount > 0 ? Math.round(m.ttftSum / m.ttftCount) : null;
+      const medianTtftRaw = medianNumber(m.ttftValues);
+      const medianTtftMs = medianTtftRaw !== null ? Math.round(medianTtftRaw) : null;
       const successRatePct = m.requests > 0 ? Number((((m.requests - m.errorCount) / m.requests) * 100).toFixed(1)) : 100;
       const cacheDropRatePct = m.requests > 0 ? Number(((m.anomalyCount / m.requests) * 100).toFixed(1)) : 0;
       let topError = '';
@@ -663,6 +978,7 @@ export function buildModelHealth(requests = [], { range = '7d', selectedDate = '
         successRatePct,
         cacheDropRatePct,
         avgTtftMs,
+        medianTtftMs,
         topError,
         overallStatus,
         slots,
@@ -682,6 +998,7 @@ export function buildModelHealth(requests = [], { range = '7d', selectedDate = '
 export function queryTelemetryDashboard({
   brainDir,
   conversationsDir,
+  summaryDbPath,
   extraRequests = [],
   priceLookup = null,
   range = '7d',
@@ -694,7 +1011,7 @@ export function queryTelemetryDashboard({
   limit = 50,
   nowMs = Date.now(),
 } = {}) {
-  const localReqs = readLocalBrainRequests({ brainDir, conversationsDir });
+  const localReqs = readLocalBrainRequests({ brainDir, conversationsDir, summaryDbPath });
   const combined = [...localReqs, ...(Array.isArray(extraRequests) ? extraRequests : [])];
   const anomalies = detectCacheDropAnomalies(combined);
 
@@ -758,6 +1075,23 @@ export function queryTelemetryDashboard({
   let respCount = 0;
   let ttftSumMs = 0;
   let ttftCount = 0;
+  const allTtftValues = [];
+  let qualDecodeOut = 0;
+  let qualDecodeSec = 0;
+  let qualE2eOut = 0;
+  let qualE2eSec = 0;
+  let quarantinedRateCount = 0;
+
+  const isQualifiedDecode = (r) => {
+    const sdMs = Number.isFinite(r.streamMs) && r.streamMs > 0 ? r.streamMs : null;
+    const out = Number(r.outputTokens || 0);
+    if (sdMs === null || out <= 0) return { ok: false, quarantined: false, sdSec: 0 };
+    const sdSec = sdMs / 1000;
+    const ttftSec = Number.isFinite(r.ttftMs) && r.ttftMs >= 0 ? r.ttftMs / 1000 : null;
+    const shortBurst = sdSec < 0.3 && out >= 30 && ttftSec !== null && ttftSec >= 2 && ttftSec / sdSec >= 15;
+    if (shortBurst || sdSec < 1 || out < 30) return { ok: false, quarantined: true, sdSec };
+    return { ok: true, quarantined: false, sdSec, ttftSec };
+  };
 
   for (const r of rangeRows) {
     modelSet.add(r.model);
@@ -775,19 +1109,52 @@ export function queryTelemetryDashboard({
     if (Number.isFinite(r.ttftMs) && r.ttftMs >= 0) {
       ttftSumMs += r.ttftMs;
       ttftCount += 1;
+      allTtftValues.push(r.ttftMs);
     }
 
     let m = byModel.get(r.model);
     if (!m) {
-      m = { model: r.model, requests: 0, inputTokens: 0, cacheReadTokens: 0, outputTokens: 0, costUsd: 0, anomalies: 0 };
+      m = {
+        model: r.model,
+        requests: 0,
+        errorCount: 0,
+        inputTokens: 0,
+        cacheReadTokens: 0,
+        outputTokens: 0,
+        costUsd: 0,
+        anomalies: 0,
+        _ttfts: [],
+        _decodeOut: 0,
+        _decodeSec: 0,
+        _e2eOut: 0,
+        _e2eSec: 0,
+      };
       byModel.set(r.model, m);
     }
     m.requests += 1;
+    if (r.status === 'error') m.errorCount += 1;
     m.inputTokens += r.inputTokens || 0;
     m.cacheReadTokens += r.cacheReadTokens || 0;
     m.outputTokens += r.outputTokens || 0;
     m.costUsd += r.costUsd || 0;
     if (r.anomaly) m.anomalies += 1;
+    if (Number.isFinite(r.ttftMs) && r.ttftMs >= 0) m._ttfts.push(r.ttftMs);
+
+    const qd = isQualifiedDecode(r);
+    if (qd.ok) {
+      qualDecodeOut += r.outputTokens;
+      qualDecodeSec += qd.sdSec;
+      m._decodeOut += r.outputTokens;
+      m._decodeSec += qd.sdSec;
+      if (qd.ttftSec !== null) {
+        qualE2eOut += r.outputTokens;
+        qualE2eSec += qd.ttftSec + qd.sdSec;
+        m._e2eOut += r.outputTokens;
+        m._e2eSec += qd.ttftSec + qd.sdSec;
+      }
+    } else if (qd.quarantined) {
+      quarantinedRateCount += 1;
+    }
   }
 
   const q = String(search || '').trim().toLowerCase();
@@ -813,12 +1180,27 @@ export function queryTelemetryDashboard({
   const hasMore = safeOffset + filtered.length < totalFiltered;
 
   const modelsBreakdown = Array.from(byModel.values())
-    .map((m) => ({
-      ...m,
-      cacheHitPct: m.inputTokens > 0 ? Number(((m.cacheReadTokens / m.inputTokens) * 100).toFixed(1)) : 0,
-      costUsd: Number(m.costUsd.toFixed(4)),
-    }))
+    .map((m) => {
+      const med = medianNumber(m._ttfts);
+      return {
+        model: m.model,
+        requests: m.requests,
+        errorCount: m.errorCount,
+        inputTokens: m.inputTokens,
+        cacheReadTokens: m.cacheReadTokens,
+        outputTokens: m.outputTokens,
+        totalTokens: m.inputTokens + m.outputTokens,
+        anomalies: m.anomalies,
+        cacheHitPct: m.inputTokens > 0 ? Number(((m.cacheReadTokens / m.inputTokens) * 100).toFixed(1)) : null,
+        medianTtftMs: med !== null ? Math.round(med) : null,
+        decodeTps: m._decodeSec > 0 ? Number((m._decodeOut / m._decodeSec).toFixed(1)) : null,
+        e2eTps: m._e2eSec > 0 ? Number((m._e2eOut / m._e2eSec).toFixed(1)) : null,
+        costUsd: Number(m.costUsd.toFixed(4)),
+      };
+    })
     .sort((a, b) => b.costUsd - a.costUsd || b.requests - a.requests);
+
+  const summaryMedianTtft = medianNumber(allTtftValues);
 
   const modelHealth = buildModelHealth(rangeRows, {
     range,
@@ -846,6 +1228,10 @@ export function queryTelemetryDashboard({
       errorCount,
       avgResponseMs: respCount > 0 ? Math.round(respSumMs / respCount) : null,
       avgTtftMs: ttftCount > 0 ? Math.round(ttftSumMs / ttftCount) : null,
+      medianTtftMs: summaryMedianTtft !== null ? Math.round(summaryMedianTtft) : null,
+      decodeTps: qualDecodeSec > 0 ? Number((qualDecodeOut / qualDecodeSec).toFixed(1)) : null,
+      e2eTps: qualE2eSec > 0 ? Number((qualE2eOut / qualE2eSec).toFixed(1)) : null,
+      quarantinedRateCount,
     },
     availableModels: Array.from(modelSet).sort(),
     modelsBreakdown,

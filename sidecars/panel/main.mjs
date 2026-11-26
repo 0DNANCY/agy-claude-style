@@ -1,6 +1,6 @@
 // Aux Pane Sidecar UI server for AGY Claude Style (agy-claude-style).
 // Uses Antigravity built-in sidecar_sdk and exits cleanly via host /healthz watchdog.
-import { existsSync, mkdirSync, readFileSync, realpathSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -11,9 +11,11 @@ import { createPricingStore } from './lib/pricing.mjs';
 import { createQuotaTracker } from './lib/quota-tracker.mjs';
 import { fetchSshRemoteRequests, listConfiguredSshHosts } from './lib/ssh-remote.mjs';
 import { fetchSubagentTree } from './lib/subagent-tree.mjs';
+import { SidecarOwner } from './lib/sidecar-owner.mjs';
 import {
   buildProxyLaunchOptions,
   detectHostProxyRuntime,
+  maskProxyUrl,
   normalizeProxyUrl,
   testProxyConnectivity,
 } from './lib/proxy.mjs';
@@ -256,6 +258,14 @@ async function resetConfig() {
   return { ok: true, config: cdp.readConfig() };
 }
 
+function logSidecarBoot(msg) {
+  try {
+    const logPath = join(cdp.STATE_DIR, 'relaunch.log');
+    mkdirSync(dirname(logPath), { recursive: true });
+    appendFileSync(logPath, `[${new Date().toISOString()}] [sidecar-boot] ${msg}\n`, 'utf8');
+  } catch {}
+}
+
 async function maybeAutoRelaunchForProxyColdStart({
   readConfigFn = cdp.readConfig,
   detectRuntimeFn = detectHostProxyRuntime,
@@ -263,8 +273,11 @@ async function maybeAutoRelaunchForProxyColdStart({
   readGuardFn = cdp.readRelaunchGuard,
   evalGuardFn = cdp.evaluateAutoRelaunchGuard,
   recordGuardFn = cdp.recordAutoRelaunchAttempt,
+  resetGuardFn = cdp.resetRelaunchGuard,
+  isRelaunchInProgressFn = cdp.isRelaunchInProgress,
   relaunchFn = cdp.relaunchAntigravityWithCdp,
   nowMs = Date.now(),
+  logFn = null,
 } = {}) {
   const cfg = readConfigFn();
   if (!cfg || cfg.proxyEnabled !== true) return { triggered: false, reason: 'disabled' };
@@ -277,25 +290,33 @@ async function maybeAutoRelaunchForProxyColdStart({
     proxyForceHttp1: cfg.proxyForceHttp1 !== false,
   });
   if (!runtime?.inspected || !runtime.coldStartMismatch) {
+    if (runtime?.active && runtime?.matchesConfig && typeof resetGuardFn === 'function') {
+      try {
+        resetGuardFn({ markSuccess: true, reason: 'sidecar-proxy-active', nowMs });
+      } catch {}
+    }
+    if (logFn) logFn(`proxy already matched (active=${Boolean(runtime?.active)}, pid=${runtime?.hostPid || 0})`);
     return { triggered: false, reason: 'already-matched' };
   }
 
   const hostPid = Number(runtime.hostPid) || 0;
   const guardPidSig = hostPid > 0 ? `proxy:${hostPid}` : 'proxy:unknown';
+  if (typeof isRelaunchInProgressFn === 'function' && isRelaunchInProgressFn({ nowMs })) {
+    if (logFn) logFn(`proxy mismatch skipped: relaunch already in progress pid=${hostPid}`);
+    return { triggered: false, reason: 'relaunch-in-progress' };
+  }
   if (typeof readGuardFn === 'function' && typeof evalGuardFn === 'function') {
     const evalRes = evalGuardFn(readGuardFn(), { pidSig: guardPidSig, nowMs });
     if (!evalRes.allowed) {
+      if (logFn) logFn(`proxy mismatch (${runtime.reason}) blocked by guard=${evalRes.reason} pid=${hostPid}`);
       return { triggered: false, reason: evalRes.reason || 'guard-blocked' };
     }
   }
 
-  const conn = await testConnectivityFn(normalizedUrl, { timeoutMs: 1500 });
+  const conn = await testConnectivityFn(normalizedUrl, { timeoutMs: 900 });
   if (!conn?.ok) {
+    if (logFn) logFn(`proxy port unreachable (${maskProxyUrl(normalizedUrl)}): ${conn?.error || 'failed'}`);
     return { triggered: false, reason: 'proxy-unreachable', error: conn?.error || '' };
-  }
-
-  if (typeof recordGuardFn === 'function') {
-    recordGuardFn({ pidSig: guardPidSig, reason: 'sidecar-cold-start-no-proxy', nowMs });
   }
 
   const proxyOpts = buildProxyLaunchOptions({
@@ -304,12 +325,21 @@ async function maybeAutoRelaunchForProxyColdStart({
     proxyBypass: cfg.proxyBypass,
     proxyForceHttp1: cfg.proxyForceHttp1 !== false,
   });
+  if (logFn) logFn(`relaunching host pid=${hostPid} with proxy=${maskProxyUrl(normalizedUrl)} (${runtime.reason})`);
   const res = await relaunchFn({
     port: 0,
     detached: true,
+    delayMs: 150,
     extraArgs: proxyOpts.args,
     extraEnv: proxyOpts.env,
   });
+  if (res?.reason === 'relaunch-in-progress') {
+    if (logFn) logFn(`relaunch skipped: another process holds relaunch lock pid=${hostPid}`);
+    return { triggered: false, reason: 'relaunch-in-progress' };
+  }
+  if (typeof recordGuardFn === 'function') {
+    recordGuardFn({ pidSig: guardPidSig, reason: 'sidecar-cold-start-no-proxy', nowMs });
+  }
   return { triggered: Boolean(res?.relaunched), reason: res?.relaunched ? 'relaunched' : res?.reason || 'failed' };
 }
 
@@ -374,13 +404,16 @@ async function startPanelSidecar() {
       proxyEnabled: Boolean(cfg.proxyEnabled),
       proxyUrl: cfg.proxyUrl,
       proxyBypass: cfg.proxyBypass,
-      proxyForceHttp1: Boolean(cfg.proxyForceHttp1),
+      proxyForceHttp1: cfg.proxyForceHttp1 !== false,
     });
     const res = await cdp.relaunchAntigravityWithCdp({
       detached: true,
       extraArgs: proxyOpts.args,
       extraEnv: proxyOpts.env,
     });
+    if (res?.reason === 'relaunch-in-progress') {
+      return { ok: true, proxyActive: proxyOpts.args.length > 0, inProgress: true, ...res };
+    }
     if (!res?.relaunched) {
       return new Response(JSON.stringify({ ok: false, ...res }), {
         status: 500,
@@ -391,6 +424,22 @@ async function startPanelSidecar() {
   }), 'POST');
 
   let lastSshSync = { ok: false, host: '', requests: [], count: 0, error: '' };
+  const isTestHost = String(process.env.ANTIGRAVITY_LS_ADDRESS || '').trim() === 'test.invalid';
+  let sidecarOwner = null;
+  if (!isTestHost) {
+    sidecarOwner = new SidecarOwner(cdp.STATE_DIR);
+    try {
+      const claimed = await sidecarOwner.claim();
+      if (!claimed) {
+        logSidecarBoot('panel sidecar superseded by newer instance at startup; exiting');
+        lifecycle.exitProcessCleanly(0, 20);
+        return app;
+      }
+    } catch {
+      sidecarOwner = null;
+    }
+  }
+
   const pricingStore = createPricingStore({
     cachePath: join(cdp.STATE_DIR, 'pricing-cache.json'),
   });
@@ -398,6 +447,8 @@ async function startPanelSidecar() {
 
   const quotaTracker = createQuotaTracker({
     filePath: join(cdp.STATE_DIR, 'quota-daily.json'),
+    ownsFn: sidecarOwner ? () => sidecarOwner.owns() : null,
+    allowRediscover: !isTestHost,
   });
   void quotaTracker.sampleNow({ force: true });
   const quotaTimer = setInterval(() => {
@@ -406,10 +457,11 @@ async function startPanelSidecar() {
   if (typeof quotaTimer.unref === 'function') quotaTimer.unref();
 
   if (String(process.env.ANTIGRAVITY_LS_ADDRESS || '').trim() !== 'test.invalid') {
-    const autoProxyTimer = setTimeout(() => {
-      void maybeAutoRelaunchForProxyColdStart().catch(() => {});
-    }, 1500);
-    if (typeof autoProxyTimer.unref === 'function') autoProxyTimer.unref();
+    // Fallback check in case startPanelSidecar() was called directly without the top-level boot trigger
+    if (!bootProxyCheckStarted) {
+      bootProxyCheckStarted = true;
+      void maybeAutoRelaunchForProxyColdStart({ logFn: logSidecarBoot }).catch(() => {});
+    }
   }
 
   app.api('/api/pricing/refresh', guardApi(async () => {
@@ -518,6 +570,7 @@ async function startPanelSidecar() {
     const forceTimer = setTimeout(() => process.exit(0), 1500);
     forceTimer.unref?.();
     try {
+      sidecarOwner?.stop();
       watchdog?.stop();
       await app.close();
     } catch {
@@ -527,6 +580,13 @@ async function startPanelSidecar() {
       lifecycle.exitProcessCleanly(0, 50);
     }
   };
+
+  if (sidecarOwner) {
+    sidecarOwner.watch(() => {
+      logSidecarBoot('panel sidecar ownership lost to newer instance; shutting down');
+      void shutdown();
+    });
+  }
 
   const onPipeError = (err) => {
     if (lifecycle.isBrokenPipeError(err)) void shutdown();
@@ -564,7 +624,14 @@ const isMainEntry =
   (process.platform === 'win32'
     ? invokedPath.toLowerCase() === currentPath.toLowerCase()
     : invokedPath === currentPath);
+let bootProxyCheckStarted = false;
 if (isMainEntry) {
+  // Run non-TUN cold-start proxy check immediately at 0ms (before sidecar_sdk / network init),
+  // matching agy-powertools so Antigravity can relaunch into proxy mode before OAuth times out.
+  if (String(process.env.ANTIGRAVITY_LS_ADDRESS || '').trim() !== 'test.invalid') {
+    bootProxyCheckStarted = true;
+    void maybeAutoRelaunchForProxyColdStart({ logFn: logSidecarBoot }).catch(() => {});
+  }
   startPanelSidecar().catch((err) => {
     console.error('[agy-claude-style panel sidecar] failed:', err?.message || err);
     process.exit(1);

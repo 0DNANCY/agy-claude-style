@@ -179,6 +179,16 @@
       </div>
     </div>
 
+    <div class="section" id="sec-models">
+      <button type="button" class="section-head" id="models-head">
+        <span class="section-title">📦 按模型统计明细</span>
+        <span class="section-badge" id="models-summary">0 模型</span>
+      </button>
+      <div class="section-body">
+        <div class="models-table-wrap" id="models-table-wrap"></div>
+      </div>
+    </div>
+
     <div class="section" id="sec-requests">
       <div class="section-head" style="cursor:default;">
         <span class="section-title">📋 单次请求记录</span>
@@ -242,7 +252,7 @@
         <div class="row">
           <div class="row-label">
             <div class="row-name">启用独立代理</div>
-            <div class="row-desc">仅注入 Antigravity 进程，不改系统代理；冷启动自动接管</div>
+            <div class="row-desc">仅注入 Antigravity 进程，不改系统代理；插件加载后自动接管（macOS 无 TUN 首次登录需临时开 TUN 或带参启动，接管后可关 TUN）</div>
           </div>
           <label class="switch"><input type="checkbox" id="sw-proxy-enabled" /><span class="switch-track"></span></label>
         </div>

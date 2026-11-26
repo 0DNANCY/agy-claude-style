@@ -1,6 +1,9 @@
 {
   "command": "node",
-  "args": ["main.mjs"],
+  "args": ["--max-old-space-size=192", "main.mjs"],
+  "env": {
+    "NODE_USE_ENV_PROXY": "1"
+  },
   "restart_policy": "always",
   "display_name": "Claude Style",
   "description": "AGY Claude Style 控制室：实时调整外观配色、Rewind 回退面板、双圆环与 Token HUD、5 语言切换及 CDP 注入状态。",

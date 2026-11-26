@@ -46,9 +46,23 @@ test('file-actions resolves file:// URIs and dispatches open/reveal/copy safely'
     assert.equal(winCalls[0].opts.env.AGY_FILE_PATH, sampleFile);
     assert.ok(winCalls[0].args.includes('Start-Process -FilePath $env:AGY_FILE_PATH'));
     assert.equal(winCalls[1].bin, 'explorer.exe');
-    assert.equal(winCalls[1].opts.windowsHide, true);
+    assert.equal(winCalls[1].opts.windowsHide, false);
     assert.equal(winCalls[1].opts.windowsVerbatimArguments, true);
     assert.deepEqual(winCalls[1].args, [`/select,"${sampleFile}"`]);
+    // Windows explorer.exe exits with code 1 after delegating to the running shell — must not throw
+    const resWinExit1 = await fileActions.dispatchFileAction(
+      { type: 'file.reveal', uri },
+      {
+        platform: 'win32',
+        execFn: async () => {
+          const err = new Error('Command failed: explorer.exe');
+          err.code = 1;
+          err.stderr = '';
+          throw err;
+        },
+      }
+    );
+    assert.equal(resWinExit1.ok, true);
     assert.equal(winCalls[2].bin, 'powershell.exe');
     assert.equal(winCalls[2].opts.windowsHide, true);
     assert.equal(winCalls[2].opts.env.AGY_FILE_PATH, sampleFile);

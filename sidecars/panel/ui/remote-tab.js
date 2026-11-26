@@ -98,14 +98,26 @@
         note.textContent = `✕ 测试异常：${err.message}`;
       }
     });
-    document.getElementById('btn-proxy-relaunch').addEventListener('click', async () => {
-      await app.saveUpdates({
-        proxyEnabled: true,
-        proxyUrl: document.getElementById('inp-proxy-url').value.trim(),
-        proxyBypass: document.getElementById('inp-proxy-bypass')?.value.trim() || 'localhost,127.0.0.1,::1',
-        proxyForceHttp1: swProxyH1 ? swProxyH1.checked : true,
-      });
-      await app.postAction('/api/relaunch', 'btnRelaunch');
+    let proxyRelaunchBusy = false;
+    const btnProxyRelaunch = document.getElementById('btn-proxy-relaunch');
+    btnProxyRelaunch.addEventListener('click', async () => {
+      if (proxyRelaunchBusy) return;
+      proxyRelaunchBusy = true;
+      btnProxyRelaunch.disabled = true;
+      try {
+        await app.saveUpdates({
+          proxyEnabled: true,
+          proxyUrl: document.getElementById('inp-proxy-url').value.trim(),
+          proxyBypass: document.getElementById('inp-proxy-bypass')?.value.trim() || 'localhost,127.0.0.1,::1',
+          proxyForceHttp1: swProxyH1 ? swProxyH1.checked : true,
+        });
+        await app.postAction('/api/relaunch', 'btnRelaunch');
+      } finally {
+        setTimeout(() => {
+          proxyRelaunchBusy = false;
+          btnProxyRelaunch.disabled = false;
+        }, 3000);
+      }
     });
 
     return { syncForm, onActivate: loadSshHosts };

@@ -1541,6 +1541,7 @@ function scheduleDetachedRelaunch({
   extraArgs = [],
   extraEnv = {},
   portFile = PORT_FILE,
+  lockFile = '',
   spawnFn = spawn,
 } = {}) {
   const cdpPort = Number.isInteger(port) && port >= 0 ? port : 0;
@@ -1551,6 +1552,11 @@ function scheduleDetachedRelaunch({
     ...(hasBindAddr ? [] : ['--remote-debugging-address=127.0.0.1']),
     ...cleanExtra,
   ];
+  const singletonLockFile = IS_MAC
+    ? path.join(os.homedir(), 'Library', 'Application Support', 'Antigravity', 'SingletonLock')
+    : !IS_WIN
+    ? path.join(os.homedir(), '.config', 'Antigravity', 'SingletonLock')
+    : '';
   const payload = {
     pids: Array.isArray(pids) ? pids.filter((p) => Number.isInteger(p) && p > 0) : [],
     appPath: String(appPath || ''),
@@ -1559,6 +1565,8 @@ function scheduleDetachedRelaunch({
     waitMs: Number.isInteger(waitMs) && waitMs > 0 ? waitMs : 8000,
     delayMs: Number.isInteger(delayMs) && delayMs >= 0 ? delayMs : 300,
     portFile: String(portFile || PORT_FILE),
+    lockFile: String(lockFile || ''),
+    singletonLockFile,
     logFile: path.join(STATE_DIR || __dirname, 'relaunch.log'),
     isMac: IS_MAC,
     isWin: IS_WIN,
@@ -1578,6 +1586,23 @@ const cfg = JSON.parse(process.env.AGY_RELAUNCH_SPEC || '{}');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const alive = (p) => { try { process.kill(p, 0); return true; } catch (e) { return e && e.code === 'EPERM'; } };
 const log = (m) => { try { if (cfg.logFile) { fs.mkdirSync(path.dirname(cfg.logFile), { recursive: true }); fs.appendFileSync(cfg.logFile, '[' + new Date().toISOString() + '] ' + m + '\\n'); } } catch {} };
+const claimLock = () => {
+  if (!cfg.lockFile) return;
+  try {
+    fs.mkdirSync(path.dirname(cfg.lockFile), { recursive: true });
+    fs.writeFileSync(cfg.lockFile, JSON.stringify({ pid: process.pid, createdAt: Date.now() }) + '\\n', 'utf8');
+  } catch {}
+};
+const releaseLock = () => {
+  if (!cfg.lockFile) return;
+  try {
+    const raw = fs.readFileSync(cfg.lockFile, 'utf8');
+    const cur = JSON.parse(raw);
+    if (!cur || !cur.pid || cur.pid === process.pid) fs.unlinkSync(cfg.lockFile);
+  } catch {
+    try { if (fs.existsSync(cfg.lockFile)) fs.unlinkSync(cfg.lockFile); } catch {}
+  }
+};
 if (cfg.isWin && !process.env.AGY_RELAUNCH_STAGE2 && process.env.AGY_RELAUNCH_CODE) {
   try {
     const stage2 = spawn(process.execPath, ['-e', process.env.AGY_RELAUNCH_CODE], {
@@ -1589,105 +1614,154 @@ if (cfg.isWin && !process.env.AGY_RELAUNCH_STAGE2 && process.env.AGY_RELAUNCH_CO
     stage2.unref();
   } catch (e) {
     log('stage2 spawn error: ' + (e && e.message || e));
+    releaseLock();
   }
   process.exit(0);
 }
 (async () => {
-  if (cfg.delayMs > 0) await sleep(cfg.delayMs);
-  const pids = (Array.isArray(cfg.pids) ? cfg.pids : []).filter((p) => Number.isInteger(p) && p > 0 && p !== process.pid);
-  log('terminating pids=' + JSON.stringify(pids));
-  const waitMs = cfg.waitMs || 8000;
-  const deadline = Date.now() + waitMs;
-  if (cfg.isWin) {
-    for (const p of pids) {
-      try { execFileSync('taskkill', ['/PID', String(p)], { timeout: 4000, windowsHide: true, stdio: 'ignore' }); } catch {}
-    }
-    const softDeadline = Date.now() + Math.min(2500, Math.floor(waitMs / 2));
-    while (Date.now() < softDeadline && pids.some(alive)) {
-      await sleep(200);
-    }
-    const stubborn = pids.filter(alive);
-    if (stubborn.length > 0) {
-      log('escalating force taskkill for pids=' + JSON.stringify(stubborn));
-      for (const p of stubborn) {
-        try { execFileSync('taskkill', ['/F', '/PID', String(p), '/T'], { timeout: 4000, windowsHide: true, stdio: 'ignore' }); } catch {}
+  claimLock();
+  try {
+    if (cfg.delayMs > 0) await sleep(cfg.delayMs);
+    const pids = (Array.isArray(cfg.pids) ? cfg.pids : []).filter((p) => Number.isInteger(p) && p > 0 && p !== process.pid);
+    log('terminating pids=' + JSON.stringify(pids));
+    const waitMs = cfg.waitMs || 8000;
+    const deadline = Date.now() + waitMs;
+    if (cfg.isWin) {
+      for (const p of pids) {
+        try { execFileSync('taskkill', ['/PID', String(p)], { timeout: 4000, windowsHide: true, stdio: 'ignore' }); } catch {}
       }
-    }
-    while (Date.now() < deadline && pids.some(alive)) {
-      await sleep(200);
-    }
-  } else {
-    for (const p of pids) {
-      try { process.kill(p, 'SIGTERM'); } catch {}
-    }
-    while (Date.now() < deadline && pids.some(alive)) {
-      await sleep(200);
-    }
-  }
-  const remaining = pids.filter(alive);
-  if (remaining.length > 0) {
-    log('abort: target pids still alive=' + JSON.stringify(remaining));
-    return;
-  }
-  try { if (cfg.portFile && fs.existsSync(cfg.portFile)) fs.unlinkSync(cfg.portFile); } catch {}
-  await sleep(800);
-  const extraEnv = cfg.extraEnv && typeof cfg.extraEnv === 'object' ? cfg.extraEnv : {};
-  const env = { ...process.env };
-  const stripExactUpper = new Set([
-    'ELECTRON_RUN_AS_NODE', 'ELECTRON_NO_ATTACH_CONSOLE', 'NODE_OPTIONS', 'NODE_PATH',
-    'AGY_RELAUNCH_SPEC', 'AGY_RELAUNCH_CODE', 'AGY_RELAUNCH_STAGE2', 'AG_CDP_PORT', 'PLUGIN_DATA',
-    'ANTIGRAVITY_SOURCE_METADATA', 'ANTIGRAVITY_EXECUTABLE_DATA_DIR', 'ANTIGRAVITY_NODE_PATH'
-  ]);
-  for (const k of Object.keys(env)) {
-    const u = k.toUpperCase();
-    if (stripExactUpper.has(u) || u.startsWith('ANTIGRAVITY_SIDECAR_') || u.startsWith('ANTIGRAVITY_LS_') || u.startsWith('ANTIGRAVITY_HOST_BRIDGE_')) {
-      delete env[k];
-    }
-  }
-  for (const [k, v] of Object.entries(extraEnv)) {
-    if (v === undefined || v === null) delete env[k];
-    else env[k] = String(v);
-  }
-  if (cfg.isMac) {
-    const macBin = cfg.macBinary || (cfg.appPath && cfg.appPath.toLowerCase().endsWith('.app') ? path.join(cfg.appPath, 'Contents', 'MacOS', 'Antigravity') : '');
-    if (macBin && fs.existsSync(macBin)) {
-      log('spawning macBin=' + macBin + ' args=' + JSON.stringify(cfg.launchArgs || []) + ' proxy=' + Boolean(env.HTTPS_PROXY) + ' electronRunAsNode=' + String(env.ELECTRON_RUN_AS_NODE));
-      const child = spawn(macBin, cfg.launchArgs || [], { detached: true, stdio: 'ignore', env });
-      child.unref();
-      const readyDeadline = Date.now() + 6000;
-      while (Date.now() < readyDeadline) {
-        if (cfg.portFile && fs.existsSync(cfg.portFile)) break;
-        await sleep(250);
+      const softDeadline = Date.now() + Math.min(2500, Math.floor(waitMs / 2));
+      while (Date.now() < softDeadline && pids.some(alive)) {
+        await sleep(80);
       }
-      log('cdpPortReady=' + Boolean(cfg.portFile && fs.existsSync(cfg.portFile)));
-      // Bring Antigravity to foreground via /usr/bin/open (no osascript -> no macOS Automation prompt)
-      if (cfg.appPath && fs.existsSync(cfg.appPath)) {
-        try {
-          const act = spawn('/usr/bin/open', ['-a', cfg.appPath], { detached: true, stdio: 'ignore' });
-          act.unref();
-        } catch {}
+      const stubborn = pids.filter(alive);
+      if (stubborn.length > 0) {
+        log('escalating force taskkill for pids=' + JSON.stringify(stubborn));
+        for (const p of stubborn) {
+          try { execFileSync('taskkill', ['/F', '/PID', String(p), '/T'], { timeout: 4000, windowsHide: true, stdio: 'ignore' }); } catch {}
+        }
+      }
+      while (Date.now() < deadline && pids.some(alive)) {
+        await sleep(80);
       }
     } else {
-      log('fallback open -a ' + (cfg.appPath || 'Antigravity'));
-      const child = spawn('/usr/bin/open', ['-a', cfg.appPath || 'Antigravity', '--args', ...(cfg.launchArgs || [])], {
-        detached: true, stdio: 'ignore', env
+      for (const p of pids) {
+        try { process.kill(p, 'SIGTERM'); } catch {}
+      }
+      const softDeadline = Date.now() + Math.min(3500, Math.floor(waitMs / 2));
+      while (Date.now() < softDeadline && pids.some(alive)) {
+        await sleep(80);
+      }
+      const stubborn = pids.filter(alive);
+      if (stubborn.length > 0) {
+        log('escalating SIGKILL for stubborn pids=' + JSON.stringify(stubborn));
+        for (const p of stubborn) {
+          try { process.kill(p, 'SIGKILL'); } catch {}
+        }
+      }
+      while (Date.now() < deadline && pids.some(alive)) {
+        await sleep(80);
+      }
+    }
+    const remaining = pids.filter(alive);
+    if (remaining.length > 0) {
+      log('abort: target pids still alive=' + JSON.stringify(remaining));
+      return;
+    }
+    try { if (cfg.portFile && fs.existsSync(cfg.portFile)) fs.unlinkSync(cfg.portFile); } catch {}
+    if (cfg.singletonLockFile) {
+      const lockWaitEnd = Date.now() + 600;
+      while (Date.now() < lockWaitEnd) {
+        let lockExists = false;
+        try { fs.lstatSync(cfg.singletonLockFile); lockExists = true; } catch {}
+        if (!lockExists) break;
+        await sleep(40);
+      }
+      await sleep(80);
+    } else {
+      await sleep(200);
+    }
+    const extraEnv = cfg.extraEnv && typeof cfg.extraEnv === 'object' ? cfg.extraEnv : {};
+    const env = { ...process.env };
+    const stripExactUpper = new Set([
+      'ELECTRON_RUN_AS_NODE', 'ELECTRON_NO_ATTACH_CONSOLE', 'NODE_OPTIONS', 'NODE_PATH',
+      'AGY_RELAUNCH_SPEC', 'AGY_RELAUNCH_CODE', 'AGY_RELAUNCH_STAGE2', 'AG_CDP_PORT', 'PLUGIN_DATA',
+      'ANTIGRAVITY_SOURCE_METADATA', 'ANTIGRAVITY_EXECUTABLE_DATA_DIR', 'ANTIGRAVITY_NODE_PATH'
+    ]);
+    for (const k of Object.keys(env)) {
+      const u = k.toUpperCase();
+      if (stripExactUpper.has(u) || u.startsWith('ANTIGRAVITY_SIDECAR_') || u.startsWith('ANTIGRAVITY_LS_') || u.startsWith('ANTIGRAVITY_HOST_BRIDGE_')) {
+        delete env[k];
+      }
+    }
+    for (const [k, v] of Object.entries(extraEnv)) {
+      if (v === undefined || v === null) delete env[k];
+      else env[k] = String(v);
+    }
+    if (cfg.isMac) {
+      const macBin = cfg.macBinary || (cfg.appPath && cfg.appPath.toLowerCase().endsWith('.app') ? path.join(cfg.appPath, 'Contents', 'MacOS', 'Antigravity') : '');
+      if (macBin && fs.existsSync(macBin)) {
+        const child = spawn(macBin, cfg.launchArgs || [], { detached: true, stdio: 'ignore', env });
+        const childPid = child && child.pid ? child.pid : 0;
+        child.unref();
+        log('spawning macBin=' + macBin + ' spawnPid=' + childPid + ' args=' + JSON.stringify(cfg.launchArgs || []) + ' proxy=' + Boolean(env.HTTPS_PROXY) + ' electronRunAsNode=' + String(env.ELECTRON_RUN_AS_NODE));
+        const readyDeadline = Date.now() + 6000;
+        let portReady = false;
+        while (Date.now() < readyDeadline) {
+          if (cfg.portFile && fs.existsSync(cfg.portFile)) {
+            portReady = true;
+            break;
+          }
+          if (childPid > 0 && !alive(childPid)) {
+            break;
+          }
+          await sleep(100);
+        }
+        const childAlive = childPid > 0 ? alive(childPid) : false;
+        log('cdpPortReady=' + portReady + ' childAlive=' + childAlive);
+        // Bring Antigravity to foreground via /usr/bin/open only when the spawned instance is alive or CDP is ready,
+        // so open -a can never accidentally launch a bare unproxied instance on collision.
+        if ((portReady || childAlive) && cfg.appPath && fs.existsSync(cfg.appPath)) {
+          try {
+            const act = spawn('/usr/bin/open', ['-a', cfg.appPath], { detached: true, stdio: 'ignore' });
+            act.unref();
+          } catch {}
+        }
+      } else {
+        log('fallback open -a ' + (cfg.appPath || 'Antigravity'));
+        const child = spawn('/usr/bin/open', ['-a', cfg.appPath || 'Antigravity', '--args', ...(cfg.launchArgs || [])], {
+          detached: true, stdio: 'ignore', env
+        });
+        child.unref();
+      }
+    } else if (cfg.appPath) {
+      const child = spawn(cfg.appPath, cfg.launchArgs || [], {
+        detached: true, stdio: 'ignore', windowsHide: false, env
       });
+      const childPid = child && child.pid ? child.pid : 0;
       child.unref();
+      log('spawning appPath=' + cfg.appPath + ' spawnPid=' + childPid + ' args=' + JSON.stringify(cfg.launchArgs || []) + ' proxy=' + Boolean(env.HTTPS_PROXY));
+      const readyDeadline = Date.now() + 6000;
+      let portReady = false;
+      while (Date.now() < readyDeadline) {
+        if (cfg.portFile && fs.existsSync(cfg.portFile)) {
+          portReady = true;
+          break;
+        }
+        if (childPid > 0 && !alive(childPid)) {
+          break;
+        }
+        await sleep(100);
+      }
+      log('cdpPortReady=' + portReady + ' childAlive=' + (childPid > 0 ? alive(childPid) : false));
     }
-  } else if (cfg.appPath) {
-    log('spawning appPath=' + cfg.appPath + ' args=' + JSON.stringify(cfg.launchArgs || []) + ' proxy=' + Boolean(env.HTTPS_PROXY));
-    const child = spawn(cfg.appPath, cfg.launchArgs || [], {
-      detached: true, stdio: 'ignore', windowsHide: false, env
-    });
-    child.unref();
-    const readyDeadline = Date.now() + 6000;
-    while (Date.now() < readyDeadline) {
-      if (cfg.portFile && fs.existsSync(cfg.portFile)) break;
-      await sleep(250);
-    }
-    log('cdpPortReady=' + Boolean(cfg.portFile && fs.existsSync(cfg.portFile)));
+  } finally {
+    releaseLock();
   }
-})().catch((e) => log('error: ' + (e && e.message || e)));
+})().catch((e) => {
+  log('error: ' + (e && e.message || e));
+  releaseLock();
+});
 `.trim();
 
   const child = spawnFn(process.execPath, ['-e', helperScript], {
@@ -1753,16 +1827,35 @@ async function relaunchAntigravityWithCdp(opts = {}) {
   }
 
   if (opts.detached === true && typeof opts.launch !== 'function' && typeof opts.terminate !== 'function') {
-    scheduleDetachedRelaunch({
-      pids: initialPids,
-      appPath: resolvedPath,
-      port: opts.port ?? 0,
-      waitMs,
-      delayMs: opts.delayMs ?? 300,
-      extraArgs: opts.extraArgs,
-      extraEnv: opts.extraEnv,
-      spawnFn: opts.spawn,
-    });
+    const useLock = opts.useLock !== false && (Boolean(opts.lockPath) || typeof opts.spawn !== 'function');
+    const lockPath = opts.lockPath || RELAUNCH_LOCK_FILE;
+    if (useLock) {
+      const lockRes = tryAcquireRelaunchLock({ lockPath, nowMs: opts.nowMs, isAliveFn: opts.isAliveFn });
+      if (!lockRes.acquired) {
+        return {
+          relaunched: false,
+          skipped: true,
+          reason: 'relaunch-in-progress',
+          ownerPid: lockRes.ownerPid || null,
+        };
+      }
+    }
+    try {
+      scheduleDetachedRelaunch({
+        pids: initialPids,
+        appPath: resolvedPath,
+        port: opts.port ?? 0,
+        waitMs,
+        delayMs: opts.delayMs ?? 300,
+        extraArgs: opts.extraArgs,
+        extraEnv: opts.extraEnv,
+        lockFile: useLock ? lockPath : '',
+        spawnFn: opts.spawn,
+      });
+    } catch (err) {
+      if (useLock) releaseRelaunchLock(lockPath, { ownerPid: process.pid });
+      throw err;
+    }
     return { relaunched: true, scheduled: true, reason: 'detached' };
   }
 
@@ -1793,8 +1886,128 @@ async function relaunchAntigravityWithCdp(opts = {}) {
 }
 
 const RELAUNCH_GUARD_FILE = path.join(STATE_DIR, 'relaunch-guard.json');
+const RELAUNCH_LOCK_FILE = path.join(STATE_DIR, '.relaunch.lock');
+const RELAUNCH_LOCK_STALE_MS = 15000;
+const RELAUNCH_LOCK_HANDOFF_GRACE_MS = 3000;
 const AUTO_RELAUNCH_COOLDOWN_MS = 120000;
 const AUTO_RELAUNCH_MAX_FAILURES = 2;
+
+function isPidAliveSimple(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return Boolean(err && err.code === 'EPERM');
+  }
+}
+
+function readRelaunchLock(lockPath = RELAUNCH_LOCK_FILE) {
+  try {
+    if (!fs.existsSync(lockPath)) return null;
+    const parsed = JSON.parse(fs.readFileSync(lockPath, 'utf8'));
+    if (!parsed || typeof parsed !== 'object') return null;
+    return {
+      pid: Number(parsed.pid) || 0,
+      createdAt: Number(parsed.createdAt) || 0,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function isRelaunchLockStale(
+  lock,
+  {
+    nowMs = Date.now(),
+    staleMs = RELAUNCH_LOCK_STALE_MS,
+    handoffGraceMs = RELAUNCH_LOCK_HANDOFF_GRACE_MS,
+    isAliveFn = isPidAliveSimple,
+  } = {}
+) {
+  if (!lock || typeof lock !== 'object') return true;
+  const createdAt = Number(lock.createdAt) || 0;
+  if (createdAt <= 0) return true;
+  const age = nowMs - createdAt;
+  if (age < 0 || age >= staleMs) return true;
+  if (age >= handoffGraceMs && Number.isInteger(lock.pid) && lock.pid > 0 && !isAliveFn(lock.pid)) {
+    return true;
+  }
+  return false;
+}
+
+function isRelaunchInProgress({
+  lockPath = RELAUNCH_LOCK_FILE,
+  nowMs = Date.now(),
+  staleMs = RELAUNCH_LOCK_STALE_MS,
+  handoffGraceMs = RELAUNCH_LOCK_HANDOFF_GRACE_MS,
+  isAliveFn = isPidAliveSimple,
+} = {}) {
+  const lock = readRelaunchLock(lockPath);
+  return Boolean(lock && !isRelaunchLockStale(lock, { nowMs, staleMs, handoffGraceMs, isAliveFn }));
+}
+
+function tryAcquireRelaunchLock({
+  lockPath = RELAUNCH_LOCK_FILE,
+  pid = process.pid,
+  nowMs = Date.now(),
+  staleMs = RELAUNCH_LOCK_STALE_MS,
+  handoffGraceMs = RELAUNCH_LOCK_HANDOFF_GRACE_MS,
+  isAliveFn = isPidAliveSimple,
+} = {}) {
+  try {
+    fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+  } catch {}
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const fd = fs.openSync(lockPath, 'wx');
+      try {
+        fs.writeFileSync(fd, JSON.stringify({ pid, createdAt: nowMs }) + '\n', 'utf8');
+      } finally {
+        fs.closeSync(fd);
+      }
+      return { acquired: true, lockPath, pid, createdAt: nowMs };
+    } catch (err) {
+      if (!err || err.code !== 'EEXIST') {
+        return { acquired: false, reason: 'lock-error', error: err?.message || String(err), lockPath };
+      }
+      const existing = readRelaunchLock(lockPath);
+      if (isRelaunchLockStale(existing, { nowMs, staleMs, handoffGraceMs, isAliveFn })) {
+        try {
+          fs.unlinkSync(lockPath);
+        } catch {}
+        continue;
+      }
+      return {
+        acquired: false,
+        reason: 'relaunch-in-progress',
+        ownerPid: existing?.pid || null,
+        lockPath,
+      };
+    }
+  }
+  const existing = readRelaunchLock(lockPath);
+  return {
+    acquired: false,
+    reason: 'relaunch-in-progress',
+    ownerPid: existing?.pid || null,
+    lockPath,
+  };
+}
+
+function releaseRelaunchLock(lockPath = RELAUNCH_LOCK_FILE, { ownerPid } = {}) {
+  try {
+    if (!fs.existsSync(lockPath)) return false;
+    if (Number.isInteger(ownerPid) && ownerPid > 0) {
+      const existing = readRelaunchLock(lockPath);
+      if (existing && existing.pid > 0 && existing.pid !== ownerPid) return false;
+    }
+    fs.unlinkSync(lockPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 function defaultRelaunchGuard() {
   return {
@@ -2070,8 +2283,14 @@ module.exports = {
   scheduleDetachedRelaunch,
   relaunchAntigravityWithCdp,
   RELAUNCH_GUARD_FILE,
+  RELAUNCH_LOCK_FILE,
   AUTO_RELAUNCH_COOLDOWN_MS,
   AUTO_RELAUNCH_MAX_FAILURES,
+  readRelaunchLock,
+  isRelaunchLockStale,
+  isRelaunchInProgress,
+  tryAcquireRelaunchLock,
+  releaseRelaunchLock,
   readRelaunchGuard,
   writeRelaunchGuard,
   evaluateAutoRelaunchGuard,

@@ -137,6 +137,52 @@ test('shouldRemoveUiOnShutdown removes UI on plugin disable and preserves on hos
   }
 });
 
+test('detectNonDesktopHost isolates agy CLI and IDE hosts so they never hijack Desktop CDP config', () => {
+  assert.deepEqual(
+    mcpHost.detectNonDesktopHost({
+      env: {
+        AGY_CLAUDE_STYLE_PLUGIN_DATA: '/Users/demo/.gemini/antigravity-cli/plugin_data/agy-claude-style',
+      },
+      ppid: 0,
+    }),
+    { nonDesktop: true, kind: 'antigravity-cli', reason: 'env-data-dir' }
+  );
+  assert.deepEqual(
+    mcpHost.detectNonDesktopHost({
+      env: {
+        PLUGIN_DATA: 'C:\\Users\\demo\\.gemini\\antigravity-ide\\plugin_data\\agy-claude-style',
+      },
+      ppid: 0,
+    }),
+    { nonDesktop: true, kind: 'antigravity-ide', reason: 'env-data-dir' }
+  );
+  assert.deepEqual(
+    mcpHost.detectNonDesktopHost({
+      env: { JETSKI_APP_DATA_DIR: 'antigravity-cli' },
+      ppid: 0,
+    }),
+    { nonDesktop: true, kind: 'antigravity-cli', reason: 'env-data-dir' }
+  );
+  assert.deepEqual(
+    mcpHost.detectNonDesktopHost({
+      env: {},
+      ppid: 69319,
+      inspectCmdFn: () => '/Users/demo/.local/bin/agy',
+    }),
+    { nonDesktop: true, kind: 'antigravity-cli', reason: 'parent-process' }
+  );
+  assert.deepEqual(
+    mcpHost.detectNonDesktopHost({
+      env: {
+        AGY_CLAUDE_STYLE_PLUGIN_DATA: '/Users/demo/.gemini/antigravity/plugin_data/agy-claude-style',
+      },
+      ppid: 31563,
+      inspectCmdFn: () => '/Applications/Antigravity.app/Contents/Resources/bin/language_server --standalone',
+    }),
+    { nonDesktop: false, kind: 'desktop', reason: 'default' }
+  );
+});
+
 test('Aux Pane sidecar guards origins and validates config updates', async () => {
   const panel = await import('../sidecars/panel/main.mjs');
   assert.equal(panel.isLocalHostRequest({ headers: { host: '127.0.0.1:8123', origin: 'plugin://agy-claude-style--panel' } }), true);

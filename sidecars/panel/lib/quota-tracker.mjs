@@ -2,9 +2,9 @@
 // Polls Antigravity Language Server RetrieveUserQuotaSummary (loopback HTTP, bypassing proxy/bad-ports),
 // persists compact daily snapshots in ~/.gemini/antigravity/plugin_data/agy-claude-style/quota-daily.json,
 // and computes exact per-pool daily weekly-quota burn (resilient to mid-day weekly resets).
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
-import { request as httpRequest } from 'node:http';
-import { dirname } from 'node:path';
+import { existsSync, readFileSync } from 'node:fs';
+import { atomicWriteFileSync } from './sidecar-owner.mjs';
+import { callLsRpcWithRecovery } from './ls-discovery.mjs';
 
 const MAX_STORED_DAYS = 90;
 const MIN_DROP_PCT = 0.05;
@@ -46,40 +46,98 @@ export function formatResetCountdown(resetSec, nowMs = Date.now()) {
   return `${Math.max(1, mins)}分钟`;
 }
 
-export function extractWeeklyPools(quotaJson) {
-  const rawGroups = quotaJson?.response?.groups || quotaJson?.groups || [];
-  if (!Array.isArray(rawGroups)) return [];
-  const pools = [];
-  for (const g of rawGroups) {
-    if (!g || typeof g !== 'object') continue;
-    const name = String(g.displayName || g.name || '').trim();
-    if (!name) continue;
-    const buckets = Array.isArray(g.buckets) ? g.buckets : [];
-    const weekly =
-      buckets.find((b) => String(b?.window || '').toLowerCase() === 'weekly' && !b?.disabled) ||
-      buckets.find((b) => String(b?.window || '').toLowerCase() === 'weekly') ||
-      buckets.find((b) => String(b?.window || '').toLowerCase() !== '5h' && !b?.disabled) ||
-      null;
-    if (!weekly) continue;
-    const rawFrac =
-      weekly.remaining?.case === 'remainingFraction'
-        ? weekly.remaining.value
-        : weekly.remainingFraction;
-    let remainingPct = null;
-    if (rawFrac !== undefined && rawFrac !== null && Number.isFinite(Number(rawFrac))) {
-      remainingPct = round1(Math.max(0, Math.min(100, Number(rawFrac) * 100)));
-    } else if (typeof weekly.remainingPct === 'number' && Number.isFinite(weekly.remainingPct)) {
-      remainingPct = round1(Math.max(0, Math.min(100, weekly.remainingPct)));
+function extractRemainingFraction(bucket) {
+  if (!bucket || typeof bucket !== 'object') return null;
+  const flat = bucket.remainingFraction ?? bucket.remaining_fraction;
+  if (flat !== undefined && flat !== null && flat !== '' && Number.isFinite(Number(flat))) {
+    return Number(flat);
+  }
+  if (bucket.remaining?.case === 'remainingFraction') {
+    const val = bucket.remaining.value;
+    if (val !== undefined && val !== null && val !== '' && Number.isFinite(Number(val))) {
+      return Number(val);
     }
+  }
+  const nested = bucket.remaining?.remainingFraction ?? bucket.remaining?.remaining_fraction;
+  if (nested !== undefined && nested !== null && nested !== '' && Number.isFinite(Number(nested))) {
+    return Number(nested);
+  }
+  return null;
+}
+
+function resolveBucketRemainingPct(bucket) {
+  const frac = extractRemainingFraction(bucket);
+  if (frac !== null) return round1(Math.max(0, Math.min(100, frac * 100)));
+  if (typeof bucket?.remainingPct === 'number' && Number.isFinite(bucket.remainingPct)) {
+    return round1(Math.max(0, Math.min(100, bucket.remainingPct)));
+  }
+  return null;
+}
+
+export function extractWeeklyPools(quotaJson) {
+  const root = quotaJson?.response && typeof quotaJson.response === 'object' ? quotaJson.response : quotaJson;
+  const rawGroups = root?.groups || [];
+  const pools = [];
+  const seenNames = new Set();
+
+  if (Array.isArray(rawGroups)) {
+    for (const g of rawGroups) {
+      if (!g || typeof g !== 'object') continue;
+      const name = String(g.displayName || g.name || '').trim();
+      if (!name) continue;
+      const buckets = Array.isArray(g.buckets) ? g.buckets : [];
+      const weekly =
+        buckets.find((b) => String(b?.window || '').toLowerCase() === 'weekly' && !b?.disabled) ||
+        buckets.find((b) => /weekly/i.test(String(b?.bucketId || b?.bucket_id || '')) && !b?.disabled) ||
+        buckets.find((b) => String(b?.window || '').toLowerCase() === 'weekly') ||
+        buckets.find((b) => /weekly/i.test(String(b?.bucketId || b?.bucket_id || ''))) ||
+        buckets.find((b) => String(b?.window || '').toLowerCase() !== '5h' && !/5h/i.test(String(b?.bucketId || b?.bucket_id || '')) && !b?.disabled) ||
+        null;
+      if (!weekly) continue;
+      const remainingPct = resolveBucketRemainingPct(weekly);
+      if (remainingPct === null) continue;
+      const resetSec = parseResetEpochSec(weekly.resetTime ?? weekly.reset_time ?? weekly.remaining?.resetTime);
+      seenNames.add(name);
+      pools.push({
+        name,
+        bucketId: String(weekly.bucketId || weekly.bucket_id || ''),
+        remainingPct,
+        resetSec,
+        disabled: Boolean(weekly.disabled),
+      });
+    }
+  }
+
+  // Fallback for legacy flat bucket lists without conflating Argon weekly and Gemini weekly.
+  const flatBuckets = Array.isArray(root?.buckets) ? root.buckets : [];
+  for (const b of flatBuckets) {
+    if (!b || typeof b !== 'object') continue;
+    const bid = String(b.bucketId || b.bucket_id || b.id || '').trim();
+    const win = String(b.window || '').toLowerCase();
+    const isWeekly = win === 'weekly' || /weekly/i.test(bid);
+    if (!isWeekly) continue;
+    const remainingPct = resolveBucketRemainingPct(b);
     if (remainingPct === null) continue;
-    const resetSec = parseResetEpochSec(weekly.resetTime);
+    const name =
+      String(b.displayName || b.display_name || '').trim() ||
+      (bid === 'gemini-argon-wtu-weekly'
+        ? 'Gemini 4 Argon'
+        : bid === 'gemini-weekly'
+        ? 'Gemini'
+        : bid === '3p-weekly'
+        ? 'Claude / 3p'
+        : bid);
+    if (!name || seenNames.has(name)) continue;
+    seenNames.add(name);
     pools.push({
       name,
+      bucketId: bid,
       remainingPct,
-      resetSec,
-      disabled: Boolean(weekly.disabled),
+      resetSec: parseResetEpochSec(b.resetTime ?? b.reset_time ?? b.remaining?.resetTime),
+      disabled: Boolean(b.disabled),
     });
   }
+
   return pools;
 }
 
@@ -263,70 +321,29 @@ export function summarizeWeeklyQuota(store, livePools = [], nowMs = Date.now()) 
   };
 }
 
-export function fetchLiveQuotaFromLs({
+export async function fetchLiveQuotaFromLs({
   lsAddress = process.env.ANTIGRAVITY_LS_ADDRESS,
   csrfToken = process.env.ANTIGRAVITY_CSRF_TOKEN,
   timeoutMs = 2500,
+  forceRefresh = false,
+  allowRediscover = true,
+  discoverFn,
+  requestFn,
 } = {}) {
-  const addr = String(lsAddress || '').trim();
-  const token = String(csrfToken || '').trim();
-  if (!addr || !token) return Promise.resolve(null);
-
-  const normalized = /^https?:\/\//i.test(addr) ? addr : `http://${addr}`;
-  let url;
-  try {
-    url = new URL('/exa.language_server_pb.LanguageServerService/RetrieveUserQuotaSummary', normalized);
-  } catch {
-    return Promise.resolve(null);
-  }
-
-  return new Promise((resolve) => {
-    let settled = false;
-    const finish = (val) => {
-      if (settled) return;
-      settled = true;
-      resolve(val);
-    };
-    const req = httpRequest(
-      {
-        hostname: url.hostname,
-        port: url.port || 80,
-        path: url.pathname,
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-codeium-csrf-token': token,
-          'Content-Length': 2,
-        },
-        timeout: timeoutMs,
-      },
-      (res) => {
-        if (res.statusCode < 200 || res.statusCode >= 300) {
-          res.resume();
-          finish(null);
-          return;
-        }
-        const chunks = [];
-        res.on('data', (c) => chunks.push(c));
-        res.on('end', () => {
-          try {
-            finish(JSON.parse(Buffer.concat(chunks).toString('utf8')));
-          } catch {
-            finish(null);
-          }
-        });
-        res.on('error', () => finish(null));
-      }
-    );
-    req.on('timeout', () => {
-      try {
-        req.destroy();
-      } catch {}
-      finish(null);
-    });
-    req.on('error', () => finish(null));
-    req.end('{}');
-  });
+  const res = await callLsRpcWithRecovery(
+    'exa.language_server_pb.LanguageServerService',
+    'RetrieveUserQuotaSummary',
+    forceRefresh ? { forceRefresh: true } : {},
+    {
+      lsAddress,
+      csrfToken,
+      timeoutMs,
+      allowRediscover,
+      ...(discoverFn ? { discoverFn } : {}),
+      ...(requestFn ? { requestFn } : {}),
+    }
+  );
+  return res?.ok ? res.data : null;
 }
 
 function loadStoreFromDisk(filePath) {
@@ -340,13 +357,11 @@ function loadStoreFromDisk(filePath) {
   return createEmptyStore();
 }
 
-function saveStoreToDisk(filePath, store) {
+function saveStoreToDisk(filePath, store, { ownsFn = null } = {}) {
   if (!filePath) return;
+  if (typeof ownsFn === 'function' && !ownsFn()) return;
   try {
-    mkdirSync(dirname(filePath), { recursive: true });
-    const tmp = `${filePath}.${process.pid}.tmp`;
-    writeFileSync(tmp, JSON.stringify(store, null, 2) + '\n', 'utf8');
-    renameSync(tmp, filePath);
+    atomicWriteFileSync(filePath, JSON.stringify(store, null, 2) + '\n');
   } catch {}
 }
 
@@ -355,6 +370,8 @@ export function createQuotaTracker({
   lsAddress = process.env.ANTIGRAVITY_LS_ADDRESS,
   csrfToken = process.env.ANTIGRAVITY_CSRF_TOKEN,
   minIntervalMs = 15_000,
+  ownsFn = null,
+  allowRediscover = true,
 } = {}) {
   let store = loadStoreFromDisk(filePath);
   let lastLivePools = [];
@@ -369,14 +386,19 @@ export function createQuotaTracker({
     if (inflight) return inflight;
     inflight = (async () => {
       try {
-        const raw = await fetchLiveQuotaFromLs({ lsAddress, csrfToken });
+        const raw = await fetchLiveQuotaFromLs({
+          lsAddress,
+          csrfToken,
+          forceRefresh: Boolean(force),
+          allowRediscover,
+        });
         const pools = extractWeeklyPools(raw);
         if (pools.length > 0) {
           lastLivePools = pools;
           lastFetchMs = Date.now();
           const res = recordQuotaSample(store, pools, lastFetchMs);
           store = res.store;
-          if (res.changed) saveStoreToDisk(filePath, store);
+          if (res.changed) saveStoreToDisk(filePath, store, { ownsFn });
         }
       } catch {} finally {
         inflight = null;

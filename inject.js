@@ -101,10 +101,17 @@ async function injectOnce() {
   if (pages.length === 0) throw new Error('未找到 Antigravity 窗口页面');
 
   log(`[+] 调试端口 ${port}，发现 ${pages.length} 个窗口`);
-  const expr = cdpApi.buildInjectExpression();
+  const cfg = cdpApi.readConfig();
+  const codeHash = cdpApi.computeHash(cdpApi.readRuntimeBundle());
+  const configExpr =
+    typeof cdpApi.buildConfigScriptExpression === 'function'
+      ? cdpApi.buildConfigScriptExpression(cfg, codeHash)
+      : null;
+  const expr = cdpApi.buildInjectExpression(cfg);
   for (const page of pages) {
     const session = await cdpApi.CdpSession.connect(page.webSocketDebuggerUrl);
     try {
+      if (configExpr) await session.evaluate(configExpr).catch(() => null);
       const res = await session.evaluate(expr);
       log(`[✓] ${shortTitle(page)} (agy-claude-style ${res.version} · 状态: ${res.status})`);
     } finally {
@@ -581,11 +588,9 @@ async function createWatchController({
                   warnedGuardSig = gSig;
                   log(`[*] 检测到 Antigravity 未携带已配置的独立代理，但处于自动重启保护 (${evalRes.reason})，已跳过`);
                 }
+              } else if (typeof cdpApi.isRelaunchInProgress === 'function' && cdpApi.isRelaunchInProgress()) {
+                log('[*] 检测到已有重启任务进行中，跳过重复代理重启调度');
               } else {
-                proxyMismatchCheckedSig = checkKey;
-                if (typeof cdpApi.recordAutoRelaunchAttempt === 'function') {
-                  cdpApi.recordAutoRelaunchAttempt({ pidSig: guardPidSig, reason: 'cold-start-no-proxy' });
-                }
                 const proxyOpts = cdpApi.buildProxyLaunchOptionsFromConfig(currentConfig);
                 log('[↻] 检测到 Antigravity 已开启 CDP 但未进入已保存的独立代理，正在优雅重启并应用代理...');
                 const res = await cdpApi.relaunchAntigravityWithCdp({
@@ -594,9 +599,17 @@ async function createWatchController({
                   extraArgs: proxyOpts.args,
                   extraEnv: proxyOpts.env,
                 });
-                if (res.relaunched) {
-                  proxyMismatchRelaunched = true;
-                  log('[✓] 已调度后台重启 Antigravity（CDP + 独立代理模式），等待新窗口就绪...');
+                if (res.reason === 'relaunch-in-progress') {
+                  log('[*] 检测到已有重启任务进行中，跳过重复代理重启调度');
+                } else {
+                  proxyMismatchCheckedSig = checkKey;
+                  if (typeof cdpApi.recordAutoRelaunchAttempt === 'function') {
+                    cdpApi.recordAutoRelaunchAttempt({ pidSig: guardPidSig, reason: 'cold-start-no-proxy' });
+                  }
+                  if (res.relaunched) {
+                    proxyMismatchRelaunched = true;
+                    log('[✓] 已调度后台重启 Antigravity（CDP + 独立代理模式），等待新窗口就绪...');
+                  }
                 }
               }
             } else if (pCheck.inspected && pCheck.matched) {
@@ -684,10 +697,9 @@ async function createWatchController({
                     log(`[*] 自动重启冷却保护中（剩余 ${sec}s），跳过本次冷启动自动重启`);
                   }
                 }
+              } else if (typeof cdpApi.isRelaunchInProgress === 'function' && cdpApi.isRelaunchInProgress()) {
+                log('[*] 检测到已有重启任务进行中，跳过本次冷启动重复重启');
               } else {
-                if (typeof cdpApi.recordAutoRelaunchAttempt === 'function') {
-                  cdpApi.recordAutoRelaunchAttempt({ pidSig, reason: 'cold-start-no-cdp' });
-                }
                 const proxyOpts =
                   typeof cdpApi.buildProxyLaunchOptionsFromConfig === 'function'
                     ? cdpApi.buildProxyLaunchOptionsFromConfig(currentConfig)
@@ -701,12 +713,19 @@ async function createWatchController({
                   extraArgs: proxyOpts.args,
                   extraEnv: proxyOpts.env,
                 });
-                if (res.relaunched) {
-                  log('[✓] 已调度后台重启 Antigravity（CDP 模式），等待新窗口就绪...');
-                  noCdpRunningTicks = 0;
-                  cdpFlagCache = { pidSig: '', hasFlag: false };
+                if (res.reason === 'relaunch-in-progress') {
+                  log('[*] 检测到已有重启任务进行中，跳过本次冷启动重复重启');
                 } else {
-                  log(`[!] 自动重启未完成 (${res.reason})，请手动完全退出 Antigravity 后以 --remote-debugging-port=0 启动`);
+                  if (typeof cdpApi.recordAutoRelaunchAttempt === 'function') {
+                    cdpApi.recordAutoRelaunchAttempt({ pidSig, reason: 'cold-start-no-cdp' });
+                  }
+                  if (res.relaunched) {
+                    log('[✓] 已调度后台重启 Antigravity（CDP 模式），等待新窗口就绪...');
+                    noCdpRunningTicks = 0;
+                    cdpFlagCache = { pidSig: '', hasFlag: false };
+                  } else {
+                    log(`[!] 自动重启未完成 (${res.reason})，请手动完全退出 Antigravity 后以 --remote-debugging-port=0 启动`);
+                  }
                 }
               }
             }

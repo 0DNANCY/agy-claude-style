@@ -3,7 +3,7 @@
 import { execFile, spawn } from 'node:child_process';
 import { existsSync, readdirSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { dirname, isAbsolute, join, posix, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
@@ -53,14 +53,14 @@ export function resolveLocalFilePath(rawUri = '', { platform = process.platform 
     if (!LOOPBACK_HOSTS.has(host)) {
       throw new Error(`Non-local file URI host rejected: ${host}`);
     }
-    const isWinForm = platform === 'win32' && /^\/[a-zA-Z]:(?:\/|$)/.test(parsed.pathname);
-    fsPath = isWinForm ? fileURLToPath(parsed, { windows: true }) : fileURLToPath(parsed);
+    const useWinUrl = platform === 'win32';
+    fsPath = fileURLToPath(parsed, { windows: useWinUrl });
   } else if (isAbsolute(input) || /^[a-zA-Z]:[\\/]/.test(input)) {
     fsPath = stripLineColAnchor(input);
   } else {
     throw new Error('Only local file:// URIs or absolute paths are supported');
   }
-  const normalized = platform === 'win32' ? fsPath : resolve(fsPath);
+  const normalized = platform === 'win32' ? fsPath : posix.resolve(fsPath);
   if (/[\x00-\x1f\x7f]/.test(normalized)) {
     throw new Error('Invalid control character in path');
   }
@@ -96,23 +96,44 @@ export async function openLocalFile(rawUri, { platform = process.platform, execF
   return { ok: true, path: info.path };
 }
 
-export async function revealLocalFile(rawUri, { platform = process.platform, execFn = execFileAsync } = {}) {
+export async function revealLocalFile(rawUri, { platform = process.platform, execFn = null, spawnProcess = spawn } = {}) {
   const info = inspectLocalPath(rawUri);
   if (!info.exists) throw new Error(`File not found: ${info.path}`);
+  const runExec = execFn || execFileAsync;
   if (platform === 'darwin') {
-    await execFn('/usr/bin/open', ['-R', info.path], { timeout: 5000 });
+    await runExec('/usr/bin/open', ['-R', info.path], { timeout: 5000 });
   } else if (platform === 'win32') {
-    // Pass /select,"<path>" verbatim directly to explorer.exe so paths with spaces/Unicode highlight reliably
-    const isDriveRoot = /^[a-zA-Z]:[\\/]?$/.test(info.path);
-    const args = isDriveRoot ? [info.path] : [`/select,"${info.path}"`];
-    await execFn('explorer.exe', args, {
-      timeout: 5000,
-      windowsVerbatimArguments: true,
-      windowsHide: true,
-    });
+    // Pass /select,"<path>" verbatim directly to explorer.exe so paths with spaces/Unicode highlight reliably.
+    // Never pass windowsHide: true to explorer.exe (it is a GUI app and SW_HIDE suppresses/hides the window).
+    const normalizedPath = info.path.replace(/^([a-z]):/, (_, d) => `${d.toUpperCase()}:`);
+    const isDriveRoot = /^[A-Z]:[\\/]?$/.test(normalizedPath);
+    const cleanPath = isDriveRoot ? normalizedPath : normalizedPath.replace(/\\+$/, '').replace(/"/g, '');
+    const args = isDriveRoot ? [cleanPath] : [`/select,"${cleanPath}"`];
+    if (execFn) {
+      try {
+        await execFn('explorer.exe', args, {
+          timeout: 5000,
+          windowsVerbatimArguments: true,
+          windowsHide: false,
+        });
+      } catch (err) {
+        if (!(err && err.code === 1 && !err.killed && !String(err.stderr || '').trim())) {
+          throw err;
+        }
+      }
+    } else {
+      const child = spawnProcess('explorer.exe', args, {
+        detached: true,
+        stdio: 'ignore',
+        windowsVerbatimArguments: true,
+        windowsHide: false,
+      });
+      child?.on?.('error', () => {});
+      child?.unref?.();
+    }
   } else {
     const dir = info.isDirectory ? info.path : dirname(info.path);
-    await execFn('xdg-open', [dir], { timeout: 5000 });
+    await runExec('xdg-open', [dir], { timeout: 5000 });
   }
   return { ok: true, path: info.path };
 }
@@ -402,7 +423,7 @@ export async function openFileWithApp(
     env = process.env,
     home = homedir(),
     spawnProcess = spawn,
-    execFn = execFileAsync,
+    execFn = null,
     exists = existsSync,
     readdir = readdirSync,
     stat = statSync,
@@ -410,11 +431,11 @@ export async function openFileWithApp(
 ) {
   const id = String(appId || '').trim();
   if (!id || id === 'default') {
-    const res = await openLocalFile(rawUri, { platform, execFn });
+    const res = await openLocalFile(rawUri, { platform, execFn: execFn || execFileAsync });
     return { ...res, appId: 'default', label: 'Default app' };
   }
   if (id === 'explorer') {
-    const res = await revealLocalFile(rawUri, { platform, execFn });
+    const res = await revealLocalFile(rawUri, { platform, execFn, spawnProcess });
     return { ...res, appId: 'explorer', label: platform === 'darwin' ? 'Finder' : platform === 'win32' ? 'File Explorer' : 'File Manager' };
   }
 

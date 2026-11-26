@@ -47,6 +47,8 @@
     let autoRefresh = true;
     let autoTimer = null;
     let inflight = false;
+    let reqSeq = 0;
+    let queuedRefresh = null;
 
     function scrollHeatmapToToday() {
       const wrap = document.getElementById('heatmap-wrap');
@@ -109,7 +111,10 @@
       for (const m of models) {
         const row = document.createElement('div');
         row.className = 'health-row';
-        const ttftTxt = Number.isFinite(m.avgTtftMs) ? `首字 ${fmtDuration(m.avgTtftMs)}` : '';
+        const shownTtft = Number.isFinite(m.medianTtftMs) ? m.medianTtftMs : m.avgTtftMs;
+        const ttftTxt = Number.isFinite(shownTtft)
+          ? `${Number.isFinite(m.medianTtftMs) ? 'P50 首字' : '首字'} ${fmtDuration(shownTtft)}`
+          : '';
         const errTag = m.errorCount > 0 ? `<span class="health-pill is-err">报错 ${m.errorCount}${m.topError ? ` (${escapeHtml(m.topError)})` : ''}</span>` : '';
         const dropTag = m.anomalyCount > 0 ? `<span class="health-pill is-warn">掉缓存 ${m.anomalyCount}</span>` : '';
         const slotsHtml = (m.slots || [])
@@ -145,6 +150,68 @@
         });
         listEl.appendChild(row);
       }
+    }
+
+    function renderModelsBreakdown(models = []) {
+      const wrapEl = document.getElementById('models-table-wrap');
+      const badgeEl = document.getElementById('models-summary');
+      if (!wrapEl || !badgeEl) return;
+      const list = Array.isArray(models) ? models : [];
+      badgeEl.textContent = `${list.length} 模型`;
+      if (list.length === 0) {
+        wrapEl.innerHTML = '<div style="text-align:center;color:var(--muted-fg);padding:8px 0;font-size:11px;">当前范围内无模型统计</div>';
+        return;
+      }
+      const activeModel = document.getElementById('dash-model')?.value || '';
+      const hasTps = list.some((m) => Number.isFinite(m.decodeTps));
+      const rowsHtml = list
+        .map((m) => {
+          const hit = m.cacheHitPct;
+          const hitCls = hit === null || hit === undefined ? '' : hit >= 70 ? ' is-high' : hit >= 30 ? ' is-mid' : ' is-low';
+          const hitTxt = hit === null || hit === undefined ? '-' : `${hit}%`;
+          const ttftTxt = Number.isFinite(m.medianTtftMs) ? fmtDuration(m.medianTtftMs) : '-';
+          const tpsTxt = Number.isFinite(m.decodeTps) ? `${m.decodeTps}` : '-';
+          const activeCls = activeModel && activeModel === m.model ? ' class="is-active"' : '';
+          const tip = `${m.model} · 请求 ${m.requests} 次 · 输入 ${fmtTokens(m.inputTokens)} · 缓存读 ${fmtTokens(m.cacheReadTokens)} · 输出 ${fmtTokens(m.outputTokens)}${Number.isFinite(m.e2eTps) ? ` · E2E ${m.e2eTps} tok/s` : ''}`;
+          return `
+            <tr data-model="${escapeHtml(m.model)}"${activeCls} title="${escapeHtml(tip)}">
+              <td>${escapeHtml(m.model)}</td>
+              <td>${m.requests}</td>
+              <td>${fmtTokens(m.totalTokens || (m.inputTokens || 0) + (m.outputTokens || 0))}</td>
+              <td><span class="models-cache-pill${hitCls}">${hitTxt}</span></td>
+              <td>${ttftTxt}</td>
+              ${hasTps ? `<td>${tpsTxt}</td>` : ''}
+              <td>$${Number(m.costUsd || 0).toFixed(3)}</td>
+            </tr>
+          `;
+        })
+        .join('');
+      wrapEl.innerHTML = `
+        <table class="models-table">
+          <thead>
+            <tr>
+              <th>模型</th>
+              <th>次数</th>
+              <th>Token</th>
+              <th>缓存率</th>
+              <th>P50首字</th>
+              ${hasTps ? '<th>tok/s</th>' : ''}
+              <th>费用</th>
+            </tr>
+          </thead>
+          <tbody>${rowsHtml}</tbody>
+        </table>
+      `;
+      wrapEl.querySelectorAll('tbody tr').forEach((tr) => {
+        tr.addEventListener('click', () => {
+          const mName = tr.getAttribute('data-model') || '';
+          const sel = document.getElementById('dash-model');
+          if (!sel || !mName) return;
+          sel.value = sel.value === mName ? '' : mName;
+          loadedLimit = PAGE_SIZE;
+          void refresh({ syncSsh: false, preserveScroll: false });
+        });
+      });
     }
 
     function renderWeeklyQuotaCard(wq) {
@@ -377,8 +444,19 @@
     }
 
     async function refresh({ syncSsh = false, preserveScroll = true, silent = false } = {}) {
-      if (inflight) return;
+      if (inflight) {
+        // Coalesce user-triggered refreshes/filters instead of silently dropping them during 5s auto-poll.
+        if (!silent) {
+          queuedRefresh = {
+            syncSsh: Boolean(queuedRefresh?.syncSsh || syncSsh),
+            preserveScroll: Boolean(queuedRefresh ? queuedRefresh.preserveScroll && preserveScroll : preserveScroll),
+            silent: false,
+          };
+        }
+        return;
+      }
       inflight = true;
+      const mySeq = ++reqSeq;
       const range = document.getElementById('dash-range').value;
       const model = document.getElementById('dash-model').value;
       const search = document.getElementById('dash-search').value;
@@ -401,7 +479,7 @@
           }),
         });
         const d = await res.json();
-        if (!d || !d.ok) return;
+        if (mySeq !== reqSeq || !d || !d.ok) return;
 
         document.getElementById('kpi-reqs').textContent = String(d.summary.totalRequests);
         document.getElementById('kpi-errs').textContent = d.summary.errorCount > 0 ? `报错 ${d.summary.errorCount}` : '无报错';
@@ -414,9 +492,22 @@
         document.getElementById('kpi-src').textContent = d.ssh?.enabled ? `本机 + SSH (${d.ssh.count})` : '本机';
         const latEl = document.getElementById('kpi-latency');
         if (latEl) {
-          latEl.textContent = Number.isFinite(d.summary.avgTtftMs)
-            ? `平均首字 ${fmtDuration(d.summary.avgTtftMs)}`
-            : '平均首字 -';
+          const p50 = d.summary.medianTtftMs;
+          const avg = d.summary.avgTtftMs;
+          const tps = d.summary.decodeTps;
+          const parts = [];
+          if (Number.isFinite(p50)) parts.push(`P50 首字 ${fmtDuration(p50)}`);
+          else if (Number.isFinite(avg)) parts.push(`平均首字 ${fmtDuration(avg)}`);
+          if (Number.isFinite(tps)) parts.push(`${tps} tok/s`);
+          latEl.textContent = parts.length ? parts.join(' · ') : '首字 -';
+          latEl.title = [
+            Number.isFinite(p50) ? `首字 P50：${fmtDuration(p50)}` : '',
+            Number.isFinite(avg) ? `首字均值：${fmtDuration(avg)}` : '',
+            Number.isFinite(tps) ? `加权解码速率：${tps} tok/s` : '',
+            Number.isFinite(d.summary.e2eTps) ? `端到端速率：${d.summary.e2eTps} tok/s` : '',
+          ]
+            .filter(Boolean)
+            .join(' · ');
         }
 
         const updEl = document.getElementById('dash-updated');
@@ -440,6 +531,7 @@
         lastWeeklyQuota = d.weeklyQuota || null;
         renderPricingMeta(d.pricing || null);
         renderModelHealth(d.modelHealth || null);
+        renderModelsBreakdown(d.modelsBreakdown || []);
         renderWeeklyQuotaCard(lastWeeklyQuota);
         void refreshSubagents();
         const todayText = document.getElementById('heat-today-text');
@@ -553,6 +645,11 @@
         if (!silent) app.showToast(`看板加载失败: ${err.message}`);
       } finally {
         inflight = false;
+        if (queuedRefresh) {
+          const nextOpts = queuedRefresh;
+          queuedRefresh = null;
+          void refresh(nextOpts);
+        }
       }
     }
 
@@ -637,6 +734,12 @@
     if (healthHead) {
       healthHead.addEventListener('click', () => {
         document.getElementById('sec-health').classList.toggle('collapsed');
+      });
+    }
+    const modelsHead = document.getElementById('models-head');
+    if (modelsHead) {
+      modelsHead.addEventListener('click', () => {
+        document.getElementById('sec-models')?.classList.toggle('collapsed');
       });
     }
     const subagentsHead = document.getElementById('subagents-head');
