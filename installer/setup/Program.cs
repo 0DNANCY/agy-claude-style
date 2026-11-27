@@ -567,7 +567,7 @@ namespace AgyClaudeStyle
                 {
                     if (key == null) return;
                     key.SetValue("DisplayName", DisplayName, RegistryValueKind.String);
-                    key.SetValue("DisplayVersion", string.IsNullOrEmpty(version) ? "3.0.0" : version, RegistryValueKind.String);
+                    key.SetValue("DisplayVersion", string.IsNullOrEmpty(version) ? "3.1.0" : version, RegistryValueKind.String);
                     key.SetValue("Publisher", "0dnancy (AGY Claude Style)", RegistryValueKind.String);
                     key.SetValue("InstallLocation", installDir, RegistryValueKind.String);
                     key.SetValue("DisplayIcon", uninstallerExePath, RegistryValueKind.String);

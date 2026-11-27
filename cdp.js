@@ -6,7 +6,7 @@ const path = require('path');
 const { execFileSync, spawn } = require('child_process');
 
 const STYLE_ID = 'ag-claude-style-css';
-const PLUGIN_VERSION = '3.0.0';
+const PLUGIN_VERSION = '3.1.0';
 const SETTING_BINDING = '__agClaudeStyleSetting';
 const IS_MAC = process.platform === 'darwin';
 const IS_WIN = process.platform === 'win32';
@@ -80,6 +80,7 @@ const DEFAULT_CONFIG = {
   smoothCaret: true,
   sidebarRestyle: true,
   sidebarCompact: false,
+  sidebarFoldEmpty: true,
   compactChatLayout: false,
   stageCollapse: true,
   stagePromptInjection: false,
@@ -134,6 +135,7 @@ const CONFIG_VALIDATORS = {
   smoothCaret: 'boolean',
   sidebarRestyle: 'boolean',
   sidebarCompact: 'boolean',
+  sidebarFoldEmpty: 'boolean',
   compactChatLayout: 'boolean',
   stageCollapse: 'boolean',
   stagePromptInjection: 'boolean',
@@ -432,7 +434,7 @@ function readCss() {
   return fs.readFileSync(path.join(__dirname, 'style.css'), 'utf8');
 }
 
-const RUNTIME_PARTS = ['i18n-locales.js', 'i18n-core.js', 'sidecar-core.js', 'usage-core.js', 'ripple-core.js', 'mascot-core.js', 'crab-assets.js', 'effort-core.js', 'perf-assets.js', 'ui-rewind.js', 'features/branch-edit.js', 'features/file-menu.js', 'features/task-progress.js', 'features/extensions-dock.js', 'features/hide-on-close.js', 'features/unread-title.js', 'features/stage-collapse.js', 'ui-runtime.js'];
+const RUNTIME_PARTS = ['i18n-locales.js', 'i18n-core.js', 'sidecar-core.js', 'usage-core.js', 'ripple-core.js', 'mascot-core.js', 'crab-assets.js', 'effort-core.js', 'perf-assets.js', 'ui-rewind.js', 'features/branch-edit.js', 'features/file-menu.js', 'features/task-progress.js', 'features/extensions-dock.js', 'features/hide-on-close.js', 'features/unread-title.js', 'features/stage-collapse.js', 'features/sidebar-polish.js', 'ui-runtime.js'];
 
 function readRuntimeBundle() {
   return RUNTIME_PARTS.map((f) => fs.readFileSync(path.join(__dirname, f), 'utf8')).join('\n');
@@ -663,8 +665,18 @@ const REMOVE_EXPRESSION = `(() => {
     root.removeAttribute('data-ag-cs-crab');
     root.removeAttribute('data-ag-cs-theme');
     root.removeAttribute('data-ag-cs-compact-chat');
+    root.removeAttribute('data-ag-cs-sidebar');
+    root.removeAttribute('data-ag-cs-sidebar-compact');
+    root.removeAttribute('data-ag-cs-sidebar-fold-empty');
     if (root.getAttribute('data-ag-cjk') === '1') root.removeAttribute('data-ag-cjk');
   }
+  document
+    .querySelectorAll('[data-ag-cs-sb-group], [data-ag-cs-sb-header], [data-ag-cs-sb-children], [data-ag-cs-sb-empty], [data-ag-cs-sb-empty-row], [data-ag-cs-sb-empty-body], [data-ag-cs-sb-has-convos], [data-ag-cs-sb-has-active], [data-ag-cs-sb-active], [data-ag-cs-sb-peek], [data-ag-cs-sb-nav-active]')
+    .forEach((el) => {
+      for (const a of ['data-ag-cs-sb-group', 'data-ag-cs-sb-header', 'data-ag-cs-sb-children', 'data-ag-cs-sb-empty', 'data-ag-cs-sb-empty-row', 'data-ag-cs-sb-empty-body', 'data-ag-cs-sb-has-convos', 'data-ag-cs-sb-has-active', 'data-ag-cs-sb-active', 'data-ag-cs-sb-peek', 'data-ag-cs-sb-nav-active']) {
+        el.removeAttribute(a);
+      }
+    });
   const nodes = document.querySelectorAll(
     'style#${STYLE_ID}, style#ag-token-hud-style, .ag-cs-home-panel-seat, .ag-cs-ripple-host, .ag-cs-ripple-canvas, .ag-cs-crab, .ag-cs-inline-stats, .ag-cs-quota-ring, .ag-cs-context-ring, .ag-cs-ctx-popover, .ag-cs-effort-popover, .ag-cs-perf-backdrop, .ag-cs-smooth-caret, .ag-cs-turn-bar, .ag-cs-hud-top-bar, .ag-cs-hud-bottom-bar, .ag-cs-hud-rim-progress, .ag-cs-hud-footer-chip, .ag-cs-rewind-bar, .ag-cs-rewind-notice, .ag-cs-rewind-backdrop, .ag-cs-branch-btn, .ag-cs-edit-btn, .ag-cs-inline-edit, .ag-cs-file-menu, .ag-cs-file-submenu, .ag-cs-progress-card, .ag-cs-action-toast, .ag-cs-ext-header-bar, .ag-cs-ext-menu-btn, .ag-cs-ext-sidebar-sec, .ag-cs-ext-popover, .ag-cs-native-pin-btn, .ag-cs-ext-tooltip, .ag-cs-stage-bar, .ag-cs-stage-badge, .ag-cs-stage-meta-inline, #ag-cs-settings-sec, .ag-th-top-bar, .ag-th-bottom-bar, .ag-th-rim-progress, .ag-th-footer-chip, .ag-th-popover, .ag-th-turn-bar, .ag-th-reopen-pill'
   );

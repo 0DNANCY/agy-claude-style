@@ -41,6 +41,7 @@
         logoInk: ['Antigravity Logo 着色', '首页问候图标使用主题强调色或前景色'],
         sidebarRestyle: ['侧栏 Claude 风格', '统一侧边栏行高、图标与悬停高亮样式'],
         sidebarCompact: ['紧凑侧边栏', '压缩对话行高，同屏展示更多会话'],
+        sidebarFoldEmpty: ['默认收起空项目', '默认隐藏「还没有对话」占位行节省空间，点击项目可按需展开'],
         composerRestyle: ['极简输入框重排', '极简圆角输入框卡片与画布底栏样式'],
         placeholderStyle: ['输入框占位提示', '使用工作台提示文案或跟随宿主原生'],
         compactChatLayout: ['紧凑对话正文排版', '保持字号不变，收紧正文行高与段落间距提高单屏信息密度'],
@@ -127,6 +128,7 @@
         logoInk: ['Logo Color', 'Tint of the Antigravity greeting mark'],
         sidebarRestyle: ['Sidebar Restyle', 'Apply Claude-style row height and hover plates to sidebar'],
         sidebarCompact: ['Compact Sidebar', 'Tighter row height for more sessions'],
+        sidebarFoldEmpty: ['Collapse Empty Projects', 'Hide "No conversations yet" rows by default; click a project to peek'],
         composerRestyle: ['Composer Restyle', 'Minimalist rounded input box and canvas footer'],
         placeholderStyle: ['Input Placeholder', 'Studio workspace copy or host native'],
         compactChatLayout: ['Compact Chat Prose', 'Tighten line-height and paragraph gaps without shrinking font size'],
@@ -183,7 +185,7 @@
       icon: '🎨',
       titleKey: 'grpAppearance',
       defaultOpen: true,
-      keys: ['language', 'homeLayout', 'palette', 'glassEffect', 'logoInk', 'sidebarRestyle', 'sidebarCompact', 'composerRestyle', 'placeholderStyle', 'compactChatLayout'],
+      keys: ['language', 'homeLayout', 'palette', 'glassEffect', 'logoInk', 'sidebarRestyle', 'sidebarCompact', 'sidebarFoldEmpty', 'composerRestyle', 'placeholderStyle', 'compactChatLayout'],
     },
     {
       id: 'interaction',
@@ -210,7 +212,8 @@
   ];
 
   const SUBROW_RULES = {
-    sidebarCompact: { dim: (cfg) => !cfg.sidebarRestyle },
+    sidebarCompact: { dim: (cfg) => cfg.sidebarRestyle === false },
+    sidebarFoldEmpty: { dim: (cfg) => cfg.sidebarRestyle === false },
     placeholderStyle: { dim: (cfg) => !cfg.composerRestyle },
     effortAccent: { badgeKey: 'badgeClaude', dim: (cfg) => (cfg.effortSliderStyle || 'claude') !== 'claude' },
     performanceBackdrop: { badgeKey: 'badgeLwf', dim: (cfg) => cfg.effortSliderStyle !== 'liangwufeng' },
@@ -223,6 +226,8 @@
 
   const DEFAULT_TRUE_KEYS = new Set([
     'glassEffect',
+    'sidebarRestyle',
+    'sidebarFoldEmpty',
     'stageCollapse',
     'windowUnreadTitle',
     'branchSession',

@@ -186,7 +186,7 @@ Clawd 是由 [crab-assets.js](crab-assets.js) 与 [mascot-core.js](mascot-core.j
 <a id="方式一windows-原生插件一键安装器exe"></a>
 ### 🪟 方式一：Windows 原生插件一键安装器（`.exe`）
 
-1. 前往 [Releases](https://github.com/0DNANCY/agy-claude-style/releases) 下载 `AGY-Claude-Style-v3.0.0-Windows-x64.exe`（或在源码根目录执行 `npm run build:installer` 本地构建）。
+1. 前往 [Releases](https://github.com/0DNANCY/agy-claude-style/releases) 下载 `AGY-Claude-Style-v3.1.0-Windows-x64.exe`（或在源码根目录执行 `npm run build:installer` 本地构建）。
 2. 双击运行并点击 **「安装插件」**：
    - 将完整原生插件包（`plugin.json`、`mcp_config.json`、`plugin/`、`sidecars/panel/`、`features/`、`style.css` 等）部署到 `%USERPROFILE%\.gemini\config\plugins\agy-claude-style`；
    - 保留或迁移用户配置至 `%USERPROFILE%\.gemini\antigravity\plugin_data\agy-claude-style\config.json`；
@@ -194,7 +194,7 @@ Clawd 是由 [crab-assets.js](crab-assets.js) 与 [mascot-core.js](mascot-core.j
    - 注册 Windows「设置 → 应用」卸载项（卸载时自动通知停用插件并移除插件目录，同时保留 `plugin_data` 用户偏好）。
 3. 支持的命令行参数（CI / 静默自动化）：
    ```text
-   AGY-Claude-Style-v3.0.0-Windows-x64.exe [--silent | /S | -s] [--uninstall] [--status]
+   AGY-Claude-Style-v3.1.0-Windows-x64.exe [--silent | /S | -s] [--uninstall] [--status]
                                            [--install-dir <路径>] [--out <结果JSON路径>] [--popup]
    ```
 
@@ -203,7 +203,7 @@ Clawd 是由 [crab-assets.js](crab-assets.js) 与 [mascot-core.js](mascot-core.j
 <a id="方式二macos-原生插件一键安装应用dmg--app"></a>
 ### 🍎 方式二：macOS 原生插件一键安装应用（`.dmg` / `.app`）
 
-1. 前往 [Releases](https://github.com/0DNANCY/agy-claude-style/releases) 下载 `AGY-Claude-Style-v3.0.0-macOS-universal.dmg`（或在 macOS 上执行 `npm run build:macos` 本地构建通用架构 `arm64` + `x86_64` 安装包）。
+1. 前往 [Releases](https://github.com/0DNANCY/agy-claude-style/releases) 下载 `AGY-Claude-Style-v3.1.0-macOS-universal.dmg`（或在 macOS 上执行 `npm run build:macos` 本地构建通用架构 `arm64` + `x86_64` 安装包）。
 2. 打开 `.dmg` 并运行 `AGY Claude Style.app`（首次打开若系统拦截 Ad-hoc 签名，请**右键点击 App → 打开**，或执行 `xattr -cr "/Applications/AGY Claude Style.app"`）：
    - 点击 **「安装插件」**，将完整原生插件包部署到 `~/.gemini/config/plugins/agy-claude-style` 并启用；
    - 保留或从旧版 `~/Library/Application Support/agy-claude-style/config.json` 迁移配置至 `~/.gemini/antigravity/plugin_data/agy-claude-style/config.json`，并自动清理旧版 `LaunchAgent`、`agy-claude-style-watcher` 与启动器 `.app`。
@@ -259,8 +259,9 @@ git clone https://github.com/0DNANCY/agy-claude-style.git ~/.gemini/config/plugi
 | `effortAccent` | `boolean` | `true` | 💜 Claude 模式下启用蓝紫思考强度色阶 |
 | `performanceBackdrop` | `'card'` \| `'page'` \| `'off'` | `'card'` | 🖼️ 梁武峰模式下 31 帧人像背景渲染范围 |
 | `smoothCaret` | `boolean` | `true` | ✨ 输入框丝滑插值打字光标（未获焦时零布局读取） |
-| `sidebarRestyle` | `boolean` | `true` | 📑 侧边栏 Claude 风格行高与悬停高亮 |
+| `sidebarRestyle` | `boolean` | `true` | 📑 侧边栏 Claude 风格树状层级、导引线与选中态胶囊 |
 | `sidebarCompact` | `boolean` | `false` | 📏 侧边栏紧凑间距模式 |
+| `sidebarFoldEmpty` | `boolean` | `true` | 📁 默认收起空项目「还没有对话」占位行（点击项目可按需展开） |
 | `compactChatLayout` | `boolean` | `false` | 🗜️ 对话消息、卡片与标题行紧凑排版 |
 | `placeholderStyle` | `'studio'` \| `'host'` | `'studio'` | 💬 输入框占位提示文本风格 |
 
@@ -324,6 +325,7 @@ agy-claude-style/
 │   ├── extensions-dock.js             # 顶部/侧栏扩展坞快捷固定与弹出菜单
 │   ├── file-menu.js                   # 对话文件引用操作菜单、外部应用跳转与 @引用插入
 │   ├── hide-on-close.js               # 关闭窗口拦截最小化隐藏（Win / macOS / Linux）
+│   ├── sidebar-polish.js              # 左侧栏树状导引线、父项目激活联动与空项目按需折叠
 │   ├── stage-collapse.js              # 阶段汇报内联/完成折叠与可选 agy_cs_stage_updates 提示词注入
 │   ├── task-progress.js               # 浮动/停靠任务进度卡片、清单进度与等待计时
 │   └── unread-title.js                # 窗口后台未读徽章与多标签状态分类
@@ -380,7 +382,7 @@ npm run build:macos
 ### 🚀 自动构建与发布 Release
 
 仓库已配置 GitHub Actions 工作流（[_build-and-test.yml](.github/workflows/_build-and-test.yml)、[release.yml](.github/workflows/release.yml) 与 [ci.yml](.github/workflows/ci.yml)）：
-- **推送版本标签自动发布**：推送形如 `v3.0.0` 的标签（`git tag v3.0.0 && git push origin v3.0.0`），会自动在 `ubuntu-latest`、`windows-latest` 与 `macos-latest` 上完成测试、编译 `AGY-Claude-Style-v3.0.0-Windows-x64.exe` 与 `AGY-Claude-Style-v3.0.0-macOS-universal.dmg`（附带 `SHA256SUMS.txt`）并自动创建 GitHub Release（同时抽取 [CHANGELOG.md](CHANGELOG.md) 对应版本日志）。
+- **推送版本标签自动发布**：推送形如 `v3.1.0` 的标签（`git tag v3.1.0 && git push origin v3.1.0`），会自动在 `ubuntu-latest`、`windows-latest` 与 `macos-latest` 上完成测试、编译 `AGY-Claude-Style-v3.1.0-Windows-x64.exe` 与 `AGY-Claude-Style-v3.1.0-macOS-universal.dmg`（附带 `SHA256SUMS.txt`）并自动创建 GitHub Release（同时抽取 [CHANGELOG.md](CHANGELOG.md) 对应版本日志）。
 - **手动触发**：也可以在 GitHub 仓库 **Actions → Release → Run workflow** 手动触发编译并发布。
 
 测试套件包含对注入包语法、模拟 DOM 挂载/无损卸载（含未聚焦编辑器零强制重排验证）、5 语言翻译引擎、思考强度滑块数学模型、用量统计与配额匹配、二维波纹场、螃蟹状态机、Powertools 套件、3 页签控制室与遥测安全防护，以及 Windows `installer.exe` 与 macOS `.app` 编译/静默安装/CDP 注入/设置同步热更新/保留配置升级/卸载清理全流程的自动化验证。

@@ -215,6 +215,7 @@
     setAttrIfChanged(html, 'data-ag-cs-logo-ink', cfg.logoInk === 'foreground' ? 'foreground' : 'accent');
     setAttrIfChanged(html, 'data-ag-cs-sidebar', cfg.sidebarRestyle === false ? 'off' : 'on');
     setAttrIfChanged(html, 'data-ag-cs-sidebar-compact', cfg.sidebarCompact === true ? 'on' : 'off');
+    setAttrIfChanged(html, 'data-ag-cs-sidebar-fold-empty', cfg.sidebarFoldEmpty === false ? 'off' : 'on');
     setAttrIfChanged(html, 'data-ag-cs-compact-chat', cfg.compactChatLayout === true ? 'on' : 'off');
     setAttrIfChanged(html, 'data-ag-cs-hud-compact', cfg.hudCompact === true ? 'on' : 'off');
     setAttrIfChanged(html, 'data-ag-cs-effort-accent', cfg.effortAccent === false ? 'off' : 'on');
@@ -5111,6 +5112,13 @@
         if (req && req !== curStyle) row.setAttribute('data-ag-cs-dim', '1');
         else row.removeAttribute('data-ag-cs-dim');
       });
+      root.querySelectorAll('[data-ag-cs-cond-key]').forEach((row) => {
+        const k = row.getAttribute('data-ag-cs-cond-key');
+        const expected = row.getAttribute('data-ag-cs-cond-val');
+        const curVal = k === 'language' ? lang : cfg[k];
+        if (k && expected !== null && JSON.stringify(curVal) !== expected) row.setAttribute('data-ag-cs-dim', '1');
+        else row.removeAttribute('data-ag-cs-dim');
+      });
     };
     let wasHudOpen = false;
     const existing = document.getElementById(SETTINGS_SEC_ID);
@@ -5198,6 +5206,30 @@
         key: 'sidebarRestyle',
         title: ui.setSidebarTitle || 'Sidebar Restyle',
         desc: ui.setSidebarDesc || 'Apply Claude-style row height and hover plates to sidebar.',
+        opts: [
+          [true, ui.onLabel || 'On'],
+          [false, ui.offLabel || 'Off'],
+        ],
+      },
+      sidebarCompact: {
+        key: 'sidebarCompact',
+        subRow: true,
+        condKey: 'sidebarRestyle',
+        condVal: true,
+        title: ui.setSidebarCompactTitle || 'Compact Sidebar',
+        desc: ui.setSidebarCompactDesc || 'Tighter sidebar row height for more sessions on screen.',
+        opts: [
+          [true, ui.onLabel || 'On'],
+          [false, ui.offLabel || 'Off'],
+        ],
+      },
+      sidebarFoldEmpty: {
+        key: 'sidebarFoldEmpty',
+        subRow: true,
+        condKey: 'sidebarRestyle',
+        condVal: true,
+        title: ui.setSidebarFoldEmptyTitle || 'Collapse Empty Projects',
+        desc: ui.setSidebarFoldEmptyDesc || 'Hide "No conversations yet" placeholders by default; click a project to peek or start a chat.',
         opts: [
           [true, ui.onLabel || 'On'],
           [false, ui.offLabel || 'Off'],
@@ -5511,7 +5543,7 @@
       {
         id: 'appearance',
         title: ui.grpAppearance || 'Appearance & Layout',
-        keys: ['language', 'homeLayout', 'palette', 'glassEffect', 'logoInk', 'sidebarRestyle', 'composerRestyle', 'compactChatLayout'],
+        keys: ['language', 'homeLayout', 'palette', 'glassEffect', 'logoInk', 'sidebarRestyle', 'sidebarCompact', 'sidebarFoldEmpty', 'composerRestyle', 'compactChatLayout'],
       },
       {
         id: 'interaction',
@@ -5545,6 +5577,12 @@
         row.setAttribute('data-ag-cs-cond', r.condStyle);
         const curStyle = effortCore.normalizeEffortStyle(cfg.effortSliderStyle);
         if (curStyle !== r.condStyle) row.setAttribute('data-ag-cs-dim', '1');
+      }
+      if (r.condKey) {
+        row.setAttribute('data-ag-cs-cond-key', r.condKey);
+        row.setAttribute('data-ag-cs-cond-val', JSON.stringify(r.condVal));
+        const curVal = r.condKey === 'language' ? lang : cfg[r.condKey];
+        if (curVal !== r.condVal) row.setAttribute('data-ag-cs-dim', '1');
       }
       const inner = mkEl('div', 'py-2 px-3 w-full bg-transparent flex justify-between gap-4 items-center');
       const textCol = mkEl('div', 'flex-1 flex flex-col gap-0.5');
@@ -5672,7 +5710,7 @@
   // Self-contained features live in ui-<feature>.js and register on
   // globalThis.__agCsFeatures.<name> = { create(ctx) }. Each instance may expose
   // sync(), onClick(ev), onKeyDown(ev) -> boolean (consumed), onEscape(ev, info), destroy().
-  const FEATURE_ORDER = ['rewind', 'branchEdit', 'fileMenu', 'taskProgress', 'extensionsDock', 'hideOnClose', 'unreadTitle', 'stageCollapse'];
+  const FEATURE_ORDER = ['rewind', 'branchEdit', 'fileMenu', 'taskProgress', 'extensionsDock', 'hideOnClose', 'unreadTitle', 'stageCollapse', 'sidebarPolish'];
   const featureCtx = {
     getCfg: () => cfg,
     getUi: () => uiText(getLang()),
@@ -6621,6 +6659,7 @@
           'data-ag-cs-logo-ink',
           'data-ag-cs-sidebar',
           'data-ag-cs-sidebar-compact',
+          'data-ag-cs-sidebar-fold-empty',
           'data-ag-cs-compact-chat',
           'data-ag-cs-hud-compact',
           'data-ag-cs-effort-accent',
