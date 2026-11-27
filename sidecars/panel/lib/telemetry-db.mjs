@@ -113,7 +113,8 @@ export function parseGenMetadataTtft(rawData) {
   return { stepIndices: timing.stepIndices, ttftMs: timing.ttftMs };
 }
 
-const MAX_CACHE_ENTRIES = 160;
+const MAX_CACHE_ENTRIES = 64;
+const TELEMETRY_CACHE_IDLE_TTL_MS = 180_000;
 const MAX_TRANSCRIPT_SCAN_BYTES = 32 * 1024 * 1024;
 const MAX_LINE_JSON_PARSE_BYTES = 256 * 1024;
 const OVERSIZED_EDGE_CHARS = 64 * 1024;
@@ -137,6 +138,31 @@ export function medianNumber(values) {
 
 const dbTtftCache = new Map();
 const summaryTitlesCache = new Map();
+const fileCache = new Map();
+let telemetryCacheIdleTimer = null;
+
+export function clearTelemetryCaches() {
+  if (telemetryCacheIdleTimer) {
+    clearTimeout(telemetryCacheIdleTimer);
+    telemetryCacheIdleTimer = null;
+  }
+  fileCache.clear();
+  dbTtftCache.clear();
+  summaryTitlesCache.clear();
+}
+
+function touchTelemetryCacheAccess() {
+  if (telemetryCacheIdleTimer) clearTimeout(telemetryCacheIdleTimer);
+  telemetryCacheIdleTimer = setTimeout(() => {
+    telemetryCacheIdleTimer = null;
+    fileCache.clear();
+    dbTtftCache.clear();
+    summaryTitlesCache.clear();
+  }, TELEMETRY_CACHE_IDLE_TTL_MS);
+  if (typeof telemetryCacheIdleTimer.unref === 'function') {
+    telemetryCacheIdleTimer.unref();
+  }
+}
 
 export function readConversationTitlesMap(summaryDbPath) {
   const DatabaseSync = getDatabaseSync();
@@ -740,14 +766,13 @@ export function buildHeatmap53w(requests = [], nowMs = Date.now()) {
   });
 }
 
-const fileCache = new Map();
-
 export function readLocalBrainRequests({
   brainDir = join(homedir(), '.gemini', 'antigravity', 'brain'),
   conversationsDir,
   summaryDbPath,
   maxConversations = 160,
 } = {}) {
+  touchTelemetryCacheAccess();
   if (!existsSync(brainDir)) return [];
   const convDir = conversationsDir || join(dirname(brainDir), 'conversations');
   const resolvedSummaryDb = summaryDbPath || join(dirname(brainDir), 'conversation_summaries.db');

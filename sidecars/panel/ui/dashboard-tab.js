@@ -872,12 +872,24 @@
     syncAutoButton();
     startAutoPoll();
 
+    function releaseIdleMemory() {
+      lastHeatCells = [];
+      lastWeeklyQuota = null;
+      lastTodaySummary = null;
+      hideHeatTooltip();
+      for (const id of ['heatmap-grid', 'req-list', 'model-health-grid', 'dash-models', 'subagent-tree']) {
+        const el = document.getElementById(id);
+        if (el) el.textContent = '';
+      }
+    }
+
     return {
       onActivate() {
         void refresh({ syncSsh: false, preserveScroll: true });
         scrollHeatmapToToday();
       },
       refresh,
+      releaseIdleMemory,
     };
   };
 })(window);

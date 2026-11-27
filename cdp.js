@@ -367,9 +367,32 @@ function readCss() {
 }
 
 const RUNTIME_PARTS = ['i18n-locales.js', 'i18n-core.js', 'sidecar-core.js', 'usage-core.js', 'ripple-core.js', 'mascot-core.js', 'crab-assets.js', 'effort-core.js', 'perf-assets.js', 'ui-rewind.js', 'features/branch-edit.js', 'features/file-menu.js', 'features/task-progress.js', 'features/extensions-dock.js', 'features/hide-on-close.js', 'features/unread-title.js', 'features/stage-collapse.js', 'ui-runtime.js'];
+const SIDECAR_LITE_PARTS = ['i18n-locales.js', 'i18n-core.js', 'sidecar-core.js'];
 
-function readRuntimeBundle() {
-  return RUNTIME_PARTS.map((f) => fs.readFileSync(path.join(__dirname, f), 'utf8')).join('\n');
+function selectRuntimeParts(config = null, opts = {}) {
+  if (!opts || opts.trimUnusedAssets !== true || !config || typeof config !== 'object') {
+    return RUNTIME_PARTS;
+  }
+  return RUNTIME_PARTS.filter((part) => {
+    if (part === 'perf-assets.js' && config.effortSliderStyle !== 'liangwufeng') return false;
+    if (part === 'crab-assets.js' && config.mascot === 'off') return false;
+    if (part === 'i18n-locales.js' && config.language === 'en') return false;
+    return true;
+  });
+}
+
+function readRuntimeBundle(config = null, opts = {}) {
+  return selectRuntimeParts(config, opts)
+    .map((f) => fs.readFileSync(path.join(__dirname, f), 'utf8'))
+    .join('\n');
+}
+
+function readSidecarRuntimeBundle(config = null, opts = {}) {
+  const parts =
+    opts && opts.trimUnusedAssets === true && config?.language === 'en'
+      ? SIDECAR_LITE_PARTS.filter((f) => f !== 'i18n-locales.js')
+      : SIDECAR_LITE_PARTS;
+  return parts.map((f) => fs.readFileSync(path.join(__dirname, f), 'utf8')).join('\n');
 }
 
 const LOGO_MIME_BY_EXT = {
@@ -447,12 +470,20 @@ function computeHash(str) {
   return (h >>> 0).toString(36);
 }
 
-function buildInjectExpression(customConfig) {
+function buildInjectExpression(customConfig, opts = {}) {
   const config = customConfig || readConfig();
   const css = readCss();
-  const bundle = readRuntimeBundle();
+  const parts = selectRuntimeParts(config, opts);
+  const bundle = parts.map((f) => fs.readFileSync(path.join(__dirname, f), 'utf8')).join('\n');
   const codeHash = computeHash(bundle);
   const sidecarLogos = readInstalledSidecarLogos();
+  const clearUnused = [
+    !parts.includes('perf-assets.js') ? 'delete globalThis.__agCsPerfAssets;' : '',
+    !parts.includes('crab-assets.js') ? 'delete globalThis.__agCsCrabAssets;' : '',
+    !parts.includes('i18n-locales.js') ? 'delete globalThis.__agCsLocales;' : '',
+  ]
+    .filter(Boolean)
+    .join('\n        ');
   return `(() => {
     const css = ${JSON.stringify(css)};
     const applyStyle = () => {
@@ -483,6 +514,7 @@ function buildInjectExpression(customConfig) {
           if (document.head) applyStyle();
           else document.addEventListener('DOMContentLoaded', applyStyle, { once: true });
         }
+        ${clearUnused}
         globalThis.__agCsSidecarLogos = ${JSON.stringify(sidecarLogos)};
         ${bundle}
         if (typeof globalThis.__agCsUiMain === 'function') {
@@ -502,6 +534,60 @@ function buildInjectExpression(customConfig) {
       }
     };
 
+    if (document.documentElement) {
+      mount();
+    } else {
+      status = 'deferred';
+      const onReady = () => {
+        if (document.documentElement) {
+          document.removeEventListener('readystatechange', onReady);
+          document.removeEventListener('DOMContentLoaded', onReady);
+          mount();
+        }
+      };
+      document.addEventListener('readystatechange', onReady);
+      document.addEventListener('DOMContentLoaded', onReady);
+    }
+    const st = window.__agClaudeStyle && window.__agClaudeStyle.getState ? window.__agClaudeStyle.getState() : null;
+    return {
+      version: ${JSON.stringify(PLUGIN_VERSION)},
+      status,
+      state: st,
+    };
+  })()`;
+}
+
+function buildSidecarInjectExpression(customConfig, opts = {}) {
+  const config = customConfig || readConfig();
+  const bundle = readSidecarRuntimeBundle(config, opts);
+  const codeHash = computeHash(bundle);
+  const clearUnused =
+    opts && opts.trimUnusedAssets === true && config.language === 'en' ? 'delete globalThis.__agCsLocales;' : '';
+  return `(() => {
+    let status = 'ok';
+    let mounted = false;
+    const mount = () => {
+      if (mounted || !document.documentElement) return;
+      mounted = true;
+      try {
+        ${clearUnused}
+        ${bundle}
+        if (globalThis.__agCsSidecarCore && typeof globalThis.__agCsSidecarCore.mountSidecar === 'function') {
+          const baseCfg = ${JSON.stringify({ ...config, binding: SETTING_BINDING, codeHash })};
+          const ov = globalThis.__agCsOverrideConfig;
+          const nextCfg =
+            ov && typeof ov === 'object' && ov.codeHash === baseCfg.codeHash
+              ? { ...baseCfg, ...ov, binding: baseCfg.binding, codeHash: baseCfg.codeHash }
+              : baseCfg;
+          globalThis.__agCsSidecarCore.mountSidecar(nextCfg);
+        }
+      } catch (e) {
+        status = 'error: ' + (e && e.message ? e.message : String(e));
+        if (typeof console !== 'undefined' && console.error) {
+          console.error('[agy-claude-style] sidecar init error:', e);
+        }
+      }
+    };
     if (document.documentElement) {
       mount();
     } else {
@@ -934,7 +1020,7 @@ function inspectProcessInfo(pid) {
         ],
         {
           encoding: 'utf8',
-          timeout: 5000,
+          timeout: 8000,
           windowsHide: true,
           stdio: ['ignore', 'pipe', 'ignore'],
         }
@@ -1120,8 +1206,9 @@ function evaluateWatcherOwnership(rawInfo, targetDir = __dirname, targetPlatform
     if (targetPlatform === process.platform) {
       try {
         if (fs.existsSync(candidatePath) && fs.existsSync(expectedPath)) {
-          return normalizePathForCompare(fs.realpathSync(candidatePath), targetPlatform) ===
-            normalizePathForCompare(fs.realpathSync(expectedPath), targetPlatform);
+          const realpath = fs.realpathSync.native || fs.realpathSync;
+          return normalizePathForCompare(realpath(candidatePath), targetPlatform) ===
+            normalizePathForCompare(realpath(expectedPath), targetPlatform);
         }
       } catch {}
     }
@@ -2410,9 +2497,11 @@ module.exports = {
   CdpSession,
   readCss,
   readRuntimeBundle,
+  readSidecarRuntimeBundle,
   readInstalledSidecarLogos,
   computeHash,
   buildInjectExpression,
+  buildSidecarInjectExpression,
   buildConfigScriptExpression,
   buildRefreshExpression,
   REMOVE_EXPRESSION,

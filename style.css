@@ -4709,3 +4709,9 @@ html[data-ag-cs-style][data-ag-cs-compact-chat="on"] [data-testid="turn-cards-co
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
+
+/* ── 18. Off-Screen Settled Turn Virtualization (frees Blink layout/paint/raster RAM, zero visible change) ── */
+html[data-ag-cs-style] [data-testid="conversation-view"] [data-testid="autoscroll-viewport"] > div.mx-auto.w-full > div > div.relative.w-full > div.relative.flex.flex-col > div.flex.items-start:not(:last-child):not(:nth-last-child(2)) {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 240px;
+}

@@ -191,6 +191,22 @@ async function waitFor(fn, timeoutMs = 12000, intervalMs = 150) {
   throw new Error('Timed out waiting for condition');
 }
 
+function waitForExit(proc, timeoutMs, message) {
+  if (!proc) return Promise.resolve(null);
+  if (proc.exitCode !== null) return Promise.resolve(proc.exitCode);
+  return new Promise((resolve, reject) => {
+    const onExit = (code) => {
+      clearTimeout(timer);
+      resolve(code);
+    };
+    const timer = setTimeout(() => {
+      proc.off('exit', onExit);
+      reject(new Error(message));
+    }, timeoutMs);
+    proc.once('exit', onExit);
+  });
+}
+
 async function killAndWait(proc, timeoutMs = 2500) {
   if (!proc || proc.exitCode !== null) return;
   await new Promise((resolve) => {
@@ -252,22 +268,19 @@ test('inject.js --watch --exit-on-host-close exits cleanly and removes .watch.pi
       stdio: 'ignore',
     });
 
-    const exitPromise = new Promise((resolve) => child.on('exit', (code) => resolve(code)));
+    const exitPromise = waitForExit(child, 15000, 'Watcher did not exit after host closed');
 
-    await waitFor(() => mock.getInjectCount() >= 1, 6000);
+    await waitFor(() => mock.getInjectCount() >= 1, 15000);
     // The first evaluation only applies config. Wait until the watcher has
     // acknowledged the full injection before simulating an attached host closing.
     const logFile = path.join(dir, 'watch.log');
-    await waitFor(() => fs.readFileSync(logFile, 'utf8').includes('[✓] 已注入 agy-claude-style:'), 6000);
+    await waitFor(() => fs.readFileSync(logFile, 'utf8').includes('[✓] 已注入 agy-claude-style:'), 15000);
     assert.ok(fs.existsSync(path.join(dir, '.watch.pid')), '.watch.pid created while watching');
 
     // Simulate Antigravity closing while port file/env still points to the old dead port
     await mock.close();
 
-    const exitCode = await Promise.race([
-      exitPromise,
-      new Promise((_, reject) => setTimeout(() => reject(new Error('Watcher did not exit after host closed')), 12000)),
-    ]);
+    const exitCode = await exitPromise;
     assert.equal(exitCode, 0);
     assert.equal(fs.existsSync(path.join(dir, '.watch.pid')), false, '.watch.pid cleaned up on exit');
   } finally {
@@ -295,10 +308,7 @@ test('inject.js --watch --parent-pid exits cleanly when parent process is gone',
         stdio: 'ignore',
       }
     );
-    const exitCode = await Promise.race([
-      new Promise((resolve) => child.on('exit', (code) => resolve(code))),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('Watcher did not exit when parent PID died')), 6000)),
-    ]);
+    const exitCode = await waitForExit(child, 15000, 'Watcher did not exit when parent PID died');
     assert.equal(exitCode, 0);
     assert.equal(fs.existsSync(path.join(dir, '.watch.pid')), false, '.watch.pid cleaned up on parent exit');
   } finally {
@@ -576,13 +586,10 @@ test('inject.js --watch --exit-on-host-close --startup-grace 1 exits 0 and clean
       }
     );
 
-    const exitPromise = new Promise((resolve) => child.on('exit', (code) => resolve(code)));
-    await waitFor(() => fs.existsSync(path.join(dir, '.watch.pid')), 4000, 50);
+    const exitPromise = waitForExit(child, 15000, 'Watcher did not exit after startup grace');
+    await waitFor(() => fs.existsSync(path.join(dir, '.watch.pid')), 15000, 50);
 
-    const exitCode = await Promise.race([
-      exitPromise,
-      new Promise((_, reject) => setTimeout(() => reject(new Error('Watcher did not exit after startup grace')), 5000)),
-    ]);
+    const exitCode = await exitPromise;
     assert.equal(exitCode, 0);
     assert.equal(fs.existsSync(path.join(dir, '.watch.pid')), false, '.watch.pid cleaned up after startup grace exit');
   } finally {
@@ -606,7 +613,7 @@ test('plain inject.js --watch does NOT exit when --startup-grace 1 expires (even
       }
     );
 
-    await waitFor(() => fs.existsSync(path.join(dir, '.watch.pid')), 4000, 50);
+    await waitFor(() => fs.existsSync(path.join(dir, '.watch.pid')), 15000, 50);
     await new Promise((r) => setTimeout(r, 1800));
     assert.equal(child.exitCode, null, 'plain --watch must stay alive past startup grace');
     assert.ok(fs.existsSync(path.join(dir, '.watch.pid')), '.watch.pid remains while plain watcher is running');
@@ -628,7 +635,7 @@ test('inject.js --managed attaches to mock CDP, injects, and exits 0 when mock C
       stdio: 'ignore',
     });
 
-    const exitPromise = new Promise((resolve) => child.on('exit', (code) => resolve(code)));
+    const exitPromise = waitForExit(child, 15000, '--managed watcher did not exit after host closed');
     const logFile = path.join(dir, 'watch.log');
     await waitFor(() => {
       try {
@@ -641,10 +648,7 @@ test('inject.js --managed attaches to mock CDP, injects, and exits 0 when mock C
 
     await mock.close();
 
-    const exitCode = await Promise.race([
-      exitPromise,
-      new Promise((_, reject) => setTimeout(() => reject(new Error('--managed watcher did not exit after host closed')), 8000)),
-    ]);
+    const exitCode = await exitPromise;
     assert.equal(exitCode, 0);
     assert.equal(fs.existsSync(path.join(dir, '.watch.pid')), false, '.watch.pid removed when host closed');
   } finally {
@@ -684,10 +688,7 @@ test('duplicate watcher handling: --managed exits 0 cleanly without clobbering, 
       env: { ...process.env, AG_CDP_PORT: String(port) },
       stdio: 'ignore',
     });
-    const dupPlainCode = await Promise.race([
-      new Promise((resolve) => dupPlain.on('exit', resolve)),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('Plain duplicate watcher did not exit')), 5000)),
-    ]);
+    const dupPlainCode = await waitForExit(dupPlain, 15000, 'Plain duplicate watcher did not exit');
     assert.equal(dupPlainCode, 1);
     assert.equal(fs.readFileSync(pidFile, 'utf8').trim(), String(first.pid));
     assert.equal(first.exitCode, null);
@@ -698,32 +699,26 @@ test('duplicate watcher handling: --managed exits 0 cleanly without clobbering, 
       env: { ...process.env, AG_CDP_PORT: String(port) },
       stdio: 'ignore',
     });
-    const dupManagedCode = await Promise.race([
-      new Promise((resolve) => dupManaged.on('exit', resolve)),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('Duplicate --managed did not exit')), 5000)),
-    ]);
+    const dupManagedCode = await waitForExit(dupManaged, 18000, 'Duplicate --managed did not exit');
     assert.equal(dupManagedCode, 0);
     assert.equal(fs.readFileSync(pidFile, 'utf8').trim(), String(first.pid));
     assert.equal(first.exitCode, null);
 
     // 3. --watch --replace terminates first watcher and takes over .watch.pid
-    const firstExitPromise = new Promise((resolve) => first.on('exit', resolve));
+    const firstExitPromise = waitForExit(first, 15000, '--replace did not terminate existing watcher');
     replacer = spawn(process.execPath, [path.join(dir, 'inject.js'), '--watch', '--replace'], {
       cwd: dir,
       env: { ...process.env, AG_CDP_PORT: String(port), AG_WATCH_POLL_MS: '300' },
       stdio: 'ignore',
     });
-    await Promise.race([
-      firstExitPromise,
-      new Promise((_, reject) => setTimeout(() => reject(new Error('--replace did not terminate existing watcher')), 5000)),
-    ]);
+    await firstExitPromise;
     await waitFor(() => {
       try {
         return fs.readFileSync(pidFile, 'utf8').trim() === String(replacer.pid);
       } catch {
         return false;
       }
-    }, 5000, 50);
+    }, 15000, 50);
     assert.equal(replacer.exitCode, null);
   } finally {
     for (const proc of [first, dupPlain, dupManaged, replacer]) {

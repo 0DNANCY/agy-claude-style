@@ -103,6 +103,8 @@ export function normalizeChildSubagent(conv, trajSummary) {
 }
 
 const SUBAGENT_CACHE_TTL_MS = 4000;
+const SUBAGENT_CACHE_IDLE_CLEAR_MS = 60_000;
+let subagentIdleTimer = null;
 let subagentCache = { data: null, expiresAt: 0 };
 let subagentInFlight = null;
 
@@ -205,6 +207,12 @@ export async function fetchSubagentTree({ env = process.env, fetchFn = null, for
     .then((res) => {
       if (res && res.ok) {
         subagentCache = { data: res, expiresAt: Date.now() + SUBAGENT_CACHE_TTL_MS };
+        if (subagentIdleTimer) clearTimeout(subagentIdleTimer);
+        subagentIdleTimer = setTimeout(() => {
+          subagentIdleTimer = null;
+          subagentCache = { data: null, expiresAt: 0 };
+        }, SUBAGENT_CACHE_IDLE_CLEAR_MS);
+        if (typeof subagentIdleTimer.unref === 'function') subagentIdleTimer.unref();
       }
       return res;
     })

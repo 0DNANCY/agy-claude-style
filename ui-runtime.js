@@ -1445,8 +1445,8 @@
   }
 
   // ── Composer Decorations, Token HUD Inspector, Effort Slider & Smooth Caret ─
-  const MAX_ACTIVE_TRAJ_CACHE = 40;
-  const MAX_SUBAGENT_TRAJ_CACHE = 80;
+  const MAX_ACTIVE_TRAJ_CACHE = 12;
+  const MAX_SUBAGENT_TRAJ_CACHE = 24;
   const activeTrajCache = new Map(); // cascadeId -> { fetching, lastMod, lastStep, data }
   const subagentTrajCache = new Map(); // subId -> { stepCount, status, analysis }
   function pruneMapCache(map, maxEntries, protectedKeys) {
@@ -2714,7 +2714,7 @@
   }
 
   function syncCrab(activeCard, activeInfo) {
-    if (cfg.mascot !== 'crab' || !activeCard) {
+    if (cfg.mascot !== 'crab' || !activeCard || !crabAssets || !crabAssets.CRAB_SHEETS) {
       unmountCrab();
       return;
     }
@@ -5878,6 +5878,42 @@
     }
   }
 
+  // Deduplicate identical anonymous inline <style> tags (e.g. remark-github-blockquote-alert/alert.css)
+  // that Antigravity's markdown renderer mounts once per assistant message. Disabling duplicate sheets
+  // via `el.disabled = true` leaves React's DOM nodes untouched while saving Blink StyleEngine memory
+  // and preventing linear style-recalc slowdown on long conversations.
+  function dedupHostInlineStyles() {
+    const cv = document.querySelector('[data-testid="conversation-view"]');
+    if (!cv || typeof cv.querySelectorAll !== 'function') return;
+    const styles = cv.querySelectorAll('style');
+    if (styles.length < 2) return;
+    const seen = new Set();
+    for (const el of styles) {
+      if (!el || el.id) continue;
+      const txt = el.textContent || '';
+      if (txt.length < 512) continue;
+      if (!txt.includes('markdown-alert') && !txt.includes('remark-github-blockquote-alert')) continue;
+      const sig = `${txt.length}:${txt.slice(0, 96)}`;
+      if (!seen.has(sig)) {
+        seen.add(sig);
+        if (el.disabled) el.disabled = false;
+        if (el.hasAttribute('data-ag-cs-dedup-style')) el.removeAttribute('data-ag-cs-dedup-style');
+      } else {
+        if (!el.disabled) el.disabled = true;
+        if (el.getAttribute('data-ag-cs-dedup-style') !== '1') el.setAttribute('data-ag-cs-dedup-style', '1');
+      }
+    }
+  }
+
+  function restoreDedupHostInlineStyles() {
+    document.querySelectorAll('style[data-ag-cs-dedup-style]').forEach((el) => {
+      try {
+        el.disabled = false;
+        el.removeAttribute('data-ag-cs-dedup-style');
+      } catch {}
+    });
+  }
+
   function runSync() {
     if (destroyed) return;
     if (!document.getElementById('ag-claude-style-css') && typeof globalThis.__agCsEnsureStyle === 'function') {
@@ -5908,6 +5944,7 @@
     }
     ensureSettingsSection();
     if (Date.now() >= scrollingUntil) {
+      dedupHostInlineStyles();
       syncRewindViewportRecovery();
       forEachFeature('sync');
     }
@@ -6427,6 +6464,7 @@
         unmountPanelSeat,
         unmountCrab,
         restoreGreetings,
+        restoreDedupHostInlineStyles,
         () => forEachFeature('destroy'),
         () => domTranslator && typeof domTranslator.destroy === 'function' && domTranslator.destroy(),
       ]) {
@@ -6470,6 +6508,8 @@
           'data-ag-cs-perf-backdrop',
           'data-ag-cs-lang',
           'data-ag-cs-cjk',
+          'data-ag-cs-theme',
+          'data-ag-cs-crab',
         ]) {
           html.removeAttribute(attr);
         }

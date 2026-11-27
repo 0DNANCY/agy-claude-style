@@ -1795,3 +1795,35 @@ test('windows non-TUN proxy compatibility: NODE_USE_ENV_PROXY, custom launcher v
   assert.match(csSource, /EnsureNodeUseEnvProxyIfProxySet/);
   assert.match(csSource, /AGY_CLAUDE_STYLE_LAUNCH_CMD/);
 });
+
+test('memory optimization: on-demand bundle trimming, sidecar-lite bundle, and telemetry cache eviction', async () => {
+  const cdp = require('../cdp.js');
+  const fullBundle = cdp.readRuntimeBundle();
+  const trimmedBundle = cdp.readRuntimeBundle(
+    { effortSliderStyle: 'claude', mascot: 'off', language: 'en' },
+    { trimUnusedAssets: true }
+  );
+  assert.ok(fullBundle.length - trimmedBundle.length > 700_000, 'trimUnusedAssets should drop perf-assets + crab-assets + locales');
+  assert.ok(!trimmedBundle.includes('data:image/webp;base64,'), 'perf-assets WebP frames should be omitted');
+  assert.ok(!trimmedBundle.includes('root.__agCsCrabAssets ='), 'crab-assets should be omitted when mascot=off');
+  assert.ok(!trimmedBundle.includes('root.__agCsLocales ='), 'i18n-locales should be omitted when language=en');
+
+  const lwfBundle = cdp.readRuntimeBundle(
+    { effortSliderStyle: 'liangwufeng', mascot: 'crab', language: 'zh-CN' },
+    { trimUnusedAssets: true }
+  );
+  assert.ok(lwfBundle.includes('data:image/webp;base64,'));
+  assert.ok(lwfBundle.includes('root.__agCsCrabAssets ='));
+  assert.ok(lwfBundle.includes('root.__agCsLocales ='));
+
+  const sidecarExpr = cdp.buildSidecarInjectExpression({ language: 'zh-CN' }, { trimUnusedAssets: true });
+  const mainExpr = cdp.buildInjectExpression({ effortSliderStyle: 'claude', mascot: 'off', language: 'zh-CN' }, { trimUnusedAssets: true });
+  assert.ok(sidecarExpr.length < mainExpr.length / 2, 'sidecar-lite expression must exclude CSS and full UI runtime');
+  assert.ok(!sidecarExpr.includes('ag-claude-style-css'));
+  assert.ok(sidecarExpr.includes('mountSidecar'));
+  new Function(sidecarExpr);
+
+  const telemetryDb = await import('../sidecars/panel/lib/telemetry-db.mjs');
+  assert.equal(typeof telemetryDb.clearTelemetryCaches, 'function');
+  telemetryDb.clearTelemetryCaches();
+});

@@ -1,6 +1,6 @@
 {
   "command": "node",
-  "args": ["--max-old-space-size=192", "main.mjs"],
+  "args": ["--max-old-space-size=112", "main.mjs"],
   "env": {
     "NODE_USE_ENV_PROXY": "1"
   },

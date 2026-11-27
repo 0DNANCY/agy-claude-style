@@ -586,17 +586,26 @@ enum InstallerCore {
         }
 
         var preservedConfig = false
-        let payloadEntries = try fm.contentsOfDirectory(atPath: payloadDir)
-        for name in payloadEntries {
-            if name.hasPrefix(".") { continue }
-            let src = (payloadDir as NSString).appendingPathComponent(name)
-            let dest = (installDir as NSString).appendingPathComponent(name)
+        let payloadEntries = try fm.subpathsOfDirectory(atPath: payloadDir)
+        for relPath in payloadEntries {
+            let segments = relPath.split(separator: "/")
+            if segments.isEmpty || segments.contains(where: { $0.hasPrefix(".") }) { continue }
+            let src = (payloadDir as NSString).appendingPathComponent(relPath)
+            let dest = (installDir as NSString).appendingPathComponent(relPath)
             var isDir: ObjCBool = false
-            guard fm.fileExists(atPath: src, isDirectory: &isDir), !isDir.boolValue else { continue }
+            guard fm.fileExists(atPath: src, isDirectory: &isDir) else { continue }
+            if isDir.boolValue {
+                try fm.createDirectory(atPath: dest, withIntermediateDirectories: true, attributes: nil)
+                continue
+            }
 
-            if name.caseInsensitiveCompare("config.json") == .orderedSame && fm.fileExists(atPath: dest) {
+            if relPath.caseInsensitiveCompare("config.json") == .orderedSame && fm.fileExists(atPath: dest) {
                 preservedConfig = true
                 continue
+            }
+            let destParent = (dest as NSString).deletingLastPathComponent
+            if !destParent.isEmpty {
+                try fm.createDirectory(atPath: destParent, withIntermediateDirectories: true, attributes: nil)
             }
             if fm.fileExists(atPath: dest) {
                 try fm.removeItem(atPath: dest)

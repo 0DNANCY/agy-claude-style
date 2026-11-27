@@ -418,14 +418,37 @@
 
     controlTab.renderStaticChrome();
     let wasPanelVisible = app.isPanelVisible();
+    let idleReleaseTimer = null;
+    const cancelIdleRelease = () => {
+      if (idleReleaseTimer) {
+        clearTimeout(idleReleaseTimer);
+        idleReleaseTimer = null;
+      }
+    };
+    const scheduleIdleRelease = () => {
+      cancelIdleRelease();
+      idleReleaseTimer = setTimeout(() => {
+        idleReleaseTimer = null;
+        if (!app.isPanelVisible() && typeof dashboardTab.releaseIdleMemory === 'function') {
+          dashboardTab.releaseIdleMemory();
+        }
+      }, 90_000);
+    };
     if (wasPanelVisible) {
       app.refreshStatus();
+    } else {
+      scheduleIdleRelease();
     }
     const handleVisibilityRestore = () => {
       const nowVisible = app.isPanelVisible();
-      if (nowVisible && !wasPanelVisible) {
-        if (activeTab === 'dashboard') dashboardTab.onActivate();
-        else void app.refreshStatus();
+      if (nowVisible) {
+        cancelIdleRelease();
+        if (!wasPanelVisible) {
+          if (activeTab === 'dashboard') dashboardTab.onActivate();
+          else void app.refreshStatus();
+        }
+      } else if (wasPanelVisible) {
+        scheduleIdleRelease();
       }
       wasPanelVisible = nowVisible;
     };

@@ -102,17 +102,32 @@ async function injectOnce() {
 
   log(`[+] 调试端口 ${port}，发现 ${pages.length} 个窗口`);
   const cfg = cdpApi.readConfig();
-  const codeHash = cdpApi.computeHash(cdpApi.readRuntimeBundle());
+  const trimOpts = { trimUnusedAssets: true };
+  const codeHash = cdpApi.computeHash(cdpApi.readRuntimeBundle(cfg, trimOpts));
   const configExpr =
     typeof cdpApi.buildConfigScriptExpression === 'function'
       ? cdpApi.buildConfigScriptExpression(cfg, codeHash)
       : null;
-  const expr = cdpApi.buildInjectExpression(cfg);
+  const expr = cdpApi.buildInjectExpression(cfg, trimOpts);
+  const hasSidecarLite =
+    typeof cdpApi.buildSidecarInjectExpression === 'function' &&
+    typeof cdpApi.readSidecarRuntimeBundle === 'function';
+  const sidecarCodeHash = hasSidecarLite
+    ? cdpApi.computeHash(cdpApi.readSidecarRuntimeBundle(cfg, trimOpts))
+    : codeHash;
+  const sidecarConfigExpr =
+    hasSidecarLite && typeof cdpApi.buildConfigScriptExpression === 'function'
+      ? cdpApi.buildConfigScriptExpression(cfg, sidecarCodeHash)
+      : configExpr;
+  const sidecarExpr = hasSidecarLite ? cdpApi.buildSidecarInjectExpression(cfg, trimOpts) : expr;
   for (const page of pages) {
     const session = await cdpApi.CdpSession.connect(page.webSocketDebuggerUrl);
     try {
-      if (configExpr) await session.evaluate(configExpr).catch(() => null);
-      const res = await session.evaluate(expr);
+      const isSidecar = page.type === 'iframe';
+      const targetConfigExpr = isSidecar ? sidecarConfigExpr : configExpr;
+      const targetExpr = isSidecar ? sidecarExpr : expr;
+      if (targetConfigExpr) await session.evaluate(targetConfigExpr).catch(() => null);
+      const res = await session.evaluate(targetExpr);
       log(`[✓] ${shortTitle(page)} (agy-claude-style ${res.version} · 状态: ${res.status})`);
     } finally {
       session.close();
@@ -363,11 +378,27 @@ async function createWatchController({
   const effectiveExitOnCloseFlag = EXIT_ON_HOST_CLOSE_FLAG || forceExitOnHostClose;
 
   const attached = new Map();
+  const trimOpts = { trimUnusedAssets: true };
   let currentConfig = cdpApi.readConfig();
-  let currentCodeHash = cdpApi.computeHash(cdpApi.readRuntimeBundle());
+  let currentCodeHash = cdpApi.computeHash(cdpApi.readRuntimeBundle(currentConfig, trimOpts));
   let currentCssHash = cdpApi.computeHash(cdpApi.readCss());
-  let expr = cdpApi.buildInjectExpression(currentConfig);
+  let expr = cdpApi.buildInjectExpression(currentConfig, trimOpts);
   let configExpr = cdpApi.buildConfigScriptExpression(currentConfig, currentCodeHash);
+  const buildSidecarState = (cfg) => {
+    if (
+      typeof cdpApi.buildSidecarInjectExpression === 'function' &&
+      typeof cdpApi.readSidecarRuntimeBundle === 'function'
+    ) {
+      const hash = cdpApi.computeHash(cdpApi.readSidecarRuntimeBundle(cfg, trimOpts));
+      return {
+        codeHash: hash,
+        expr: cdpApi.buildSidecarInjectExpression(cfg, trimOpts),
+        configExpr: cdpApi.buildConfigScriptExpression(cfg, hash),
+      };
+    }
+    return { codeHash: currentCodeHash, expr, configExpr };
+  };
+  let sidecarState = buildSidecarState(currentConfig);
   let shuttingDown = false;
   let tickTimer = null;
   let reloadTimer = null;
@@ -457,6 +488,13 @@ async function createWatchController({
   }
 
   async function apply(entry, opts = {}) {
+    if (entry && entry.isSidecar) {
+      return applyPageScripts(entry, {
+        expr: sidecarState.expr,
+        configExpr: sidecarState.configExpr,
+        refreshOnly: opts.sidecarRefreshOnly ?? opts.refreshOnly,
+      });
+    }
     return applyPageScripts(entry, { expr, configExpr, refreshOnly: opts.refreshOnly });
   }
 
@@ -464,7 +502,7 @@ async function createWatchController({
     attached.set(page.id, null);
     try {
       const session = await cdpApi.CdpSession.connect(page.webSocketDebuggerUrl);
-      const entry = { session, bootstrapScriptId: null, configScriptId: null };
+      const entry = { session, isSidecar: page.type === 'iframe', bootstrapScriptId: null, configScriptId: null };
       attached.set(page.id, entry);
       session.onClose = () => {
         attached.delete(page.id);
@@ -752,11 +790,12 @@ async function createWatchController({
     clearTimeout(reloadTimer);
     reloadTimer = setTimeout(async () => {
       let refreshOnly = false;
+      let sidecarRefreshOnly = false;
       try {
         delete require.cache[require.resolve('./cdp')];
         cdpApi = require('./cdp');
         currentConfig = cdpApi.readConfig();
-        const nextCodeHash = cdpApi.computeHash(cdpApi.readRuntimeBundle());
+        const nextCodeHash = cdpApi.computeHash(cdpApi.readRuntimeBundle(currentConfig, trimOpts));
         const nextCssHash = cdpApi.computeHash(cdpApi.readCss());
         refreshOnly =
           Boolean(currentCodeHash) &&
@@ -765,9 +804,13 @@ async function createWatchController({
         currentCodeHash = nextCodeHash;
         currentCssHash = nextCssHash;
         if (!refreshOnly) {
-          expr = cdpApi.buildInjectExpression(currentConfig);
+          expr = cdpApi.buildInjectExpression(currentConfig, trimOpts);
         }
         configExpr = cdpApi.buildConfigScriptExpression(currentConfig, currentCodeHash);
+        const prevSidecarHash = sidecarState.codeHash;
+        const nextSidecar = buildSidecarState(currentConfig);
+        sidecarRefreshOnly = Boolean(prevSidecarHash) && nextSidecar.codeHash === prevSidecarHash;
+        sidecarState = nextSidecar;
       } catch (err) {
         emitLog(`[!] 读取文件失败: ${err.message}`);
         return;
@@ -776,7 +819,7 @@ async function createWatchController({
       for (const entry of attached.values()) {
         if (!entry) continue;
         try {
-          await apply(entry, { refreshOnly });
+          await apply(entry, { refreshOnly, sidecarRefreshOnly });
           n++;
         } catch {}
       }

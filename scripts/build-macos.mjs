@@ -257,7 +257,9 @@ function buildMacosApp({
     ];
 
     for (const entry of payloadEntries) {
-      fs.writeFileSync(path.join(payloadDir, entry.name), entry.data);
+      const destPath = path.join(payloadDir, entry.name);
+      fs.mkdirSync(path.dirname(destPath), { recursive: true });
+      fs.writeFileSync(destPath, entry.data);
     }
 
     execFileSync('codesign', ['--force', '--deep', '--sign', '-', stagedApp], { stdio: 'inherit' });
