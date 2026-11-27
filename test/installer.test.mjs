@@ -140,7 +140,7 @@ test(
   'installer.exe builds cleanly and executes native plugin install, legacy migration & cleanup, upgrade, and uninstall E2E',
   { skip: process.platform !== 'win32' ? 'Windows-only installer.exe E2E test' : false },
   async () => {
-    const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-cs-plugin-e2e-'));
+    const workDir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'agy-cs-plugin-e2e-')));
     const testSysRoot = path.join(workDir, 'sysroot');
     const installerExe = path.join(workDir, 'installer.exe');
     const expectedPluginDir = path.join(testSysRoot, '.gemini', 'config', 'plugins', 'agy-claude-style');
