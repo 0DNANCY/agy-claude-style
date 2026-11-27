@@ -421,6 +421,29 @@ final class WatcherApp {
                     if let kv = try? MiniJson.parseObject(payloadStr),
                        let key = kv["key"]?.stringValue,
                        let value = kv["value"] {
+                        if key == "__windowAction", value.stringValue == "hide" {
+                            _ = CdpHelper.hideAntigravityApp()
+                            return
+                        }
+                        if key == "__fileAction", let actionDict = value.objectValue {
+                            let reqId = actionDict["reqId"]?.stringValue ?? ""
+                            DispatchQueue.global(qos: .userInitiated).async {
+                                let reply: [String: JsonValue]
+                                do {
+                                    reply = try handleMacFileAction(actionDict)
+                                } catch {
+                                    reply = [
+                                        "ok": .bool(false),
+                                        "error": .string(error.localizedDescription)
+                                    ]
+                                }
+                                if !reqId.isEmpty {
+                                    let expr = "window.__agCsFileActionReply?.(\(MiniJson.stringifyString(reqId)), \(MiniJson.stringify(.object(reply), pretty: false)))"
+                                    _ = try? s.send("Runtime.evaluate", params: ["expression": .string(expr)], timeoutMs: 3000)
+                                }
+                            }
+                            return
+                        }
                         if CdpHelper.updateConfigSetting(baseDir: self.baseDir, manifest: manifestSnap, key: key, value: value) {
                             self.log("[⚙] 设置已保存: \(key) = \(MiniJson.stringify(value, pretty: false))")
                         }
@@ -862,6 +885,170 @@ func runWatcherMain() -> Int32 {
         replaceExisting: replaceExisting,
         waitBrieflyForLock: false
     )
+}
+
+private func stripMacLineColAnchor(_ raw: String) -> String {
+    guard let re = try? NSRegularExpression(pattern: "#(?:L?\\d+(?::C?\\d+)?(?:-L?\\d+(?::C?\\d+)?)?)$", options: [.caseInsensitive]) else {
+        return raw
+    }
+    let ns = raw as NSString
+    return re.stringByReplacingMatches(in: raw, options: [], range: NSRange(location: 0, length: ns.length), withTemplate: "")
+}
+
+private func resolveLocalMacFilePath(_ rawUri: String) throws -> String {
+    let input = rawUri.trimmingCharacters(in: .whitespacesAndNewlines)
+    if input.isEmpty { throw CdpError("Empty file URI") }
+    var fsPath = ""
+    if input.lowercased().hasPrefix("file://") {
+        var withoutAnchor = stripMacLineColAnchor(input)
+        if let qRange = withoutAnchor.range(of: "?") {
+            withoutAnchor = String(withoutAnchor[..<qRange.lowerBound])
+        }
+        let encodedHash = withoutAnchor.replacingOccurrences(of: "#", with: "%23")
+        guard let url = URL(string: encodedHash), url.isFileURL else {
+            throw CdpError("Invalid file URI")
+        }
+        let host = (url.host ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if !host.isEmpty && host != "localhost" && host != "127.0.0.1" && host != "::1" && host != "[::1]" {
+            throw CdpError("Non-local file URI host rejected: \(host)")
+        }
+        fsPath = url.path
+    } else if input.hasPrefix("/") {
+        fsPath = stripMacLineColAnchor(input)
+    } else {
+        throw CdpError("Only local file:// URIs or absolute paths are supported")
+    }
+    for sc in fsPath.unicodeScalars {
+        if sc.value < 0x20 || sc.value == 0x7f {
+            throw CdpError("Invalid control character in path")
+        }
+    }
+    return URL(fileURLWithPath: fsPath).standardizedFileURL.path
+}
+
+private func makeMacAppEntry(id: String, label: String, kind: String, icon: String) -> JsonValue {
+    return .object([
+        "id": .string(id),
+        "label": .string(label),
+        "kind": .string(kind),
+        "icon": .string(icon)
+    ])
+}
+
+private func discoverMacOpenWithApps() -> [JsonValue] {
+    var apps: [JsonValue] = [
+        makeMacAppEntry(id: "default", label: "默认应用", kind: "system", icon: "default"),
+        makeMacAppEntry(id: "finder", label: "访达", kind: "system", icon: "finder")
+    ]
+    let candidates: [(String, String, String, String, String)] = [
+        ("vscode", "VS Code", "editor", "vscode", "Visual Studio Code.app"),
+        ("cursor", "Cursor", "editor", "cursor", "Cursor.app"),
+        ("windsurf", "Windsurf", "editor", "windsurf", "Windsurf.app"),
+        ("zed", "Zed", "editor", "zed", "Zed.app"),
+        ("textedit", "文本编辑", "editor", "notepad", "TextEdit.app"),
+        ("terminal-app", "终端", "terminal", "terminal", "Terminal.app"),
+        ("iterm", "iTerm", "terminal", "terminal", "iTerm.app")
+    ]
+    let fm = FileManager.default
+    let userApps = (NSHomeDirectory() as NSString).appendingPathComponent("Applications")
+    for (id, label, kind, icon, appName) in candidates {
+        let p1 = "/Applications/\(appName)"
+        let p2 = "/System/Applications/\(appName)"
+        let p3 = "/System/Applications/Utilities/\(appName)"
+        let p4 = (userApps as NSString).appendingPathComponent(appName)
+        if fm.fileExists(atPath: p1) || fm.fileExists(atPath: p2) || fm.fileExists(atPath: p3) || fm.fileExists(atPath: p4) {
+            apps.append(makeMacAppEntry(id: id, label: label, kind: kind, icon: icon))
+        }
+    }
+    return apps
+}
+
+private func runMacExec(_ exe: String, _ args: [String], env: [String: String]? = nil) throws {
+    let proc = Process()
+    proc.executableURL = URL(fileURLWithPath: exe)
+    proc.arguments = args
+    if let env = env {
+        var next = ProcessInfo.processInfo.environment
+        for (k, v) in env { next[k] = v }
+        proc.environment = next
+    }
+    proc.standardInput = FileHandle.nullDevice
+    proc.standardOutput = FileHandle.nullDevice
+    proc.standardError = FileHandle.nullDevice
+    try proc.run()
+    proc.waitUntilExit()
+    if proc.terminationStatus != 0 {
+        throw CdpError("Command failed with exit code \(proc.terminationStatus)")
+    }
+}
+
+private func handleMacFileAction(_ action: [String: JsonValue]) throws -> [String: JsonValue] {
+    let type = action["type"]?.stringValue ?? ""
+    let uri = action["uri"]?.stringValue ?? ""
+    if type == "file.openWithList" {
+        return [
+            "ok": .bool(true),
+            "apps": .array(discoverMacOpenWithApps())
+        ]
+    }
+    let localPath = try resolveLocalMacFilePath(uri)
+    var isDirObj: ObjCBool = false
+    let exists = FileManager.default.fileExists(atPath: localPath, isDirectory: &isDirObj)
+    let isDir = isDirObj.boolValue
+    if type == "file.path" {
+        return [
+            "ok": .bool(true),
+            "path": .string(localPath),
+            "exists": .bool(exists),
+            "isDirectory": .bool(isDir)
+        ]
+    }
+    if !exists { throw CdpError("File not found: \(localPath)") }
+
+    if type == "file.open" {
+        try runMacExec("/usr/bin/open", [localPath])
+        return ["ok": .bool(true), "path": .string(localPath)]
+    }
+    if type == "file.reveal" {
+        try runMacExec("/usr/bin/open", ["-R", localPath])
+        return ["ok": .bool(true), "path": .string(localPath)]
+    }
+    if type == "file.copy" {
+        try runMacExec(
+            "/usr/bin/osascript",
+            ["-e", "set the clipboard to POSIX file (system attribute \"AGY_FILE_PATH\")"],
+            env: ["AGY_FILE_PATH": localPath]
+        )
+        return ["ok": .bool(true), "path": .string(localPath)]
+    }
+    if type == "file.openWith" {
+        let appId = action["appId"]?.stringValue ?? "default"
+        let targetDir = isDir ? localPath : (localPath as NSString).deletingLastPathComponent
+        switch appId {
+        case "default":
+            try runMacExec("/usr/bin/open", [localPath])
+        case "finder":
+            try runMacExec("/usr/bin/open", ["-R", localPath])
+        case "vscode":
+            try runMacExec("/usr/bin/open", ["-a", "Visual Studio Code", localPath])
+        case "cursor":
+            try runMacExec("/usr/bin/open", ["-a", "Cursor", localPath])
+        case "windsurf":
+            try runMacExec("/usr/bin/open", ["-a", "Windsurf", localPath])
+        case "zed":
+            try runMacExec("/usr/bin/open", ["-a", "Zed", localPath])
+        case "textedit":
+            try runMacExec("/usr/bin/open", ["-a", "TextEdit", localPath])
+        case "terminal-app":
+            try runMacExec("/usr/bin/open", ["-a", "Terminal", targetDir])
+        case "iterm":
+            try runMacExec("/usr/bin/open", ["-a", "iTerm", targetDir])
+        default:
+            throw CdpError("Unsupported app: \(appId)")
+        }
+        return ["ok": .bool(true), "path": .string(localPath), "appId": .string(appId)]
+    }
+    throw CdpError("Unknown file action type: \(type)")
 }
 
 exit(runWatcherMain())

@@ -908,6 +908,7 @@
     let lastTtft = 0;
     let activeContextUsed = 0;
     let lastContextStepIdx = -1;
+    let lastContextGmIdx = -1;
     let prevCheckpointIdx = -1;
 
     for (let i = 0; i < gmList.length; i++) {
@@ -991,6 +992,7 @@
           callCtxUsed >= activeContextUsed
         ) {
           activeContextUsed = callCtxUsed;
+          lastContextGmIdx = i;
           if (arrIndices.length > 0) {
             lastContextStepIdx = arrIndices[arrIndices.length - 1];
           }
@@ -999,14 +1001,22 @@
 
       if (!hasCallUsage) continue;
 
-      const stream = durSec(val.streamingDuration) || durSec(lastRetry?.streamingDuration);
+      const rawStream = durSec(val.streamingDuration) || durSec(lastRetry?.streamingDuration);
       const ttft = durSec(val.timeToFirstToken) || durSec(lastRetry?.timeToFirstToken);
+      const totalDur = durSec(val.totalDuration) || durSec(lastRetry?.totalDuration);
       if (ttft > 0) {
         lastTtft = ttft;
         ttftSum += ttft;
         ttftCount++;
       }
-      const speed = stream > 0.05 && out > 0 ? Math.round(out / stream) : 0;
+      const speedCalc = computeStreamingSpeed({
+        outputTokens: out,
+        streamSec: rawStream,
+        ttftSec: ttft,
+        totalSec: totalDur,
+      });
+      const stream = speedCalc.effectiveSec;
+      const speed = speedCalc.speed;
       if (speed > 0) {
         lastSpeed = speed;
         latestValidSpeed = speed;
@@ -1017,6 +1027,17 @@
       }
 
       const firstStepObj = firstArrIdx >= 0 ? steps[firstArrIdx] : null;
+      let hasToolCallsInCall = false;
+      let hasVisibleResponseInCall = false;
+      for (let ai = 0; ai < arrIndices.length; ai++) {
+        const sObj = steps[arrIndices[ai]];
+        const sVal = sObj?.step?.value;
+        if (sObj?.step?.case === 'plannerResponse' && sVal) {
+          if (typeof sVal.response === 'string' && sVal.response.trim().length > 0) hasVisibleResponseInCall = true;
+          if (Array.isArray(sVal.toolCalls) && sVal.toolCalls.length > 0) hasToolCallsInCall = true;
+        }
+      }
+      const toolOnlyCall = Boolean(hasToolCallsInCall && !hasVisibleResponseInCall);
       const callCreatedAtSec =
         tsSec(val.createdAt || val.timestamp || val.startTime || gmList[i]?.createdAt) ||
         tsSec(firstStepObj?.metadata?.createdAt) ||
@@ -1046,32 +1067,79 @@
         ttft,
         stream,
         speed,
+        speedMode: speedCalc.mode,
+        toolOnly: toolOnlyCall,
         retries: Number(val.retries || 0),
       };
       callList.push(callObj);
       if (arrIndices.length > 0) callArrIndicesMap.set(callObj, arrIndices);
     }
 
-    // Ingest AgentState.contextWindowUsage if present (live stream or remote future support)
+    // Ingest AgentState.contextWindowUsage if present (live stream or post-compaction estimate)
     const cwUsage = t.contextWindowUsage && typeof t.contextWindowUsage === 'object' ? t.contextWindowUsage : null;
+    let appliedCompactionEstimate = false;
+    let compactionLastStepArrIdx = -1;
+    let compactionGmIdx = -1;
     if (cwUsage) {
-      if (!latestCwMaxTokens && Number(cwUsage.maxContextTokens || 0) > 0) {
-        latestCwMaxTokens = Number(cwUsage.maxContextTokens);
+      const cwEstTokens = Number(cwUsage.estimatedTokensUsed || 0);
+      const cwMaxTokens = Number(cwUsage.maxContextTokens || 0);
+      const hasCwGmIdx =
+        cwUsage.generatorMetadataIndex !== undefined &&
+        cwUsage.generatorMetadataIndex !== null &&
+        Number.isFinite(Number(cwUsage.generatorMetadataIndex));
+      const cwGmIdx = hasCwGmIdx ? Number(cwUsage.generatorMetadataIndex) : -1;
+      const hasCwLastStep =
+        cwUsage.lastStepIndex !== undefined &&
+        cwUsage.lastStepIndex !== null &&
+        Number.isFinite(Number(cwUsage.lastStepIndex));
+      const cwLastStepIdx = hasCwLastStep ? Number(cwUsage.lastStepIndex) : -1;
+      const isPostCompactionActive =
+        cwUsage.estimatedAfterCompaction === true &&
+        cwEstTokens > 0 &&
+        (!hasCwGmIdx || lastContextGmIdx < 0 || lastContextGmIdx <= cwGmIdx);
+
+      if (cwMaxTokens > 0 && (!latestCwMaxTokens || isPostCompactionActive)) {
+        latestCwMaxTokens = cwMaxTokens;
       }
-      if (!latestCwUsed && Number(cwUsage.estimatedTokensUsed || 0) > 0) {
-        latestCwUsed = Number(cwUsage.estimatedTokensUsed);
-      }
-      if (!latestBreakdown && Array.isArray(cwUsage.tokenGroups) && cwUsage.tokenGroups.length > 0) {
-        latestBreakdown = { groups: cwUsage.tokenGroups };
+      if (isPostCompactionActive) {
+        activeContextUsed = cwEstTokens;
+        latestCwUsed = cwEstTokens;
+        appliedCompactionEstimate = true;
+        compactionGmIdx = cwGmIdx;
+        if (cwLastStepIdx >= 0) {
+          compactionLastStepArrIdx = resolveArrIdx(cwLastStepIdx);
+          if (compactionLastStepArrIdx >= 0) {
+            lastContextStepIdx = Math.max(lastContextStepIdx, compactionLastStepArrIdx);
+          }
+        }
+        if (Array.isArray(cwUsage.tokenGroups) && cwUsage.tokenGroups.length > 0) {
+          latestBreakdown = { groups: cwUsage.tokenGroups };
+        } else {
+          latestBreakdown = null;
+        }
+      } else {
+        if (!latestCwUsed && cwEstTokens > 0) {
+          latestCwUsed = cwEstTokens;
+        }
+        if (!latestBreakdown && Array.isArray(cwUsage.tokenGroups) && cwUsage.tokenGroups.length > 0) {
+          latestBreakdown = { groups: cwUsage.tokenGroups };
+        }
       }
     }
 
     // Capture modelInfo.maxTokens across steps (used in remote/cloud mode where contextWindowMetadata is omitted)
     let hasCheckpointStep = false;
+    let latestCheckpointArrIdx = -1;
+    let latestCheckpointStepNum = -1;
     for (let idx = 0; idx < steps.length; idx++) {
       const st = steps[idx];
       if (!st) continue;
-      if (st.step?.case === 'checkpoint') hasCheckpointStep = true;
+      if (st.step?.case === 'checkpoint') {
+        hasCheckpointStep = true;
+        latestCheckpointArrIdx = idx;
+        const cpNum = Number(st.step?.value?.checkpointIndex ?? -1);
+        if (cpNum >= 0) latestCheckpointStepNum = cpNum;
+      }
       const md = st.metadata || st.step?.value?.metadata;
       if (Number(md?.modelInfo?.maxTokens || 0) > 0) {
         latestModelInfoMaxTokens = Number(md.modelInfo.maxTokens);
@@ -1083,9 +1151,12 @@
       for (let idx = 0; idx < steps.length; idx++) {
         const st = steps[idx];
         if (!st) continue;
+        const canUpdateCtx = !appliedCompactionEstimate || (compactionLastStepArrIdx >= 0 && idx > compactionLastStepArrIdx);
         if (st.step?.case === 'checkpoint') {
-          activeContextUsed = 0;
-          lastContextStepIdx = idx;
+          if (canUpdateCtx) {
+            activeContextUsed = 0;
+            lastContextStepIdx = idx;
+          }
           continue;
         }
         const md = st.metadata || st.step?.value?.metadata || {};
@@ -1116,16 +1187,27 @@
           createdSec > 0 && viewableSec > createdSec && viewableSec - createdSec < 600
             ? viewableSec - createdSec
             : 0;
-        const stream =
+        const rawStream =
           viewableSec > 0 && finSec > viewableSec && finSec - viewableSec < 3600
             ? finSec - viewableSec
+            : 0;
+        const totalDur =
+          createdSec > 0 && finSec > createdSec && finSec - createdSec < 3600
+            ? finSec - createdSec
             : 0;
         if (ttft > 0) {
           lastTtft = ttft;
           ttftSum += ttft;
           ttftCount++;
         }
-        const speed = stream > 0.05 && out > 0 ? Math.round(out / stream) : 0;
+        const speedCalc = computeStreamingSpeed({
+          outputTokens: out,
+          streamSec: rawStream,
+          ttftSec: ttft,
+          totalSec: totalDur,
+        });
+        const stream = speedCalc.effectiveSec;
+        const speed = speedCalc.speed;
         if (speed > 0) {
           lastSpeed = speed;
           latestValidSpeed = speed;
@@ -1137,10 +1219,15 @@
 
         const callCacheHitPct = callPromptTokens > 0 ? (cr / callPromptTokens) * 100 : 0;
         const callCtxUsed = callPromptTokens > 0 ? callPromptTokens + resp : 0;
-        if (callCtxUsed > 0) {
+        if (callCtxUsed > 0 && canUpdateCtx) {
           activeContextUsed = callCtxUsed;
           lastContextStepIdx = idx;
         }
+
+        const sVal = st?.step?.value;
+        const hasVisibleResp = st?.step?.case === 'plannerResponse' && typeof sVal?.response === 'string' && sVal.response.trim().length > 0;
+        const hasToolCalls = st?.step?.case === 'plannerResponse' && Array.isArray(sVal?.toolCalls) && sVal.toolCalls.length > 0;
+        const toolOnlyCall = Boolean(hasToolCalls && !hasVisibleResp);
 
         const realIdx = stepRealIndices[idx];
         const gmEntry = gmByStepIdx.get(realIdx);
@@ -1164,6 +1251,8 @@
           ttft,
           stream,
           speed,
+          speedMode: speedCalc.mode,
+          toolOnly: toolOnlyCall,
           retries: Array.isArray(md.retryInfos) ? md.retryInfos.length : 0,
         };
         callList.push(callObj);
@@ -1191,13 +1280,22 @@
             return arr && arr.length ? Math.max(mx, ...arr) : mx;
           }, -1)
         : steps.length - 1;
-    let lastMeasuredStepIdx = lastCoveredArrIdx;
+    let lastMeasuredStepIdx = appliedCompactionEstimate
+      ? Math.max(
+          lastCoveredArrIdx,
+          latestCheckpointArrIdx,
+          compactionLastStepArrIdx >= 0 ? compactionLastStepArrIdx : steps.length - 1
+        )
+      : lastCoveredArrIdx;
 
-    for (let idx = lastCoveredArrIdx + 1; idx < steps.length; idx++) {
+    for (let idx = lastMeasuredStepIdx + 1; idx < steps.length; idx++) {
       const st = steps[idx];
       if (!st) continue;
       if (st.step?.case === 'checkpoint') {
         activeContextUsed = 0;
+        latestCwUsed = 0;
+        latestBreakdown = null;
+        appliedCompactionEstimate = false;
         lastMeasuredStepIdx = idx;
         continue;
       }
@@ -1211,6 +1309,7 @@
       const sResp = Number(mu.responseOutputTokens || Math.max(0, sOut - sThink) || 0);
       if (sInp + sCr + sCw > 0) {
         activeContextUsed = sInp + sCr + sCw + sResp;
+        appliedCompactionEstimate = false;
         lastMeasuredStepIdx = idx;
       }
     }
@@ -1373,13 +1472,17 @@
         }
       }
     }
-    if (contextUsed > sysTokens + toolsTokens + msgTokens && steps.length - 1 > maxBreakdownArrIdx) {
+    const postBreakdownStartIdx = Math.max(
+      maxBreakdownArrIdx + 1,
+      appliedCompactionEstimate && !latestBreakdown ? lastMeasuredStepIdx + 1 : 0
+    );
+    if (contextUsed > sysTokens + toolsTokens + msgTokens && steps.length - 1 >= postBreakdownStartIdx) {
       const extraTokens = contextUsed - (sysTokens + toolsTokens + msgTokens);
       let postChatWeight = 0;
       let postUserWeight = 0;
       let postToolWeight = 0;
       const postToolSteps = [];
-      for (let idx = maxBreakdownArrIdx + 1; idx < steps.length; idx++) {
+      for (let idx = postBreakdownStartIdx; idx < steps.length; idx++) {
         const st = steps[idx];
         if (!st) continue;
         const sc = st.step?.case || '';
@@ -1449,8 +1552,37 @@
     const cacheHitPct = totalPrompt > 0 ? (sumCacheRead / totalPrompt) * 100 : 0;
     const overallThinkPct = sumOutput > 0 ? (sumThinking / sumOutput) * 100 : 0;
     const totalTokens = sumInput + sumCacheRead + sumCacheWrite + sumOutput;
+
+    // Rate-quality classification (adapted from agy-context-dashboard rate-quality.mjs):
+    // quarantine short-window / short-tool-window / short-burst / MAD short-outlier samples
+    // from weighted decode & E2E speed without capping sustained high-rate streams (>= 1s).
+    const rateQuality = classifyCallRates(callList);
+    const ttftValues = callList.map((c) => c.ttft).filter((v) => typeof v === 'number' && v > 0 && Number.isFinite(v));
+    const ttftMedian = medianNumber(ttftValues) || 0;
     const avgTtft = ttftCount > 0 ? ttftSum / ttftCount : 0;
-    const avgSpeed = timedStreamSum > 0.05 && timedOutputSum > 0 ? Math.round(timedOutputSum / timedStreamSum) : 0;
+    const avgSpeed =
+      rateQuality.qualifiedStreamSec > 0 && rateQuality.qualifiedOutputTokens > 0
+        ? Math.round(rateQuality.qualifiedOutputTokens / rateQuality.qualifiedStreamSec)
+        : rateQuality.quarantinedCalls === 0 && timedStreamSum > 0.05 && timedOutputSum > 0
+        ? Math.round(timedOutputSum / timedStreamSum)
+        : 0;
+    const e2eSpeed =
+      rateQuality.e2eDurationSec > 0 && rateQuality.e2eOutputTokens > 0
+        ? Math.round(rateQuality.e2eOutputTokens / rateQuality.e2eDurationSec)
+        : 0;
+    if (rateQuality.qualifiedCalls > 0) {
+      peakSpeed = rateQuality.peakSpeed;
+      sustainedPeakSpeed = rateQuality.peakSpeed;
+      latestValidSpeed = rateQuality.latestQualifiedSpeed;
+    } else if (rateQuality.quarantinedCalls > 0) {
+      peakSpeed = 0;
+      sustainedPeakSpeed = 0;
+      latestValidSpeed = 0;
+    }
+    const lastRateStatus = lastCall?.rateStatus || 'missing';
+    if (lastCall && lastCall.rateStatus && lastCall.rateStatus !== 'ok') {
+      lastSpeed = 0;
+    }
     if (!sustainedPeakSpeed) sustainedPeakSpeed = peakSpeed;
 
     // Live streaming speed & token estimate when the latest plannerResponse step is currently generating
@@ -1483,10 +1615,15 @@
       break;
     }
 
-    const displaySpeed = liveSpeed > 0 ? liveSpeed : lastCall?.speed > 0 ? lastCall.speed : latestValidSpeed;
+    const displaySpeed =
+      liveSpeed > 0
+        ? liveSpeed
+        : lastCall?.rateStatus === 'ok' && lastCall.speed > 0
+        ? lastCall.speed
+        : latestValidSpeed;
     const isLiveSpeed = liveSpeed > 0;
 
-    const checkpointIdx = Number(latestChatStart?.checkpointIndex ?? -1);
+    const checkpointIdx = Math.max(Number(latestChatStart?.checkpointIndex ?? -1), latestCheckpointStepNum);
     const compactedSteps = Array.isArray(latestChatStart?.stepsCoveredByCheckpoint)
       ? latestChatStart.stepsCoveredByCheckpoint.length
       : 0;
@@ -1871,7 +2008,9 @@
       lastSpeed,
       lastTtft,
       avgTtft,
+      ttftMedian,
       avgSpeed,
+      e2eSpeed,
       latestValidSpeed,
       liveSpeed,
       liveTokens,
@@ -1879,9 +2018,15 @@
       isLiveSpeed,
       peakSpeed,
       sustainedPeakSpeed,
+      lastRateStatus,
+      qualifiedSpeedCalls: rateQuality.qualifiedCalls,
+      quarantinedSpeedCalls: rateQuality.quarantinedCalls,
+      rateVersion: 4,
       checkpointIdx,
       compactedSteps,
       truncationReason,
+      contextEstimatedAfterCompaction: appliedCompactionEstimate,
+      compactionGmIdx: appliedCompactionEstimate ? compactionGmIdx : -1,
       budgets: latestBudgets || {
         customizationTokenBudget: known.customizationTokenBudget || 20000,
         rulesTokenBudget: known.rulesTokenBudget || 20000,
@@ -1987,39 +2132,63 @@
     return convoData;
   }
 
+  function extractQuotaBucketPct(b) {
+    if (!b || typeof b !== 'object') return null;
+    const flat = b.remainingFraction ?? b.remaining_fraction;
+    if (flat !== undefined && flat !== null && flat !== '' && Number.isFinite(Number(flat))) {
+      return Math.max(0, Math.min(100, Number(flat) * 100));
+    }
+    if (b.remaining?.case === 'remainingFraction') {
+      const val = b.remaining.value;
+      if (val !== undefined && val !== null && val !== '' && Number.isFinite(Number(val))) {
+        return Math.max(0, Math.min(100, Number(val) * 100));
+      }
+      return null;
+    }
+    const nested = b.remaining?.remainingFraction ?? b.remaining?.remaining_fraction;
+    if (nested !== undefined && nested !== null && nested !== '' && Number.isFinite(Number(nested))) {
+      return Math.max(0, Math.min(100, Number(nested) * 100));
+    }
+    if (typeof b.remainingPct === 'number' && Number.isFinite(b.remainingPct)) {
+      return Math.max(0, Math.min(100, b.remainingPct));
+    }
+    return null;
+  }
+
   function normalizeQuotaData(quotaRes, userStatusOrState, storeCredits, langOrZh) {
     const lang = langOrZh === undefined ? 'zh-CN' : resolveLang(langOrZh);
     const userStatus = userStatusOrState?.userStatus ? userStatusOrState.userStatus : userStatusOrState;
-    const rawGroups = quotaRes?.response?.groups || quotaRes?.groups || [];
+    const root = quotaRes?.response && typeof quotaRes.response === 'object' ? quotaRes.response : quotaRes;
+    const rawGroups = Array.isArray(root?.groups) ? root.groups : [];
+    const mapBucket = (b) => {
+      const id = String(b?.bucketId || b?.bucket_id || b?.id || '');
+      const rawWin = String(b?.window || '').toLowerCase();
+      const inferredWin = rawWin || (/5h/i.test(id) ? '5h' : /weekly/i.test(id) ? 'weekly' : '');
+      const resetSeconds = Math.floor(tsSec(b?.resetTime ?? b?.reset_time ?? b?.remaining?.resetTime));
+      return {
+        id,
+        name: String(b?.displayName || b?.display_name || ''),
+        window: inferredWin,
+        disabled: Boolean(b?.disabled),
+        remainingPct: extractQuotaBucketPct(b),
+        resetSeconds,
+        resetIn: resetSeconds > 0 ? fmtResetTime(resetSeconds, lang) : '',
+        desc: String(b?.description || ''),
+      };
+    };
+
     const groups = rawGroups.map((g) => {
       const name = String(g.displayName || g.name || '');
-      const buckets = (g.buckets || []).map((b) => {
-        const resetSeconds = Math.floor(tsSec(b.resetTime));
-        return {
-          id: String(b.bucketId || ''),
-          name: String(b.displayName || ''),
-          window: String(b.window || ''),
-          disabled: Boolean(b.disabled),
-          remainingPct:
-            b.remaining?.case === 'remainingFraction'
-              ? Math.max(0, Math.min(100, Number(b.remaining.value || 0) * 100))
-              : typeof b.remainingPct === 'number'
-              ? b.remainingPct
-              : null,
-          resetSeconds,
-          resetIn: resetSeconds > 0 ? fmtResetTime(resetSeconds, lang) : '',
-          desc: String(b.description || ''),
-        };
-      });
+      const buckets = (g.buckets || []).map(mapBucket);
       const b5h = buckets.find((b) => b.window === '5h') || null;
-      const bWeek = buckets.find((b) => b.window === 'weekly') || buckets[0] || null;
+      const bWeek = buckets.find((b) => b.window === 'weekly') || (!b5h ? buckets[0] || null : null);
       const enabledPcts = buckets.filter((b) => !b.disabled && typeof b.remainingPct === 'number').map((b) => b.remainingPct);
       const anyPcts = buckets.filter((b) => typeof b.remainingPct === 'number').map((b) => b.remainingPct);
       const effectiveRemainingPct = enabledPcts.length
         ? Math.min(...enabledPcts)
         : anyPcts.length
         ? Math.min(...anyPcts)
-        : 0;
+        : null;
       return {
         name,
         groupName: name,
@@ -2030,6 +2199,39 @@
         effectiveRemainingPct,
       };
     });
+
+    // Support legacy flat `buckets` array without conflating Argon weekly with regular Gemini weekly.
+    if (groups.length === 0 && Array.isArray(root?.buckets) && root.buckets.length > 0) {
+      const families = new Map();
+      for (const rawB of root.buckets) {
+        const b = mapBucket(rawB);
+        if (b.remainingPct === null) continue;
+        const lowerId = b.id.toLowerCase();
+        const family = lowerId.includes('argon')
+          ? 'Gemini 4 Argon'
+          : lowerId.startsWith('3p') || /claude|gpt/i.test(lowerId)
+          ? 'Claude / 3p'
+          : lowerId.startsWith('gemini')
+          ? 'Gemini'
+          : b.name || b.id || 'Quota';
+        if (!families.has(family)) families.set(family, []);
+        families.get(family).push(b);
+      }
+      for (const [family, buckets] of families.entries()) {
+        const b5h = buckets.find((b) => b.window === '5h') || null;
+        const bWeek = buckets.find((b) => b.window === 'weekly') || (!b5h ? buckets[0] || null : null);
+        const pcts = buckets.filter((b) => !b.disabled && typeof b.remainingPct === 'number').map((b) => b.remainingPct);
+        groups.push({
+          name: family,
+          groupName: family,
+          desc: '',
+          buckets,
+          b5h,
+          bWeek,
+          effectiveRemainingPct: pcts.length ? Math.min(...pcts) : null,
+        });
+      }
+    }
 
     const modelConfigs = (userStatus?.cascadeModelConfigData?.clientModelConfigs || []).map((m) => ({
       label: String(m.label || ''),
@@ -2142,7 +2344,7 @@
 
     if (preferred && preferred.buckets.length > 0) {
       const b5h = preferred.buckets.find((b) => b.window === '5h') || null;
-      const bWeek = preferred.buckets.find((b) => b.window === 'weekly') || preferred.buckets[0] || null;
+      const bWeek = preferred.buckets.find((b) => b.window === 'weekly') || preferred.buckets.find((b) => b !== b5h) || null;
       const enabledPcts = preferred.buckets
         .filter((b) => !b.disabled && typeof b.remainingPct === 'number')
         .map((b) => b.remainingPct);
@@ -2187,11 +2389,201 @@
   }
 
   // Compute remaining-usage telemetry for the bottom-right circular ring (.ag-cs-context-ring).
+  function medianNumber(values) {
+    if (!Array.isArray(values) || values.length === 0) return null;
+    const sorted = [...values].sort((a, b) => a - b);
+    const mid = Math.floor(sorted.length / 2);
+    return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+  }
+
+  /**
+   * Quarantine unreliable/buffered/short-window TPS samples while never capping sustained (>= 1s) speed.
+   * Adapted from agy-context-dashboard's rate-quality.mjs (MIT).
+   */
+  function classifyCallRates(calls = []) {
+    const profiles = new Map();
+    for (const c of calls) {
+      if (!c || c.speedMode === 'buffered') continue;
+      const dur = Number(c.stream) || 0;
+      const out = Number(c.outputTokens) || 0;
+      const spd = Number(c.speed) || 0;
+      if (!(dur >= 1) || !(out >= 30) || !(spd > 0)) continue;
+      const key = String(c.responseModel || c.modelDisplayName || 'default').toLowerCase();
+      if (!profiles.has(key)) profiles.set(key, []);
+      profiles.get(key).push(spd);
+    }
+    const limits = new Map();
+    for (const [key, rates] of profiles.entries()) {
+      if (rates.length < 5) continue;
+      const center = medianNumber(rates);
+      const mad = medianNumber(rates.map((r) => Math.abs(r - center)));
+      limits.set(key, Math.max(center * 8, center + 12 * mad));
+    }
+
+    let qualifiedCalls = 0;
+    let quarantinedCalls = 0;
+    let qualifiedOutputTokens = 0;
+    let qualifiedStreamSec = 0;
+    let e2eOutputTokens = 0;
+    let e2eDurationSec = 0;
+    let peakSpeed = 0;
+    let latestQualifiedSpeed = 0;
+
+    for (const c of calls) {
+      if (!c) continue;
+      const dur = Number(c.stream) || 0;
+      const out = Number(c.outputTokens) || 0;
+      const ttft = Number(c.ttft) || 0;
+      const spd = Number(c.speed) || 0;
+      const reasons = [];
+
+      if (dur > 0 && out > 0 && !Number.isFinite(spd)) reasons.push('nonfinite-rate');
+      if (dur > 0 && dur < 1 && out > 0 && c.toolOnly && ttft >= 2 && ttft / dur >= 20) {
+        reasons.push('short-tool-window');
+      }
+      if (dur > 0 && dur < 0.3 && out >= 30 && !c.toolOnly && ttft >= 2 && ttft / dur >= 15) {
+        reasons.push('short-burst');
+      }
+      const key = String(c.responseModel || c.modelDisplayName || 'default').toLowerCase();
+      const limit = limits.get(key);
+      const outlier = limit !== undefined && spd > limit;
+      if (outlier && dur > 0 && dur < 1 && !reasons.includes('short-tool-window') && !reasons.includes('nonfinite-rate')) {
+        reasons.push('short-outlier');
+      }
+      if (dur > 0 && out > 0 && (dur < 1 || out < 30)) {
+        reasons.push('short-window');
+      }
+
+      let status = 'missing';
+      if (c.speedMode === 'buffered') {
+        if (!reasons.includes('buffered')) reasons.push('buffered');
+        status = 'buffered';
+      } else if (reasons.length === 0) {
+        status = out > 0 && dur > 0 && spd > 0 ? 'ok' : 'missing';
+      } else if (reasons.includes('nonfinite-rate')) {
+        status = 'unreliable';
+      } else if (reasons.includes('short-tool-window') || reasons.includes('short-burst') || reasons.includes('short-outlier')) {
+        status = 'buffered';
+      } else {
+        status = 'short';
+      }
+
+      c.rateStatus = status;
+      c.rateReasons = reasons;
+      c.rateOutlier = outlier;
+
+      if (status === 'ok') {
+        qualifiedCalls += 1;
+        qualifiedOutputTokens += out;
+        qualifiedStreamSec += dur;
+        latestQualifiedSpeed = spd;
+        if (spd > peakSpeed) peakSpeed = spd;
+        if (ttft > 0) {
+          e2eOutputTokens += out;
+          e2eDurationSec += ttft + dur;
+        }
+      } else if (status !== 'missing') {
+        quarantinedCalls += 1;
+      }
+    }
+
+    return {
+      qualifiedCalls,
+      quarantinedCalls,
+      qualifiedOutputTokens,
+      qualifiedStreamSec,
+      e2eOutputTokens,
+      e2eDurationSec,
+      peakSpeed,
+      latestQualifiedSpeed,
+    };
+  }
+
+  /**
+   * Compute genuine streaming TPS by excluding TTFT whenever possible, with buffered fallback.
+   */
+  function computeStreamingSpeed({ outputTokens = 0, streamSec = 0, ttftSec = 0, totalSec = 0 } = {}) {
+    const out = Number(outputTokens) || 0;
+    const s = Number(streamSec) || 0;
+    const t = Number(ttftSec) || 0;
+    const tot = Number(totalSec) || 0;
+    if (out <= 0) return { speed: 0, effectiveSec: 0, mode: 'none' };
+
+    // 1. Genuine streaming duration provided — guard against hosts that report totalSec as streamSec
+    if (s > 0.05) {
+      if (t > 0 && tot > 0 && Math.abs(s - tot) < 0.05 && tot - t > 0.05) {
+        const net = tot - t;
+        return { speed: Math.round(out / net), effectiveSec: net, mode: 'stream' };
+      }
+      return { speed: Math.round(out / s), effectiveSec: s, mode: 'stream' };
+    }
+    // 2. Derived streaming duration = totalSec - ttftSec (excludes TTFT wait)
+    if (tot > 0.05 && t > 0 && tot - t > 0.05) {
+      const net = tot - t;
+      return { speed: Math.round(out / net), effectiveSec: net, mode: 'stream' };
+    }
+    // 3. Buffered fallback when no separate streaming interval is available
+    if (tot > 0.05) {
+      return { speed: Math.round(out / tot), effectiveSec: tot, mode: 'buffered' };
+    }
+    return { speed: 0, effectiveSec: 0, mode: 'none' };
+  }
+
+  function resolveQuotaCycle(quotaInfo, quotaCycleMode = 'auto') {
+    if (!quotaInfo) return { pct: null, cycle: quotaCycleMode || 'auto' };
+    const mode = quotaCycleMode === 'weekly' || quotaCycleMode === '5h' ? quotaCycleMode : 'auto';
+    const b5h = quotaInfo.b5h && !quotaInfo.b5h.disabled && typeof quotaInfo.b5h.remainingPct === 'number'
+      ? quotaInfo.b5h
+      : null;
+    const bWeek = quotaInfo.bWeek && !quotaInfo.bWeek.disabled && typeof quotaInfo.bWeek.remainingPct === 'number'
+      ? quotaInfo.bWeek
+      : null;
+    const fallback = typeof quotaInfo.effectiveRemainingPct === 'number' ? quotaInfo.effectiveRemainingPct : null;
+
+    if (mode === 'weekly') {
+      const raw = bWeek ? bWeek.remainingPct : fallback;
+      return {
+        pct: raw === null ? null : Math.max(0, Math.min(100, raw)),
+        cycle: bWeek ? 'weekly' : 'auto',
+      };
+    }
+    if (mode === '5h') {
+      const raw = b5h ? b5h.remainingPct : bWeek ? bWeek.remainingPct : fallback;
+      return {
+        pct: raw === null ? null : Math.max(0, Math.min(100, raw)),
+        cycle: b5h ? '5h' : bWeek ? 'weekly' : 'auto',
+      };
+    }
+    // auto: lowest remaining across active windows
+    let raw = fallback;
+    let cycle = 'auto';
+    if (b5h && bWeek) {
+      if (b5h.remainingPct <= bWeek.remainingPct) {
+        raw = b5h.remainingPct;
+        cycle = '5h';
+      } else {
+        raw = bWeek.remainingPct;
+        cycle = 'weekly';
+      }
+    } else if (b5h) {
+      raw = b5h.remainingPct;
+      cycle = '5h';
+    } else if (bWeek) {
+      raw = bWeek.remainingPct;
+      cycle = 'weekly';
+    }
+    return {
+      pct: raw === null ? null : Math.max(0, Math.min(100, raw)),
+      cycle,
+    };
+  }
+
   function computeRingTelemetry({
     activeInfo = null,
     quotaInfo = null,
     draftTokens = 0,
     ringMode = 'context',
+    quotaCycleMode = 'auto',
     knownLimits = null,
   } = {}) {
     const maxTokens =
@@ -2206,17 +2598,25 @@
     const contextRemainingPct =
       maxTokens > 0 ? Math.max(0, Math.min(100, (remainingTokens / maxTokens) * 100)) : 100;
 
-    const quotaRemainingPct =
-      quotaInfo && typeof quotaInfo.effectiveRemainingPct === 'number'
-        ? Math.max(0, Math.min(100, quotaInfo.effectiveRemainingPct))
-        : null;
+    const resolvedQuota = resolveQuotaCycle(quotaInfo, quotaCycleMode);
+    const quotaRemainingPct = resolvedQuota.pct;
+    const quotaLevel =
+      quotaRemainingPct === null
+        ? 'ok'
+        : quotaRemainingPct <= 10
+        ? 'danger'
+        : quotaRemainingPct <= 30
+        ? 'warn'
+        : 'ok';
+    const quotaColor =
+      quotaLevel === 'danger' ? '#dc3c3d' : quotaLevel === 'warn' ? '#fbb315' : '#257de0';
 
     let mode = ringMode === 'quota' ? 'quota' : 'context';
     let pct = contextRemainingPct;
     let level;
     if (mode === 'quota' && quotaRemainingPct !== null) {
       pct = quotaRemainingPct;
-      level = pct <= 10 ? 'danger' : pct <= 30 ? 'warn' : 'ok';
+      level = quotaLevel;
     } else {
       mode = 'context';
       pct = contextRemainingPct;
@@ -2240,6 +2640,10 @@
       contextUsedPct,
       contextRemainingPct,
       quotaRemainingPct,
+      quotaCycleMode: quotaCycleMode || 'auto',
+      quotaCycleUsed: resolvedQuota.cycle,
+      quotaLevel,
+      quotaColor,
     };
   }
 
@@ -2350,6 +2754,10 @@
     attachSubagentSummaries,
     normalizeQuotaData,
     getActiveQuotaInfo,
+    computeStreamingSpeed,
+    classifyCallRates,
+    medianNumber,
+    resolveQuotaCycle,
     computeRingTelemetry,
     buildTelemetryReport,
   };

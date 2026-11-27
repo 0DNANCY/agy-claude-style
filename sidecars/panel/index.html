@@ -1,0 +1,454 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Claude Style</title>
+  <script src="/preload.js"></script>
+  <link rel="stylesheet" href="/ui/panel.css" />
+</head>
+<body>
+  <div class="tab-bar">
+    <button type="button" class="tab-btn is-active" data-tab="control" id="tab-control">⚙ 控制室</button>
+    <button type="button" class="tab-btn" data-tab="dashboard" id="tab-dashboard">📊 用量看板</button>
+    <button type="button" class="tab-btn" data-tab="remote" id="tab-remote">🌐 代理与远程</button>
+  </div>
+
+  <!-- TAB 1: Control Room -->
+  <div class="tab-pane is-active" id="pane-control">
+    <div class="header-card">
+      <div class="header-top">
+        <div class="brand">
+          <div class="brand-badge">
+            <svg viewBox="0 0 64 64" aria-hidden="true">
+              <rect x="3" y="3" width="58" height="58" rx="14" fill="#1B1918" stroke="#D97757" stroke-width="3"/>
+              <g fill="#E07A58">
+                <rect x="14" y="13" width="6" height="6"/><rect x="44" y="13" width="6" height="6"/>
+                <rect x="11" y="19" width="9" height="4"/><rect x="44" y="19" width="9" height="4"/>
+                <rect x="14" y="23" width="36" height="17" rx="2"/><rect x="10" y="34" width="44" height="6" rx="1"/>
+                <rect x="14" y="40" width="6" height="7"/><rect x="23" y="40" width="5" height="6"/>
+                <rect x="36" y="40" width="5" height="6"/><rect x="44" y="40" width="6" height="7"/>
+              </g>
+              <g fill="#1B1918"><rect x="22" y="27" width="4" height="6"/><rect x="38" y="27" width="4" height="6"/></g>
+            </svg>
+          </div>
+          <div class="brand-info">
+            <div class="brand-title" id="brand-title">Claude Style</div>
+            <div class="brand-sub" id="meta-line">加载中…</div>
+          </div>
+        </div>
+        <div class="status-pill" id="status-pill">
+          <span class="dot" id="status-dot"></span>
+          <span id="status-text">检查中</span>
+        </div>
+      </div>
+      <div class="companion-strip" id="header-companions" style="display:none;"></div>
+      <div class="actions">
+        <button type="button" class="primary" id="btn-reinject">✦ 立即应用并刷新</button>
+        <div class="actions-secondary">
+          <button type="button" id="btn-remove">还原原生</button>
+          <button type="button" id="btn-reset">恢复默认</button>
+          <button type="button" id="btn-refresh">刷新状态</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="banner" id="studio-conflict-banner">
+      <div class="banner-title" id="studio-conflict-title">检测到与 agy-claude-studio 插件冲突</div>
+      <div class="banner-desc" id="studio-conflict-desc">同时启用 agy-claude-studio 会移除本插件样式表导致任务进度、配额环与扩展栏排版错乱，请在插件管理中停用或卸载 agy-claude-studio。</div>
+    </div>
+
+    <div class="banner" id="cdp-banner">
+      <div class="banner-title" id="cdp-banner-title">未检测到 Antigravity 调试端口</div>
+      <div class="banner-desc" id="cdp-banner-desc">Antigravity 2.33+ 默认关闭 CDP 调试端口，点击下方按钮可带参安全重启。</div>
+      <button type="button" class="primary" id="btn-relaunch">一键带调试端口重启</button>
+    </div>
+
+    <div class="banner is-proxy" id="proxy-cold-banner">
+      <div class="banner-title" id="proxy-cold-title">独立代理本次冷启动未生效</div>
+      <div class="banner-desc" id="proxy-cold-desc">检测到已启用独立代理，但当前 Antigravity 进程未携带代理参数，建议一键带代理重启。</div>
+      <button type="button" class="primary" id="btn-proxy-cold-relaunch">✦ 一键带代理与 CDP 重启</button>
+    </div>
+
+    <div class="ctrl-toolbar">
+      <input type="text" id="ctrl-search" placeholder="搜索设置项…" />
+      <button type="button" class="ctrl-fold-btn" id="btn-ctrl-fold" title="全部展开或收起分组">展开全部</button>
+    </div>
+
+    <div id="sections"></div>
+  </div>
+
+  <!-- TAB 2: Usage & Request Records Dashboard -->
+  <div class="tab-pane" id="pane-dashboard">
+    <div class="dash-topbar">
+      <select id="dash-range">
+        <option value="today">今天</option>
+        <option value="24h">24 小时</option>
+        <option value="7d" selected>近 7 天</option>
+        <option value="30d">近 30 天</option>
+        <option value="all">全部时间</option>
+      </select>
+      <div class="dash-top-actions">
+        <span class="dash-updated" id="dash-updated"></span>
+        <button type="button" class="icon-mini-btn btn-pricing-mini" id="btn-dash-pricing" title="在线同步官方 API 参考单价">$ 单价</button>
+        <button type="button" class="auto-pill is-on" id="btn-dash-auto" title="切换 5 秒自动刷新"></button>
+        <button type="button" class="icon-mini-btn" id="btn-dash-refresh" title="立即刷新并同步 SSH">↻</button>
+      </div>
+    </div>
+
+    <div class="kpi-grid">
+      <div class="kpi-card">
+        <div class="kpi-label">请求次数</div>
+        <div class="kpi-val" id="kpi-reqs">-</div>
+        <div class="kpi-sub" id="kpi-errs"></div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">总 Token</div>
+        <div class="kpi-val" id="kpi-tokens">-</div>
+        <div class="kpi-sub" id="kpi-cost">参考费用 $-</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">缓存命中率</div>
+        <div class="kpi-val" id="kpi-cache">-</div>
+        <div class="kpi-sub" id="kpi-anomaly"></div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">数据源</div>
+        <div class="kpi-val" id="kpi-src" style="font-size:13px;">本机</div>
+        <div class="kpi-sub" id="kpi-latency">平均首字 -</div>
+      </div>
+      <div class="kpi-card kpi-wide" id="kpi-weekly-card">
+        <div class="kpi-wide-head">
+          <div class="kpi-label" id="kpi-weekly-label">当日消耗周额度</div>
+          <div class="kpi-sub" id="kpi-weekly-sub">采样统计中…</div>
+        </div>
+        <div class="kpi-weekly-pools" id="kpi-weekly-pools">
+          <span class="kpi-val" style="font-size:14px;">-</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="section" id="sec-heatmap">
+      <button type="button" class="section-head" id="heat-head">
+        <span class="section-title">🟩 用量热力图</span>
+        <span class="section-badge" id="heat-summary">自动定位今日</span>
+      </button>
+      <div class="section-body">
+        <div class="heat-toolbar">
+          <div class="heat-seg" id="heat-metric-seg" role="group">
+            <button type="button" data-metric="tokens" class="is-active">Token</button>
+            <button type="button" data-metric="count">请求</button>
+            <button type="button" data-metric="cost">费用</button>
+          </div>
+          <button type="button" class="heat-today-btn" id="btn-heat-today">定位今日</button>
+        </div>
+        <div class="heat-today-strip" id="heat-today-strip">
+          <span id="heat-today-text">今日：加载中…</span>
+          <button type="button" id="btn-filter-today" style="min-height:22px;padding:1px 7px;font-size:10.5px;">只看今日</button>
+        </div>
+        <div class="heat-body-row">
+          <div class="heat-weekdays" aria-hidden="true">
+            <span></span><span>一</span><span></span><span>三</span><span></span><span>五</span><span></span>
+          </div>
+          <div class="heatmap-wrap" id="heatmap-wrap"><div class="heatmap-cols" id="heatmap-grid"></div></div>
+        </div>
+        <div class="heat-foot">
+          <span>悬浮查看明细 · 点击按日筛选</span>
+          <span class="heat-legend">少<i data-l="0"></i><i data-l="1"></i><i data-l="2"></i><i data-l="3"></i><i data-l="4"></i>多</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="section" id="sec-subagents">
+      <button type="button" class="section-head" id="subagents-head">
+        <span class="section-title">🌳 运行任务与 Subagent 树</span>
+        <span class="section-badge" id="subagent-summary">检测中</span>
+      </button>
+      <div class="section-body">
+        <div class="subagent-tree-list" id="subagent-list"></div>
+      </div>
+    </div>
+
+    <div class="section" id="sec-health">
+      <button type="button" class="section-head" id="health-head">
+        <span class="section-title">🩺 模型健康状态</span>
+        <span class="section-badge" id="health-summary">暂无数据</span>
+      </button>
+      <div class="section-body">
+        <div class="health-list" id="health-list"></div>
+      </div>
+    </div>
+
+    <div class="section" id="sec-models">
+      <button type="button" class="section-head" id="models-head">
+        <span class="section-title">📦 按模型统计明细</span>
+        <span class="section-badge" id="models-summary">0 模型</span>
+      </button>
+      <div class="section-body">
+        <div class="models-table-wrap" id="models-table-wrap"></div>
+      </div>
+    </div>
+
+    <div class="section" id="sec-requests">
+      <div class="section-head" style="cursor:default;">
+        <span class="section-title">📋 单次请求记录</span>
+        <span class="section-badge" id="req-count">0 条</span>
+      </div>
+      <div class="section-body">
+        <div class="req-filters">
+          <div class="req-filter-top">
+            <div class="status-pills" id="req-status-pills" role="group">
+              <button type="button" data-status="all" class="is-active">全部</button>
+              <button type="button" data-status="anomaly">⚠ 掉缓存</button>
+              <button type="button" data-status="error">✕ 报错</button>
+            </div>
+            <select id="dash-model"><option value="">全部模型</option></select>
+          </div>
+          <input type="text" id="dash-search" placeholder="搜索会话标题 / 模型 / 会话ID / 报错…" />
+          <div class="active-chips" id="req-active-chips"></div>
+        </div>
+        <div class="req-list" id="req-list"></div>
+        <div class="req-pager" id="req-pager" style="display:none;"></div>
+      </div>
+    </div>
+  </div>
+  <div class="heat-tooltip" id="heat-tooltip" role="tooltip"></div>
+
+  <!-- TAB 3: SSH Remote & TUN-Free Proxy -->
+  <div class="tab-pane" id="pane-remote">
+    <div class="section">
+      <div class="section-head" style="cursor:default;">
+        <span class="section-title">🖥 SSH 远程会话统计（默认关闭）</span>
+        <span class="section-badge" id="ssh-badge">关闭</span>
+      </div>
+      <div class="section-body">
+        <div class="row">
+          <div class="row-label">
+            <div class="row-name">启用 SSH 远端用量合并</div>
+            <div class="row-desc">无远端落盘：通过本机 ssh 只读拉取远端会话统计并入看板</div>
+          </div>
+          <label class="switch"><input type="checkbox" id="sw-ssh-enabled" /><span class="switch-track"></span></label>
+        </div>
+        <div class="field-stack">
+          <div class="field-label">SSH 主机名（支持 ~/.ssh/config 别名）</div>
+          <input type="text" id="inp-ssh-host" list="ssh-host-list" placeholder="例如：my-dev-server 或 user@10.0.0.2" />
+          <datalist id="ssh-host-list"></datalist>
+          <div class="btn-2col">
+            <button type="button" id="btn-ssh-save">保存主机</button>
+            <button type="button" class="primary" id="btn-ssh-sync">同步远端统计</button>
+          </div>
+          <div class="status-note" id="ssh-note">未同步</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-head" style="cursor:default;">
+        <span class="section-title">🌐 免 TUN 独立代理</span>
+        <span class="section-badge" id="proxy-badge">关闭</span>
+      </div>
+      <div class="section-body">
+        <div class="proxy-runtime-box" id="proxy-runtime-box" style="display:none;"></div>
+        <div class="row">
+          <div class="row-label">
+            <div class="row-name">启用独立代理</div>
+            <div class="row-desc">仅注入 Antigravity 进程，不改系统代理；插件加载后自动接管（macOS 无 TUN 首次登录需临时开 TUN 或带参启动，接管后可关 TUN）</div>
+          </div>
+          <label class="switch"><input type="checkbox" id="sw-proxy-enabled" /><span class="switch-track"></span></label>
+        </div>
+        <div class="field-stack">
+          <div class="field-label">代理地址（http / https / socks5）</div>
+          <input type="text" id="inp-proxy-url" placeholder="例如：http://127.0.0.1:7897" />
+          <div class="btn-2col" style="margin-top:4px;">
+            <button type="button" id="btn-proxy-test">测试连通性</button>
+            <button type="button" class="primary" id="btn-proxy-relaunch">✦ 保存并重启生效</button>
+          </div>
+          <div class="status-note" id="proxy-note">未测试</div>
+          <details style="margin-top:4px;">
+            <summary style="cursor:pointer;font-size:11.5px;font-weight:500;color:var(--muted-fg);user-select:none;">高级选项</summary>
+            <div class="field-stack" style="margin-top:6px;">
+              <div class="field-label">绕过列表（始终保留 localhost,127.0.0.1,::1）</div>
+              <input type="text" id="inp-proxy-bypass" placeholder="localhost,127.0.0.1,::1" />
+              <div class="row" style="border-top:none;padding:6px 0 0;">
+                <div class="row-label">
+                  <div class="row-name">强制 HTTP/1.1（默认开启）</div>
+                  <div class="row-desc">为 Go 后端注入 GODEBUG=http2client=0，避免混合代理端口断连</div>
+                </div>
+                <label class="switch"><input type="checkbox" id="sw-proxy-h1" /><span class="switch-track"></span></label>
+              </div>
+            </div>
+          </details>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <script src="/ui/control-tab.js"></script>
+  <script src="/ui/dashboard-tab.js"></script>
+  <script src="/ui/remote-tab.js"></script>
+  <script>
+    const TOKEN = new URLSearchParams(window.location.search).get('token') || '';
+    let currentConfig = {};
+    let lastStatus = null;
+    let toastTimer = null;
+    let activeTab = 'control';
+
+    function parseRgbLuminance(colorStr) {
+      if (!colorStr) return null;
+      const s = String(colorStr).trim();
+      const hex = s.match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i);
+      if (hex) {
+        const h = hex[1].length === 3 ? hex[1].split('').map((c) => c + c).join('') : hex[1];
+        const r = parseInt(h.slice(0, 2), 16), g = parseInt(h.slice(2, 4), 16), b = parseInt(h.slice(4, 6), 16);
+        return (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+      }
+      const rgb = s.match(/rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)/i);
+      if (rgb) return (0.299 * Number(rgb[1]) + 0.587 * Number(rgb[2]) + 0.114 * Number(rgb[3])) / 255;
+      return null;
+    }
+
+    function syncHostThemeAttr(explicitBg) {
+      const bg = explicitBg || getComputedStyle(document.documentElement).getPropertyValue('--background').trim();
+      const lum = parseRgbLuminance(bg);
+      if (lum !== null) document.documentElement.setAttribute('data-theme', lum > 0.55 ? 'light' : 'dark');
+    }
+
+    function showToast(msg) {
+      const el = document.getElementById('toast');
+      el.textContent = msg;
+      el.classList.add('show');
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => el.classList.remove('show'), 2600);
+    }
+
+    async function apiFetch(path, opts = {}) {
+      const headers = Object.assign({}, opts.headers || {}, { 'Content-Type': 'application/json' });
+      if (TOKEN) headers['Authorization'] = `Bearer ${TOKEN}`;
+      return fetch(path, Object.assign({}, opts, { headers }));
+    }
+
+    let controlTab = null;
+    let dashboardTab = null;
+    let remoteTab = null;
+
+    let lastRenderedConfigJson = '';
+    const app = {
+      apiFetch,
+      showToast,
+      getConfig: () => currentConfig,
+      getLastStatus: () => lastStatus,
+      getActiveTab: () => activeTab,
+      async saveUpdates(updates) {
+        try {
+          const res = await apiFetch('/api/config', { method: 'POST', body: JSON.stringify({ updates }) });
+          let data = {};
+          try { data = await res.json(); } catch {}
+          if (!res.ok && !data.rejected && !data.error) throw new Error(`HTTP ${res.status}`);
+          if (data.config) {
+            currentConfig = data.config;
+            lastRenderedConfigJson = JSON.stringify(currentConfig);
+          }
+          controlTab.renderStaticChrome();
+          controlTab.renderForm(currentConfig);
+          remoteTab.syncForm(currentConfig, { force: true });
+          showToast(data.ok ? '已保存配置' : `配置校验失败: ${(data.rejected || [data.error || res.status]).join(',')}`);
+          return Boolean(data.ok);
+        } catch (err) {
+          showToast(controlTab.getT().saveErrToast(err.message));
+          return false;
+        }
+      },
+      async saveOne(key, value) {
+        const ok = await app.saveUpdates({ [key]: value });
+        if (ok) showToast(controlTab.getT().savedToast(key));
+        return ok;
+      },
+      async refreshStatus({ preserveInteractive = false } = {}) {
+        syncHostThemeAttr();
+        try {
+          const res = await apiFetch('/api/status', { method: 'GET' });
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          const st = await res.json();
+          lastStatus = st;
+          currentConfig = st.config || currentConfig;
+          controlTab.renderStaticChrome();
+          const nextCfgJson = JSON.stringify(currentConfig);
+          const secEl = document.getElementById('sections');
+          const secHasFocus = Boolean(secEl && document.activeElement && secEl.contains(document.activeElement));
+          if (!preserveInteractive || (nextCfgJson !== lastRenderedConfigJson && !secHasFocus)) {
+            controlTab.renderForm(currentConfig);
+            lastRenderedConfigJson = nextCfgJson;
+          }
+          remoteTab.syncForm(currentConfig, { preserveDirty: preserveInteractive });
+        } catch (err) {
+          document.getElementById('status-text').textContent = 'Error';
+          document.getElementById('meta-line').textContent = err.message;
+        }
+      },
+      isPanelVisible() {
+        return document.visibilityState !== 'hidden' && window.innerWidth > 0 && window.innerHeight > 0;
+      },
+      async postAction(endpoint, labelKey) {
+        const btns = document.querySelectorAll('.actions button');
+        btns.forEach((b) => (b.disabled = true));
+        try {
+          const res = await apiFetch(endpoint, { method: 'POST', body: '{}' });
+          let data = {};
+          try { data = await res.json(); } catch {}
+          if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+          showToast(controlTab.getT().actionOk(controlTab.getT()[labelKey]));
+          await app.refreshStatus();
+        } catch (err) {
+          showToast(controlTab.getT().actionFail(controlTab.getT()[labelKey], err.message));
+        } finally {
+          btns.forEach((b) => (b.disabled = false));
+        }
+      },
+    };
+
+    controlTab = window.AGYPanelControl(app);
+    dashboardTab = window.AGYPanelDashboard(app);
+    remoteTab = window.AGYPanelRemote(app);
+
+    document.querySelectorAll('.tab-btn').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        activeTab = btn.getAttribute('data-tab');
+        document.querySelectorAll('.tab-btn').forEach((b) => b.classList.toggle('is-active', b === btn));
+        document.querySelectorAll('.tab-pane').forEach((p) => p.classList.toggle('is-active', p.id === `pane-${activeTab}`));
+        if (activeTab === 'dashboard') dashboardTab.onActivate();
+        if (activeTab === 'remote') remoteTab.onActivate();
+      });
+    });
+
+    window.addEventListener('message', (ev) => {
+      if (ev.data?.type === 'theme-change') {
+        syncHostThemeAttr(ev.data?.payload?.cssVariables?.['--background']);
+      }
+    });
+    if (typeof window.matchMedia === 'function') {
+      try { window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', () => syncHostThemeAttr()); } catch {}
+    }
+
+    controlTab.renderStaticChrome();
+    let wasPanelVisible = app.isPanelVisible();
+    if (wasPanelVisible) {
+      app.refreshStatus();
+    }
+    const handleVisibilityRestore = () => {
+      const nowVisible = app.isPanelVisible();
+      if (nowVisible && !wasPanelVisible) {
+        if (activeTab === 'dashboard') dashboardTab.onActivate();
+        else void app.refreshStatus({ preserveInteractive: true });
+      }
+      wasPanelVisible = nowVisible;
+    };
+    window.addEventListener('resize', handleVisibilityRestore);
+    document.addEventListener('visibilitychange', handleVisibilityRestore);
+    setInterval(() => {
+      if (app.isPanelVisible() && activeTab === 'control') void app.refreshStatus({ preserveInteractive: true });
+    }, 12000);
+  </script>
+</body>
+</html>

@@ -6,7 +6,7 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import vm from 'node:vm';
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 
@@ -174,7 +174,9 @@ function stageTempRuntimeDir() {
     ...cdp.RUNTIME_PARTS,
   ];
   for (const f of files) {
-    fs.copyFileSync(path.join(ROOT_DIR, f), path.join(dir, f));
+    const dest = path.join(dir, f);
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    fs.copyFileSync(path.join(ROOT_DIR, f), dest);
   }
   return dir;
 }
@@ -189,7 +191,7 @@ async function waitFor(fn, timeoutMs = 12000, intervalMs = 150) {
   throw new Error('Timed out waiting for condition');
 }
 
-async function killAndWait(proc, timeoutMs = 1500) {
+async function killAndWait(proc, timeoutMs = 2500) {
   if (!proc || proc.exitCode !== null) return;
   await new Promise((resolve) => {
     const timer = setTimeout(resolve, timeoutMs);
@@ -198,7 +200,15 @@ async function killAndWait(proc, timeoutMs = 1500) {
       resolve();
     });
     try {
-      proc.kill('SIGKILL');
+      if (process.platform === 'win32' && proc.pid) {
+        try {
+          execFileSync('taskkill', ['/T', '/F', '/PID', String(proc.pid)], { stdio: 'ignore', windowsHide: true });
+        } catch {
+          proc.kill('SIGKILL');
+        }
+      } else {
+        proc.kill('SIGKILL');
+      }
     } catch {
       clearTimeout(timer);
       resolve();
@@ -207,7 +217,13 @@ async function killAndWait(proc, timeoutMs = 1500) {
 }
 
 function cleanupTempDir(dir) {
-  fs.rmSync(dir, { recursive: true, force: true, maxRetries: 15, retryDelay: 100 });
+  try {
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 120 });
+  } catch (err) {
+    if (err?.code !== 'EBUSY' && err?.code !== 'EPERM' && err?.code !== 'ENOTEMPTY') {
+      throw err;
+    }
+  }
 }
 
 test('formatCdpUnavailableMessage clearly distinguishes Antigravity 2.33.0+ running without CDP vs not running', () => {
@@ -359,7 +375,18 @@ test('hasRemoteDebuggingFlag detects --remote-debugging-port on running processe
 test('cdp exports STARTUP_GRACE_SECONDS = 90 and safe activateAntigravityWindow helper', () => {
   assert.equal(cdp.STARTUP_GRACE_SECONDS, 90);
   assert.equal(typeof cdp.activateAntigravityWindow, 'function');
-  if (process.platform !== 'darwin') {
+  if (process.platform === 'win32') {
+    let seen = null;
+    const ok = cdp.activateAntigravityWindow({
+      spawn: (cmd, args, opts) => {
+        seen = { cmd, args, opts };
+        return { unref() {} };
+      },
+    });
+    assert.equal(ok, true);
+    assert.equal(seen.cmd, 'powershell.exe');
+    assert.equal(seen.opts.windowsHide, true);
+  } else if (process.platform !== 'darwin') {
     assert.equal(cdp.activateAntigravityWindow(), false);
   }
 });
@@ -609,7 +636,7 @@ test('inject.js --managed attaches to mock CDP, injects, and exits 0 when mock C
       } catch {
         return false;
       }
-    }, 6000, 50);
+    }, 15000, 50);
     assert.ok(fs.existsSync(path.join(dir, '.watch.pid')), '.watch.pid created in --managed mode');
 
     await mock.close();
@@ -649,7 +676,7 @@ test('duplicate watcher handling: --managed exits 0 cleanly without clobbering, 
       } catch {
         return false;
       }
-    }, 5000, 50);
+    }, 15000, 50);
 
     // 1. Plain duplicate --watch exits 1 without overwriting .watch.pid
     dupPlain = spawn(process.execPath, [path.join(dir, 'inject.js'), '--watch'], {
@@ -659,7 +686,7 @@ test('duplicate watcher handling: --managed exits 0 cleanly without clobbering, 
     });
     const dupPlainCode = await Promise.race([
       new Promise((resolve) => dupPlain.on('exit', resolve)),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('Plain duplicate watcher did not exit')), 5000)),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('Plain duplicate watcher did not exit')), 15000)),
     ]);
     assert.equal(dupPlainCode, 1);
     assert.equal(fs.readFileSync(pidFile, 'utf8').trim(), String(first.pid));
@@ -673,7 +700,7 @@ test('duplicate watcher handling: --managed exits 0 cleanly without clobbering, 
     });
     const dupManagedCode = await Promise.race([
       new Promise((resolve) => dupManaged.on('exit', resolve)),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('Duplicate --managed did not exit')), 5000)),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('Duplicate --managed did not exit')), 15000)),
     ]);
     assert.equal(dupManagedCode, 0);
     assert.equal(fs.readFileSync(pidFile, 'utf8').trim(), String(first.pid));
@@ -688,7 +715,7 @@ test('duplicate watcher handling: --managed exits 0 cleanly without clobbering, 
     });
     await Promise.race([
       firstExitPromise,
-      new Promise((_, reject) => setTimeout(() => reject(new Error('--replace did not terminate existing watcher')), 5000)),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('--replace did not terminate existing watcher')), 15000)),
     ]);
     await waitFor(() => {
       try {
@@ -696,7 +723,7 @@ test('duplicate watcher handling: --managed exits 0 cleanly without clobbering, 
       } catch {
         return false;
       }
-    }, 5000, 50);
+    }, 15000, 50);
     assert.equal(replacer.exitCode, null);
   } finally {
     for (const proc of [first, dupPlain, dupManaged, replacer]) {

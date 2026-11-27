@@ -1028,3 +1028,140 @@ test('analyzeActiveConversation skips 0-token generatorMetadata startup stubs fr
   assert.equal(info.turnDetails[1].turn, 2);
   assert.equal(info.turnDetails[1].inProgress, true, 'Turn 2 with active thinking step (status=1) must have inProgress=true');
 });
+
+test('analyzeActiveConversation applies live post-compaction contextWindowUsage estimate until a newer billed request supersedes it', () => {
+  const baseSteps = [
+    { step: { case: 'userInput', value: { items: [{ item: { case: 'text', value: 'turn 1' } }] } } },
+    { step: { case: 'plannerResponse', value: { response: 'reply 1' } } },
+    { step: { case: 'checkpoint', value: {} } },
+  ];
+  const preCompactGm = {
+    stepIndices: [0, 1],
+    metadata: {
+      value: {
+        modelDisplayName: 'Gemini 3.8 Pro',
+        usage: { inputTokens: 12000, cacheReadTokens: 170000, outputTokens: 2000, responseOutputTokens: 1500 },
+        chatStartMetadata: { contextWindowMetadata: { estimatedTokensUsed: 185000, maxContextTokens: 512000 } },
+      },
+    },
+  };
+
+  // Right after /compact: AgentState emits estimatedAfterCompaction=true at generatorMetadataIndex=0
+  const postCompactTraj = {
+    steps: baseSteps,
+    generatorMetadata: [preCompactGm],
+    contextWindowUsage: {
+      generatorMetadataIndex: 0,
+      lastStepIndex: 2,
+      estimatedTokensUsed: 24600,
+      maxContextTokens: 512000,
+      estimatedAfterCompaction: true,
+      tokenGroups: [
+        { name: 'System Prompt', type: 1, numTokens: 4600, children: [] },
+        { name: 'Chat Messages', type: 7, numTokens: 20000, children: [] },
+      ],
+    },
+  };
+  const compacted = usageCore.analyzeActiveConversation(postCompactTraj, { cascadeId: 'post-compact-1' });
+  assert.equal(compacted.contextUsed, 24600, 'Must immediately reflect post-compaction estimate instead of stale 185k');
+  assert.equal(compacted.maxContextTokens, 512000);
+  assert.equal(compacted.sysTokens, 4600);
+  assert.equal(compacted.msgTokens, 20000);
+
+  // Once a newer billed request completes (gm index 1 > generatorMetadataIndex 0), real usage supersedes the estimate
+  const afterNextTurnTraj = {
+    steps: [
+      ...baseSteps,
+      { step: { case: 'userInput', value: { items: [{ item: { case: 'text', value: 'turn 2' } }] } } },
+      { step: { case: 'plannerResponse', value: { response: 'reply 2' } } },
+    ],
+    generatorMetadata: [
+      preCompactGm,
+      {
+        stepIndices: [3, 4],
+        metadata: {
+          value: {
+            modelDisplayName: 'Gemini 3.8 Pro',
+            usage: { inputTokens: 5000, cacheReadTokens: 26000, outputTokens: 1000, responseOutputTokens: 800 },
+            chatStartMetadata: { contextWindowMetadata: { estimatedTokensUsed: 31800, maxContextTokens: 512000 } },
+          },
+        },
+      },
+    ],
+    contextWindowUsage: postCompactTraj.contextWindowUsage,
+  };
+  const resumed = usageCore.analyzeActiveConversation(afterNextTurnTraj, { cascadeId: 'post-compact-1' });
+  assert.equal(resumed.contextUsed, 31800, 'Newer billed request must supersede previous compaction estimate');
+});
+
+test('usage-core excludes 5h-only bucket from bWeek, requires ttft > 0 for streaming E2E, and preserves post-compaction fallback', () => {
+  // 1. 5h-only quota data must not populate bWeek with the 5h bucket
+  const quotaOnly5h = usageCore.normalizeQuotaData(
+    {
+      groups: [
+        {
+          displayName: 'Claude Opus',
+          buckets: [
+            {
+              bucketId: 'claude-5h',
+              displayName: '5-Hour Limit',
+              remainingFraction: 0.65,
+              resetTime: { seconds: String(Math.floor(Date.now() / 1000) + 3600) },
+            },
+          ],
+        },
+      ],
+    },
+    null
+  );
+  const info5h = usageCore.getActiveQuotaInfo(quotaOnly5h, 'Claude Opus 4.6');
+  assert.ok(info5h && info5h.b5h, 'Expected 5h bucket');
+  assert.equal(info5h.bWeek, null, '5h-only model must not expose bWeek alias');
+  const cycWeekly = usageCore.resolveQuotaCycle(info5h, 'weekly');
+  assert.equal(cycWeekly.cycle, 'auto');
+
+  // 2. classifyCallRates drops buffered calls and computes E2E totals only when ttft > 0
+  const rates = usageCore.classifyCallRates([
+    { responseModel: 'gemini-3-pro', stream: 5, outputTokens: 250, speed: 50, ttft: 0, speedMode: 'stream' },
+    { responseModel: 'gemini-3-pro', stream: 2, outputTokens: 150, speed: 75, ttft: 0.5, speedMode: 'stream' },
+    { responseModel: 'gemini-3-pro', stream: 2, outputTokens: 300, speed: 150, ttft: 0, speedMode: 'buffered' },
+  ]);
+  assert.equal(rates.qualifiedCalls, 2);
+  assert.equal(rates.quarantinedCalls, 1);
+  assert.equal(rates.e2eOutputTokens, 150);
+  assert.equal(rates.e2eDurationSec, 2.5);
+
+  // 3. Step fallback preserves post-compaction contextWindowUsage & marks buffered/toolOnly speedMode
+  const fallbackTraj = {
+    steps: [
+      { status: 3, step: { case: 'userInput', value: { query: 'compact then inspect' } } },
+      { status: 3, metadata: { toolCall: { name: 'read_file' } }, step: { case: 'viewFile', value: {} } },
+      {
+        status: 3,
+        metadata: {
+          generatorModel: 'claude-4-6-sonnet',
+          requestedModel: { model: 'claude-4-6-sonnet' },
+          createdAt: '2026-11-27T14:00:00Z',
+          completedAt: '2026-11-27T14:00:02Z',
+        },
+        step: { case: 'plannerResponse', value: { response: 'Done reading.' } },
+      },
+    ],
+    generatorMetadata: [
+      {
+        stepIndices: [0],
+        metadata: { value: { modelDisplayName: 'Claude Sonnet 4.6', usage: { inputTokens: 150000, outputTokens: 100 } } },
+      },
+    ],
+    contextWindowUsage: {
+      generatorMetadataIndex: 0,
+      lastStepIndex: 1,
+      estimatedTokensUsed: 18000,
+      maxContextTokens: 200000,
+      estimatedAfterCompaction: true,
+    },
+  };
+  const fbRes = usageCore.analyzeActiveConversation(fallbackTraj, { cascadeId: 'fb-compact' });
+  assert.ok(fbRes.contextUsed >= 18000 && fbRes.contextUsed < 25000, `Step fallback must preserve ~18k post-compaction baseline, got ${fbRes.contextUsed}`);
+});
+

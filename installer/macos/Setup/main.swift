@@ -586,23 +586,30 @@ enum InstallerCore {
         }
 
         var preservedConfig = false
-        let payloadEntries = try fm.contentsOfDirectory(atPath: payloadDir)
-        for name in payloadEntries {
-            if name.hasPrefix(".") { continue }
-            let src = (payloadDir as NSString).appendingPathComponent(name)
-            let dest = (installDir as NSString).appendingPathComponent(name)
-            var isDir: ObjCBool = false
-            guard fm.fileExists(atPath: src, isDirectory: &isDir), !isDir.boolValue else { continue }
-
-            if name.caseInsensitiveCompare("config.json") == .orderedSame && fm.fileExists(atPath: dest) {
-                preservedConfig = true
-                continue
+        func copyPayloadDirectory(from srcDir: String, to dstDir: String, isRoot: Bool) throws {
+            let entries = try fm.contentsOfDirectory(atPath: srcDir)
+            for name in entries {
+                if name.hasPrefix(".") { continue }
+                let src = (srcDir as NSString).appendingPathComponent(name)
+                let dest = (dstDir as NSString).appendingPathComponent(name)
+                var isDir: ObjCBool = false
+                guard fm.fileExists(atPath: src, isDirectory: &isDir) else { continue }
+                if isDir.boolValue {
+                    try fm.createDirectory(atPath: dest, withIntermediateDirectories: true)
+                    try copyPayloadDirectory(from: src, to: dest, isRoot: false)
+                    continue
+                }
+                if isRoot && name.caseInsensitiveCompare("config.json") == .orderedSame && fm.fileExists(atPath: dest) {
+                    preservedConfig = true
+                    continue
+                }
+                if fm.fileExists(atPath: dest) {
+                    try fm.removeItem(atPath: dest)
+                }
+                try fm.copyItem(atPath: src, toPath: dest)
             }
-            if fm.fileExists(atPath: dest) {
-                try fm.removeItem(atPath: dest)
-            }
-            try fm.copyItem(atPath: src, toPath: dest)
         }
+        try copyPayloadDirectory(from: payloadDir, to: installDir, isRoot: true)
 
         let watcherDest = (installDir as NSString).appendingPathComponent(watcherExeName)
         if fm.fileExists(atPath: watcherDest) {

@@ -44,7 +44,7 @@ namespace AgyClaudeStyle
             string manifestPath = Path.Combine(baseDir, "manifest.json");
             Dictionary<string, object> raw = MiniJson.ParseObject(File.ReadAllText(manifestPath, Encoding.UTF8));
             PluginManifest m = new PluginManifest();
-            m.Version = GetString(raw, "version", "2.1.0");
+            m.Version = GetString(raw, "version", "2.2.0");
             m.StyleId = GetString(raw, "styleId", "ag-claude-style-css");
             m.SettingBinding = GetString(raw, "settingBinding", "__agClaudeStyleSetting");
             m.RemoveExpression = GetString(raw, "removeExpression", "");
@@ -392,6 +392,7 @@ namespace AgyClaudeStyle
     {
         public const int DefaultStartupGraceSeconds = 90;
         private const int SW_RESTORE = 9;
+        private const int SW_MINIMIZE = 6;
         private static readonly HttpClient SharedHttp = new HttpClient { Timeout = TimeSpan.FromMilliseconds(2000) };
 
         [DllImport("user32.dll")]
@@ -490,6 +491,103 @@ namespace AgyClaudeStyle
             return cfg;
         }
 
+        private static bool HasUnsafeControlChars(string s)
+        {
+            if (string.IsNullOrEmpty(s)) return false;
+            for (int i = 0; i < s.Length; i++)
+            {
+                char ch = s[i];
+                if (ch < 0x20 || ch == 0x7f) return true;
+            }
+            return false;
+        }
+
+        private static bool IsValidSshHost(string s)
+        {
+            string trimmed = (s ?? "").Trim();
+            if (trimmed.Length == 0) return true;
+            if (trimmed[0] == '-' || trimmed.Length > 128) return false;
+            for (int i = 0; i < trimmed.Length; i++)
+            {
+                char ch = trimmed[i];
+                bool ok = (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') ||
+                          ch == '.' || ch == '_' || ch == ':' || ch == '@' || ch == '-';
+                if (!ok) return false;
+            }
+            return true;
+        }
+
+        private static bool IsValidProxyUrl(string s)
+        {
+            string trimmed = (s ?? "").Trim();
+            if (trimmed.Length == 0) return true;
+            if (trimmed.Length > 256) return false;
+            for (int i = 0; i < trimmed.Length; i++)
+            {
+                char ch = trimmed[i];
+                if (char.IsWhiteSpace(ch) || ch == '\'' || ch == '"' || ch == '`' || ch == '\\' ||
+                    ch == ';' || ch == '$' || ch == '|' || ch == '&' || ch == '<' || ch == '>')
+                {
+                    return false;
+                }
+            }
+            Uri uri;
+            if (!Uri.TryCreate(trimmed, UriKind.Absolute, out uri)) return false;
+            string scheme = (uri.Scheme ?? "").ToLowerInvariant();
+            if (scheme != "http" && scheme != "https" && scheme != "socks5" && scheme != "socks5h") return false;
+            if (string.IsNullOrEmpty(uri.Host)) return false;
+            if ((!string.IsNullOrEmpty(uri.AbsolutePath) && uri.AbsolutePath != "/") ||
+                !string.IsNullOrEmpty(uri.Query) || !string.IsNullOrEmpty(uri.Fragment))
+            {
+                return false;
+            }
+            return true;
+        }
+
+        private static bool IsValidProxyBypass(string s)
+        {
+            if (string.IsNullOrEmpty(s)) return true;
+            string bad = "'\"`\\$|&<>%^!";
+            for (int i = 0; i < s.Length; i++)
+            {
+                if (bad.IndexOf(s[i]) >= 0) return false;
+            }
+            return true;
+        }
+
+        private static string RedactProxyUrl(string raw)
+        {
+            string s = (raw ?? "").Trim();
+            if (s.Length == 0) return "";
+            Uri uri;
+            if (Uri.TryCreate(s, UriKind.Absolute, out uri) && !string.IsNullOrEmpty(uri.UserInfo))
+            {
+                string host = uri.Host ?? "";
+                if (host.IndexOf(':') >= 0 && !host.StartsWith("[", StringComparison.Ordinal))
+                {
+                    host = "[" + host + "]";
+                }
+                string port = uri.IsDefaultPort ? "" : (":" + uri.Port.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                return uri.Scheme + "://***@" + host + port;
+            }
+            return s;
+        }
+
+        private static Dictionary<string, object> SanitizeConfigForPage(Dictionary<string, object> config)
+        {
+            Dictionary<string, object> copy = new Dictionary<string, object>(StringComparer.Ordinal);
+            foreach (KeyValuePair<string, object> kv in config)
+            {
+                copy[kv.Key] = kv.Value;
+            }
+            object proxyObj;
+            if (copy.TryGetValue("proxyUrl", out proxyObj) && proxyObj is string)
+            {
+                copy["proxyUrl"] = RedactProxyUrl((string)proxyObj);
+            }
+            return copy;
+        }
+
         public static bool UpdateConfigSetting(string baseDir, PluginManifest manifest, string key, object value)
         {
             object rule;
@@ -514,6 +612,59 @@ namespace AgyClaudeStyle
                     }
                 }
                 if (!matched) return false;
+            }
+            else if (rule is Dictionary<string, object>)
+            {
+                Dictionary<string, object> spec = (Dictionary<string, object>)rule;
+                object typeObj;
+                string typeStr = spec.TryGetValue("type", out typeObj) ? typeObj as string : null;
+                if (typeStr == "integer")
+                {
+                    if (!(value is long || value is int)) return false;
+                    long iv = Convert.ToInt64(value, System.Globalization.CultureInfo.InvariantCulture);
+                    object minObj;
+                    object maxObj;
+                    long minV = spec.TryGetValue("min", out minObj) ? Convert.ToInt64(minObj, System.Globalization.CultureInfo.InvariantCulture) : long.MinValue;
+                    long maxV = spec.TryGetValue("max", out maxObj) ? Convert.ToInt64(maxObj, System.Globalization.CultureInfo.InvariantCulture) : long.MaxValue;
+                    if (iv < minV || iv > maxV) return false;
+                }
+                else if (typeStr == "string")
+                {
+                    string sv = value as string;
+                    if (sv == null || HasUnsafeControlChars(sv)) return false;
+                    object maxLenObj;
+                    int maxLen = spec.TryGetValue("maxLength", out maxLenObj) ? Convert.ToInt32(maxLenObj, System.Globalization.CultureInfo.InvariantCulture) : 512;
+                    if (sv.Length > maxLen) return false;
+                    object kindObj;
+                    string kind = spec.TryGetValue("kind", out kindObj) ? kindObj as string : "";
+                    if (kind == "sshHost" && !IsValidSshHost(sv)) return false;
+                    if (kind == "proxyUrl" && !IsValidProxyUrl(sv)) return false;
+                    if (kind == "proxyBypass" && !IsValidProxyBypass(sv)) return false;
+                }
+                else if (typeStr == "string[]")
+                {
+                    List<object> arr = value as List<object>;
+                    if (arr == null) return false;
+                    object maxItemsObj;
+                    object minItemLenObj;
+                    object maxItemLenObj;
+                    int maxItems = spec.TryGetValue("maxItems", out maxItemsObj) ? Convert.ToInt32(maxItemsObj, System.Globalization.CultureInfo.InvariantCulture) : 32;
+                    int minItemLen = spec.TryGetValue("minItemLength", out minItemLenObj) ? Convert.ToInt32(minItemLenObj, System.Globalization.CultureInfo.InvariantCulture) : 1;
+                    int maxItemLen = spec.TryGetValue("maxItemLength", out maxItemLenObj) ? Convert.ToInt32(maxItemLenObj, System.Globalization.CultureInfo.InvariantCulture) : 128;
+                    if (arr.Count > maxItems) return false;
+                    for (int i = 0; i < arr.Count; i++)
+                    {
+                        string item = arr[i] as string;
+                        if (item == null || item.Length < minItemLen || item.Length > maxItemLen || HasUnsafeControlChars(item))
+                        {
+                            return false;
+                        }
+                    }
+                }
+                else
+                {
+                    return false;
+                }
             }
             else
             {
@@ -596,11 +747,7 @@ namespace AgyClaudeStyle
         {
             Dictionary<string, object> config = ReadConfig(baseDir, manifest);
             string expected = expectedCodeHash ?? "";
-            Dictionary<string, object> payload = new Dictionary<string, object>(StringComparer.Ordinal);
-            foreach (KeyValuePair<string, object> kv in config)
-            {
-                payload[kv.Key] = kv.Value;
-            }
+            Dictionary<string, object> payload = SanitizeConfigForPage(config);
             payload["binding"] = manifest.SettingBinding;
             payload["codeHash"] = expected;
 
@@ -633,11 +780,7 @@ namespace AgyClaudeStyle
             string bundle = ReadRuntimeBundle(baseDir, manifest);
             string codeHash = ComputeHash(bundle);
 
-            Dictionary<string, object> initCfg = new Dictionary<string, object>(StringComparer.Ordinal);
-            foreach (KeyValuePair<string, object> kv in config)
-            {
-                initCfg[kv.Key] = kv.Value;
-            }
+            Dictionary<string, object> initCfg = SanitizeConfigForPage(config);
             initCfg["binding"] = manifest.SettingBinding;
             initCfg["codeHash"] = codeHash;
 
@@ -650,6 +793,8 @@ namespace AgyClaudeStyle
             sb.Append("    const applyStyle = () => {\n");
             sb.Append("      const targetParent = document.head || document.documentElement;\n");
             sb.Append("      if (!targetParent) return;\n");
+            sb.Append("      const conflictingStudio = document.getElementById('ag-claude-studio-css');\n");
+            sb.Append("      if (conflictingStudio) conflictingStudio.remove();\n");
             sb.Append("      let style = document.getElementById(").Append(styleIdJson).Append(");\n");
             sb.Append("      if (!style) {\n");
             sb.Append("        style = document.createElement('style');\n");
@@ -659,7 +804,8 @@ namespace AgyClaudeStyle
             sb.Append("      if (style.parentNode !== targetParent || targetParent.lastElementChild !== style) {\n");
             sb.Append("        targetParent.appendChild(style);\n");
             sb.Append("      }\n");
-            sb.Append("    };\n\n");
+            sb.Append("    };\n");
+            sb.Append("    globalThis.__agCsEnsureStyle = applyStyle;\n\n");
             sb.Append("    let status = 'ok';\n");
             sb.Append("    let mounted = false;\n");
             sb.Append("    const mount = () => {\n");
@@ -671,6 +817,7 @@ namespace AgyClaudeStyle
             sb.Append("          if (document.head) applyStyle();\n");
             sb.Append("          else document.addEventListener('DOMContentLoaded', applyStyle, { once: true });\n");
             sb.Append("        }\n");
+            sb.Append("        globalThis.__agCsSidecarLogos = globalThis.__agCsSidecarLogos || {};\n");
             sb.Append("        ").Append(bundle).Append('\n');
             sb.Append("        if (typeof globalThis.__agCsUiMain === 'function') {\n");
             sb.Append("          const baseCfg = ").Append(MiniJson.Stringify(initCfg, false)).Append(";\n");
@@ -1105,9 +1252,87 @@ namespace AgyClaudeStyle
             return activated;
         }
 
+        public static bool MinimizeAntigravityWindow()
+        {
+            bool minimized = false;
+            try
+            {
+                Process[] procs = Process.GetProcessesByName("Antigravity");
+                for (int i = 0; i < procs.Length; i++)
+                {
+                    try
+                    {
+                        IntPtr hWnd = procs[i].MainWindowHandle;
+                        if (hWnd != IntPtr.Zero)
+                        {
+                            ShowWindow(hWnd, SW_MINIMIZE);
+                            minimized = true;
+                        }
+                    }
+                    catch { }
+                    finally
+                    {
+                        try { procs[i].Dispose(); } catch { }
+                    }
+                }
+            }
+            catch { }
+            return minimized;
+        }
+
+        private static readonly char[] UnsafeLaunchCmdChars = new char[] { '"', '\'', '`', '$', '|', '&', '<', '>', '^', '%', '\r', '\n', '\t', '\0' };
+
+        public static string ResolveCustomLaunchCommand()
+        {
+            string raw = Environment.GetEnvironmentVariable("AGY_CLAUDE_STYLE_LAUNCH_CMD");
+            if (string.IsNullOrWhiteSpace(raw))
+            {
+                raw = Environment.GetEnvironmentVariable("AGY_CLAUDE_STUDIO_LAUNCH_CMD");
+            }
+            if (string.IsNullOrWhiteSpace(raw)) return null;
+            string cleaned = raw.Trim();
+            if (cleaned.Length >= 2 &&
+                ((cleaned[0] == '"' && cleaned[cleaned.Length - 1] == '"') ||
+                 (cleaned[0] == '\'' && cleaned[cleaned.Length - 1] == '\'')))
+            {
+                cleaned = cleaned.Substring(1, cleaned.Length - 2).Trim();
+            }
+            if (string.IsNullOrEmpty(cleaned) || cleaned.Length > 512) return null;
+            if (cleaned.IndexOfAny(UnsafeLaunchCmdChars) >= 0) return null;
+            for (int i = 0; i < cleaned.Length; i++)
+            {
+                if (cleaned[i] < 0x20 || cleaned[i] == 0x7f) return null;
+            }
+            string ext = Path.GetExtension(cleaned);
+            if (!string.Equals(ext, ".exe", StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(ext, ".cmd", StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(ext, ".bat", StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(ext, ".ps1", StringComparison.OrdinalIgnoreCase))
+            {
+                return null;
+            }
+            return File.Exists(cleaned) ? cleaned : null;
+        }
+
+        private static void EnsureNodeUseEnvProxyIfProxySet()
+        {
+            string existing = Environment.GetEnvironmentVariable("NODE_USE_ENV_PROXY");
+            if (!string.IsNullOrWhiteSpace(existing)) return;
+            string[] keys = new string[] { "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy" };
+            for (int i = 0; i < keys.Length; i++)
+            {
+                string val = Environment.GetEnvironmentVariable(keys[i]);
+                if (!string.IsNullOrWhiteSpace(val))
+                {
+                    try { Environment.SetEnvironmentVariable("NODE_USE_ENV_PROXY", "1"); } catch { }
+                    return;
+                }
+            }
+        }
+
         public static bool LaunchAntigravityWithCdp(string exePath, int port)
         {
-            string target = !string.IsNullOrEmpty(exePath) ? exePath : FindAntigravityExePath();
+            string target = !string.IsNullOrEmpty(exePath) ? exePath : (ResolveCustomLaunchCommand() ?? FindAntigravityExePath());
             if (string.IsNullOrEmpty(target) || !File.Exists(target)) return false;
             try
             {
@@ -1115,11 +1340,33 @@ namespace AgyClaudeStyle
                 {
                     RemoveStalePortFile();
                 }
+                EnsureNodeUseEnvProxyIfProxySet();
+                string portArg = "--remote-debugging-port=" + Math.Max(0, port);
+                string ext = Path.GetExtension(target);
                 ProcessStartInfo psi = new ProcessStartInfo();
-                psi.FileName = target;
-                psi.Arguments = "--remote-debugging-port=" + Math.Max(0, port);
                 psi.WorkingDirectory = Path.GetDirectoryName(target);
-                psi.UseShellExecute = true;
+                if (string.Equals(ext, ".cmd", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(ext, ".bat", StringComparison.OrdinalIgnoreCase))
+                {
+                    string comspec = Environment.GetEnvironmentVariable("ComSpec");
+                    psi.FileName = !string.IsNullOrWhiteSpace(comspec) ? comspec : "cmd.exe";
+                    psi.Arguments = "/d /c \"\"" + target + "\" " + portArg + "\"";
+                    psi.UseShellExecute = false;
+                    psi.CreateNoWindow = true;
+                }
+                else if (string.Equals(ext, ".ps1", StringComparison.OrdinalIgnoreCase))
+                {
+                    psi.FileName = "powershell.exe";
+                    psi.Arguments = "-NoProfile -ExecutionPolicy Bypass -File \"" + target + "\" " + portArg;
+                    psi.UseShellExecute = false;
+                    psi.CreateNoWindow = true;
+                }
+                else
+                {
+                    psi.FileName = target;
+                    psi.Arguments = portArg;
+                    psi.UseShellExecute = true;
+                }
                 Process.Start(psi);
                 return true;
             }
@@ -1131,7 +1378,7 @@ namespace AgyClaudeStyle
 
         public static bool RelaunchAntigravityWithCdp(string exePath, int port, int waitMs)
         {
-            string target = !string.IsNullOrEmpty(exePath) ? exePath : FindAntigravityExePath();
+            string target = !string.IsNullOrEmpty(exePath) ? exePath : (ResolveCustomLaunchCommand() ?? FindAntigravityExePath());
             if (string.IsNullOrEmpty(target) || !File.Exists(target)) return false;
 
             try

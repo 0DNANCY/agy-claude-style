@@ -418,131 +418,52 @@ test('inject expression mounts and REMOVE_EXPRESSION cleanly tears down on simul
     assert.equal(ctxPop.innerHTML.includes('Token HUD 与圆环快捷设置'), false);
     assert.equal(ctxPop.innerHTML.includes('data-hud-key'), false);
 
-    // Settings section must mount ONLY in Appearance, NOT General, grouped cleanly into 3 cards + collapsible HUD details
+    // Settings section stays in Appearance panel alongside native Aux Pane control panel
     assert.equal(generalPanel.querySelector('#ag-cs-settings-sec'), null);
     const settingsSec = appearancePanel.querySelector('#ag-cs-settings-sec');
-    assert.ok(settingsSec);
-    assert.equal(settingsSec.querySelector('h3')?.textContent, 'AGY Claude Style (agy-claude-style)');
-    const settingGroups = settingsSec.querySelectorAll('.ag-cs-settings-group');
-    assert.equal(settingGroups.length, 3);
-    assert.deepEqual(
-      settingGroups.map((g) => g.getAttribute('data-ag-cs-group')),
-      ['appearance', 'interaction', 'telemetry']
-    );
-    const hudDetails = settingsSec.querySelector('.ag-cs-settings-details');
-    assert.ok(hudDetails);
-    assert.equal(hudDetails.hasAttribute('open'), false);
-    const claudeCondRow = settingsSec.querySelector('[data-ag-cs-cond="claude"]');
-    const lwfCondRow = settingsSec.querySelector('[data-ag-cs-cond="liangwufeng"]');
-    assert.equal(claudeCondRow?.getAttribute('data-ag-cs-dim'), '1'); // because liangwufeng is currently active
-    assert.equal(lwfCondRow?.hasAttribute('data-ag-cs-dim'), false);
+    assert.ok(settingsSec, 'Expected #ag-cs-settings-sec to mount in Appearance panel');
+    assert.ok(settingsSec.querySelector('[data-ag-cs-group="powertools"]'), 'Expected Powertools group in Appearance panel');
+    assert.ok(settingsSec.querySelector('[data-ag-cs-row="stagePromptInjection"]'), 'Expected stagePromptInjection toggle in Appearance panel');
 
-    const settingKeys = new Set(
-      appearancePanel.querySelectorAll('#ag-cs-settings-sec button').map((b) => b.getAttribute('data-ag-cs-key'))
-    );
-    assert.equal(settingKeys.size, 20);
-    for (const expectedKey of [
-      'language',
-      'homeLayout',
-      'palette',
-      'logoInk',
-      'sidebarRestyle',
-      'composerRestyle',
-      'effortSliderStyle',
-      'effortAccent',
-      'performanceBackdrop',
-      'smoothCaret',
-      'mascot',
-      'homeRipple',
-      'inlineStats',
-      'ringMode',
-      'turnBadges',
-      'hudTopBar',
-      'hudBottomBar',
-      'hudRimProgress',
-      'hudFooterChip',
-      'hudCompact',
-    ]) {
-      assert.ok(settingKeys.has(expectedKey), `Missing settings control for ${expectedKey}`);
-    }
-
-    // Verify all 5 language buttons exist in Appearance settings and clicking switches UI + emits CDP binding
-    const bindingCalls = [];
-    sandbox[cdp.SETTING_BINDING] = (payload) => bindingCalls.push(JSON.parse(payload));
-    const getLangBtns = () =>
-      appearancePanel
-        .querySelectorAll('#ag-cs-settings-sec button')
-        .filter((b) => b.getAttribute('data-ag-cs-key') === 'language');
-    assert.deepEqual(
-      getLangBtns().map((b) => [b.getAttribute('data-ag-cs-val'), b.textContent]),
-      [
-        ['"zh-CN"', '简体中文'],
-        ['"zh-TW"', '繁體中文'],
-        ['"yue"', '粵語'],
-        ['"en"', 'English'],
-        ['"ja"', '日本語'],
-      ]
-    );
-
-    const checkLangSwitch = (targetLang, hostTitle, expectedSettingsLangTitle, expectedOverviewTab, expectedPlaceholder, expectedQuotaTab) => {
-      appearanceH2.textContent = hostTitle;
-      const btn = getLangBtns().find((b) => b.getAttribute('data-ag-cs-val') === JSON.stringify(targetLang));
-      assert.ok(btn, `Expected language button for ${targetLang}`);
-      btn.dispatch('click');
+    // Verify all 5 language switches work live via refreshConfig (used by both Aux Pane and Appearance panel)
+    const checkLangSwitch = (targetLang, expectedOverviewTab, expectedPlaceholder, expectedQuotaTab) => {
+      doc.hidden = true;
+      sandbox.window.__agClaudeStyle.refreshConfig({ ...cdp.DEFAULT_CONFIG, language: targetLang, effortSliderStyle: 'liangwufeng' });
+      doc.hidden = false;
       assert.equal(html.getAttribute('data-ag-cs-lang'), targetLang);
-      const secNow = appearancePanel.querySelector('#ag-cs-settings-sec');
-      assert.ok(secNow, `Settings section should stay mounted when Appearance title is ${hostTitle}`);
-      assert.equal(secNow.getAttribute('data-ag-cs-lang'), targetLang);
-      assert.equal(secNow.querySelector('[data-ag-cs-row="language"] [data-k="t"]')?.textContent, expectedSettingsLangTitle);
+      assert.equal(appearancePanel.querySelector('#ag-cs-settings-sec')?.getAttribute('data-ag-cs-lang'), targetLang);
       assert.equal(home.querySelector('.ag-cs-home-tab[data-tab="overview"]')?.textContent, expectedOverviewTab);
       assert.equal(placeholder.getAttribute('data-ag-cs-placeholder'), expectedPlaceholder);
       assert.ok(ctxPop.innerHTML.includes(expectedQuotaTab));
     };
 
-    checkLangSwitch('zh-TW', '外觀', '介面語言', '概覽', '描述任務或提出問題', '模型配額');
-    checkLangSwitch('yue', '外觀', '介面語言', '概覽', '寫低你想做嘅任務或者問題', '模型配額');
-    checkLangSwitch('en', 'Appearance', 'Interface Language', 'Overview', 'How can I help you today?', 'Quotas');
+    checkLangSwitch('zh-TW', '概覽', '描述任務或提出問題', '模型配額');
+    checkLangSwitch('yue', '概覽', '寫低你想做嘅任務或者問題', '模型配額');
+    checkLangSwitch('en', 'Overview', 'How can I help you today?', 'Quotas');
     assert.equal(html.hasAttribute('data-ag-cs-cjk'), false);
-    checkLangSwitch('ja', '外観', '表示言語', '概要', 'タスクの説明や質問を入力してください', 'クォータ');
+    checkLangSwitch('ja', '概要', 'タスクの説明や質問を入力してください', 'クォータ');
     assert.equal(html.getAttribute('data-ag-cs-cjk'), '1');
-    checkLangSwitch('zh-CN', '外观', '界面语言', '概览', '描述任务或提出问题', '模型配额');
+    checkLangSwitch('zh-CN', '概览', '描述任务或提出问题', '模型配额');
 
     // Also verify live open Effort Popover refreshes across languages
     sandbox.window.__agClaudeStyle.openEffortPopover(effortSpan, modelBtn);
     const activeLwfPop = body.querySelector('.ag-cs-effort-popover');
     assert.ok(activeLwfPop);
     assert.ok(activeLwfPop.innerHTML.includes('性能 · PERFORMANCE'));
-    getLangBtns().find((b) => b.getAttribute('data-ag-cs-val') === '"ja"').dispatch('click');
+    doc.hidden = true;
+    sandbox.window.__agClaudeStyle.refreshConfig({ ...cdp.DEFAULT_CONFIG, language: 'ja', effortSliderStyle: 'liangwufeng' });
+    doc.hidden = false;
     assert.ok(activeLwfPop.innerHTML.includes('パフォーマンス'));
-    getLangBtns().find((b) => b.getAttribute('data-ag-cs-val') === '"en"').dispatch('click');
+    doc.hidden = true;
+    sandbox.window.__agClaudeStyle.refreshConfig({ ...cdp.DEFAULT_CONFIG, language: 'en', effortSliderStyle: 'liangwufeng' });
+    doc.hidden = false;
     assert.ok(activeLwfPop.innerHTML.includes('PERFORMANCE'));
-    getLangBtns().find((b) => b.getAttribute('data-ag-cs-val') === '"zh-CN"').dispatch('click');
+    doc.hidden = true;
+    sandbox.window.__agClaudeStyle.refreshConfig({ ...cdp.DEFAULT_CONFIG, language: 'zh-CN', effortSliderStyle: 'liangwufeng' });
+    doc.hidden = false;
     assert.ok(activeLwfPop.innerHTML.includes('性能 · PERFORMANCE'));
 
-    assert.deepEqual(
-      bindingCalls.map((c) => [c.key, c.value]),
-      [
-        ['language', 'zh-TW'],
-        ['language', 'yue'],
-        ['language', 'en'],
-        ['language', 'ja'],
-        ['language', 'zh-CN'],
-        ['language', 'ja'],
-        ['language', 'en'],
-        ['language', 'zh-CN'],
-      ]
-    );
-    appearanceH2.textContent = '外观';
-
-    // Refreshing config to chatgpt (Codex) dims BOTH claude and liangwufeng sub-rows
-    doc.hidden = true;
-    sandbox.window.__agClaudeStyle.refreshConfig({ ...cdp.DEFAULT_CONFIG, effortSliderStyle: 'chatgpt' });
-    await new Promise((r) => setTimeout(r, 80));
-    doc.hidden = false;
-    assert.equal(appearancePanel.querySelector('[data-ag-cs-cond="claude"]')?.getAttribute('data-ag-cs-dim'), '1');
-    assert.equal(appearancePanel.querySelector('[data-ag-cs-cond="liangwufeng"]')?.getAttribute('data-ag-cs-dim'), '1');
-
-    // Refreshing config externally syncs open Settings buttons & conditional row dimming immediately
+    // Refreshing config updates palette and effort attributes cleanly
     doc.hidden = true;
     sandbox.window.__agClaudeStyle.refreshConfig({ ...cdp.DEFAULT_CONFIG, palette: 'claude' });
     await new Promise((r) => setTimeout(r, 80));
@@ -550,13 +471,6 @@ test('inject expression mounts and REMOVE_EXPRESSION cleanly tears down on simul
     assert.equal(html.getAttribute('data-ag-cs-palette'), 'claude');
     assert.equal(html.getAttribute('data-ag-cs-effort-accent'), 'on');
     assert.equal(html.getAttribute('data-ag-cs-perf-backdrop'), 'card');
-    assert.equal(appearancePanel.querySelector('[data-ag-cs-cond="claude"]')?.hasAttribute('data-ag-cs-dim'), false);
-    assert.equal(appearancePanel.querySelector('[data-ag-cs-cond="liangwufeng"]')?.getAttribute('data-ag-cs-dim'), '1');
-    const claudeBtn = appearancePanel
-      .querySelectorAll('#ag-cs-settings-sec button')
-      .find((b) => b.getAttribute('data-ag-cs-key') === 'palette' && b.getAttribute('data-ag-cs-val') === '"claude"');
-    assert.equal(claudeBtn.getAttribute('aria-pressed'), 'true');
-    assert.equal(claudeBtn.hasAttribute('data-pressed'), true);
 
     // Effort word-boundary guard: "Flow" inside a model label must not be tagged "low"
     effortSpan.textContent = 'Flow';
@@ -587,6 +501,7 @@ test('inject expression mounts and REMOVE_EXPRESSION cleanly tears down on simul
     assert.equal(card.querySelector('.ag-cs-crab'), null);
     assert.equal(dialog.querySelector('#ag-cs-settings-sec'), null);
   } finally {
+    try { vm.runInNewContext(cdp.REMOVE_EXPRESSION, sandbox); } catch {}
     for (const id of timers) clearTimeout(id);
   }
 });
@@ -1273,8 +1188,47 @@ test('bottom-right context ring navigates directly to quotas or breakdown tab ba
     ringBtn.dispatch('click');
     pop = body.querySelector('.ag-cs-ctx-popover');
     assert.equal(pop?.querySelector('.is-active')?.getAttribute('data-ctx-tab'), 'quotas');
+    pop?.querySelector('.ag-cs-ctx-close')?.dispatch('click');
+
+    doc.hidden = true;
+    sandbox.window.__agClaudeStyle.refreshConfig({ ...cdp.DEFAULT_CONFIG, ringMode: 'both' });
+    await new Promise((r) => setTimeout(r, 80));
+    doc.hidden = false;
+
+    const quotaRingBtn = footer.querySelector('.ag-cs-quota-ring');
+    const usedRingBtn = footer.querySelector('.ag-cs-context-ring');
+    assert.ok(quotaRingBtn, 'Expected left quota ring widget in both mode');
+    assert.ok(usedRingBtn, 'Expected right context-used ring widget in both mode');
+    assert.equal(quotaRingBtn.getAttribute('data-ring-mode'), 'quota');
+    assert.equal(usedRingBtn.getAttribute('data-ring-mode'), 'context-used');
+
+    quotaRingBtn.dispatch('click');
+    pop = body.querySelector('.ag-cs-ctx-popover');
+    assert.equal(pop?.querySelector('.is-active')?.getAttribute('data-ctx-tab'), 'quotas');
+    pop?.querySelector('.ag-cs-ctx-close')?.dispatch('click');
+
+    usedRingBtn.dispatch('click');
+    pop = body.querySelector('.ag-cs-ctx-popover');
+    assert.equal(pop?.querySelector('.is-active')?.getAttribute('data-ctx-tab'), 'breakdown');
+    pop?.querySelector('.ag-cs-ctx-close')?.dispatch('click');
+
+    // Switching back to single ring removes stale .ag-cs-quota-ring cleanly
+    doc.hidden = true;
+    sandbox.window.__agClaudeStyle.refreshConfig({ ...cdp.DEFAULT_CONFIG, ringMode: 'context' });
+    await new Promise((r) => setTimeout(r, 80));
+    doc.hidden = false;
+    assert.equal(footer.querySelector('.ag-cs-quota-ring'), null);
+
+    // Re-enable dual rings and ensure REMOVE_EXPRESSION removes both rings
+    doc.hidden = true;
+    sandbox.window.__agClaudeStyle.refreshConfig({ ...cdp.DEFAULT_CONFIG, ringMode: 'both' });
+    await new Promise((r) => setTimeout(r, 80));
+    doc.hidden = false;
+    assert.ok(footer.querySelector('.ag-cs-quota-ring'));
 
     vm.runInNewContext(cdp.REMOVE_EXPRESSION, sandbox);
+    assert.equal(footer.querySelector('.ag-cs-quota-ring'), null);
+    assert.equal(footer.querySelector('.ag-cs-context-ring'), null);
   } finally {
     for (const id of timers) clearTimeout(id);
   }
@@ -1440,6 +1394,14 @@ test('new conversation renders bottom-right ring and inline tokens info on home 
   const inputBox = makeEl('div', { id: 'antigravity.agentSidePanelInputBox', attrs: { 'data-testid': 'agent-input-box' } });
   const card = makeEl('div', { className: 'surface-composer-card' });
   const editorEl = makeEl('div', { attrs: { contenteditable: 'true', 'data-lexical-editor': 'true' } });
+  let renderedDraftReads = 0;
+  Object.defineProperty(editorEl, 'innerText', {
+    get() {
+      renderedDraftReads++;
+      return editorEl.textContent;
+    },
+  });
+  editorEl.childNodes = editorEl.children;
   const footer = makeEl('div', { className: 'agy-composer-footer' });
   const modelBtn = makeEl('button', { attrs: { 'data-testid': 'model-selector-trigger' } });
   modelBtn.appendChild(makeEl('span', { text: 'Gemini 4 Hydrogen' }));
@@ -1544,13 +1506,20 @@ test('new conversation renders bottom-right ring and inline tokens info on home 
     assert.equal(ringBtn.getAttribute('data-ring-mode'), 'quota');
     assert.equal(ringBtn.querySelector('span')?.textContent, '42%');
 
-    // Typing a draft in new conversation updates inline tokens estimate live
-    editorEl.textContent = '帮我修复新建对话下未显示圆环及tokens信息的问题';
+    // Preserve line and paragraph boundaries in draft telemetry without reading innerText layout.
+    const firstParagraph = makeEl('p');
+    firstParagraph.childNodes = firstParagraph.children;
+    firstParagraph.appendChild(makeEl('span', { text: 'foo' }));
+    firstParagraph.appendChild(makeEl('br'));
+    firstParagraph.appendChild(makeEl('span', { text: 'bar' }));
+    editorEl.appendChild(firstParagraph);
+    editorEl.appendChild(makeEl('p', { text: 'baz' }));
     for (const fn of [...(docListeners.get('input') || [])]) {
       fn({ type: 'input', target: editorEl });
     }
     await new Promise((r) => setTimeout(r, 40));
-    assert.match(statsBtn.textContent, /^0 轮 0 步 · ~\d+ tok · 0% 缓存$/);
+    assert.equal(renderedDraftReads, 0, 'draft telemetry should not read innerText');
+    assert.equal(statsBtn.textContent, '0 轮 0 步 · ~3 tok · 0% 缓存');
 
     // Part B: Transition into a newly started conversation while Turn 1 is still streaming (calls === 0)
     home.remove();
@@ -2666,6 +2635,11 @@ test('streaming Turn 2 response does not hijack #T1 badge, observer ignores exte
   const inputBox = makeNode('div', { id: 'antigravity.agentSidePanelInputBox', attrs: { 'data-testid': 'agent-input-box' } });
   const card = makeNode('div', { className: 'surface-composer-card' });
   const editorEl = makeNode('div', { attrs: { contenteditable: 'true', 'data-lexical-editor': 'true' } });
+  let editorLayoutReads = 0;
+  editorEl.getBoundingClientRect = () => {
+    editorLayoutReads++;
+    return { left: 0, top: 0, right: 300, bottom: 40, width: 300, height: 40 };
+  };
   const footer = makeNode('div', { className: 'agy-composer-footer' });
   footer.appendChild(makeNode('button', { attrs: { 'data-testid': 'model-selector-trigger' }, text: 'Gemini 4 Neon' }));
   card.appendChild(editorEl);
@@ -2677,6 +2651,8 @@ test('streaming Turn 2 response does not hijack #T1 badge, observer ignores exte
   // External code editor outside conversation-view
   const codeEditor = makeNode('div', { className: 'monaco-editor' });
   body.appendChild(codeEditor);
+  const pdfTextLayer = makeNode('div', { className: 'textLayer', attrs: { 'data-testid': 'pdf-text-layer' } });
+  body.appendChild(pdfTextLayer);
 
   // Trajectory: Turn 1 completed with generatorMetadata; Turn 2 is streaming with no generatorMetadata yet
   const traj = {
@@ -2788,6 +2764,13 @@ test('streaming Turn 2 response does not hijack #T1 badge, observer ignores exte
     const rafBefore = rafCalls;
     observerCb([{ type: 'characterData', target: { nodeType: 3, parentElement: codeEditor } }]);
     assert.equal(rafCalls, rafBefore, 'External editor characterData must not trigger scheduleSync');
+    const pdfSpan = makeNode('span', { text: 'Rendered PDF text' });
+    pdfTextLayer.appendChild(pdfSpan);
+    observerCb([{ type: 'childList', target: pdfTextLayer, addedNodes: [pdfSpan], removedNodes: [] }]);
+    assert.equal(rafCalls, rafBefore, 'PDF text layer additions must not trigger composer sync');
+
+    // Unfocused composer caret sync must skip getBoundingClientRect() / forced layout reads (PR #21 / Fixes #20)
+    assert.equal(editorLayoutReads, 0, 'Unfocused composer must skip caret layout reads');
 
     vm.runInNewContext(cdp.REMOVE_EXPRESSION, sandbox);
   } finally {

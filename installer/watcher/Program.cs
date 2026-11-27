@@ -601,6 +601,39 @@ namespace AgyClaudeStyle.Watcher
                                 if (kv.TryGetValue("key", out kObj) && kObj is string && kv.TryGetValue("value", out vObj))
                                 {
                                     string key = (string)kObj;
+                                    if (string.Equals(key, "__windowAction", StringComparison.Ordinal) && string.Equals(vObj as string, "hide", StringComparison.Ordinal))
+                                    {
+                                        CdpHelper.MinimizeAntigravityWindow();
+                                        return;
+                                    }
+                                    if (string.Equals(key, "__fileAction", StringComparison.Ordinal) && vObj is Dictionary<string, object>)
+                                    {
+                                        Dictionary<string, object> actionDict = (Dictionary<string, object>)vObj;
+                                        object reqObj;
+                                        string reqId = actionDict.TryGetValue("reqId", out reqObj) ? (reqObj as string ?? "") : "";
+                                        Task.Run(() =>
+                                        {
+                                            Dictionary<string, object> reply;
+                                            try
+                                            {
+                                                reply = HandleWinFileAction(actionDict);
+                                            }
+                                            catch (Exception ex)
+                                            {
+                                                reply = new Dictionary<string, object>(StringComparer.Ordinal);
+                                                reply["ok"] = false;
+                                                reply["error"] = ex.Message;
+                                            }
+                                            if (!string.IsNullOrEmpty(reqId))
+                                            {
+                                                string expr = "if (typeof window.__agCsFileActionReply === 'function') window.__agCsFileActionReply(" + MiniJson.StringifyString(reqId) + ", " + MiniJson.Stringify(reply, false) + ")";
+                                                Dictionary<string, object> evalParams = new Dictionary<string, object>(StringComparer.Ordinal);
+                                                evalParams["expression"] = expr;
+                                                session.SendAsync("Runtime.evaluate", evalParams, 3000).ContinueWith((t) => { Exception _ = t.Exception; });
+                                            }
+                                        });
+                                        return;
+                                    }
                                     if (CdpHelper.UpdateConfigSetting(_baseDir, manifest, key, vObj))
                                     {
                                         Log("[⚙] 设置已保存: " + key + " = " + MiniJson.Stringify(vObj, false));
@@ -937,6 +970,260 @@ namespace AgyClaudeStyle.Watcher
                 try { mutex.Dispose(); } catch { }
             }
             return 0;
+        }
+
+        private static string StripLineColAnchor(string raw)
+        {
+            return System.Text.RegularExpressions.Regex.Replace(raw ?? "", "(?:#L?\\d+(?::C?\\d+)?(?:-L?\\d+(?::C?\\d+)?)?)\\z", "", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        }
+
+        private static string ResolveLocalWinFilePath(string rawUri)
+        {
+            string input = (rawUri ?? "").Trim();
+            if (input.Length == 0) throw new InvalidOperationException("Empty file URI");
+            string fsPath;
+            if (input.StartsWith("file://", StringComparison.OrdinalIgnoreCase))
+            {
+                string withoutAnchor = StripLineColAnchor(input);
+                int qIdx = withoutAnchor.IndexOf('?');
+                if (qIdx >= 0) withoutAnchor = withoutAnchor.Substring(0, qIdx);
+                string encodedHash = withoutAnchor.Replace("#", "%23");
+                Uri uri;
+                if (!Uri.TryCreate(encodedHash, UriKind.Absolute, out uri) || uri.Scheme != Uri.UriSchemeFile)
+                {
+                    throw new InvalidOperationException("Invalid file URI");
+                }
+                string host = (uri.Host ?? "").Trim().ToLowerInvariant();
+                if (host != "" && host != "localhost" && host != "127.0.0.1" && host != "::1" && host != "[::1]")
+                {
+                    throw new InvalidOperationException("Non-local file URI host rejected: " + host);
+                }
+                string rawPath = Uri.UnescapeDataString(uri.AbsolutePath ?? "");
+                if (System.Text.RegularExpressions.Regex.IsMatch(rawPath, @"^/[a-zA-Z]:"))
+                {
+                    rawPath = rawPath.Substring(1);
+                }
+                fsPath = rawPath.Replace('/', '\\');
+            }
+            else if (input.StartsWith("\\\\", StringComparison.Ordinal) || input.StartsWith("//", StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException("UNC/network paths are not supported");
+            }
+            else if (System.Text.RegularExpressions.Regex.IsMatch(input, @"^[a-zA-Z]:[\\/]"))
+            {
+                fsPath = StripLineColAnchor(input).Replace('/', '\\');
+            }
+            else
+            {
+                throw new InvalidOperationException("Only local file:// URIs or drive-letter paths are supported");
+            }
+            for (int i = 0; i < fsPath.Length; i++)
+            {
+                if (fsPath[i] < 0x20 || fsPath[i] == 0x7f) throw new InvalidOperationException("Invalid control character in path");
+            }
+            return Path.GetFullPath(fsPath);
+        }
+
+        private static Dictionary<string, object> MakeAppEntry(string id, string label, string kind, string icon)
+        {
+            Dictionary<string, object> d = new Dictionary<string, object>(StringComparer.Ordinal);
+            d["id"] = id;
+            d["label"] = label;
+            d["kind"] = kind;
+            d["icon"] = icon;
+            return d;
+        }
+
+        private static List<object> DiscoverWinOpenWithApps()
+        {
+            List<object> apps = new List<object>();
+            apps.Add(MakeAppEntry("default", "默认应用", "system", "default"));
+            string localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            string progFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
+            string progFiles86 = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86);
+            string winDir = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
+
+            string[,] candidates = new string[,]
+            {
+                { "vscode", "VS Code", "editor", "vscode", Path.Combine(localAppData, "Programs", "Microsoft VS Code", "Code.exe") },
+                { "cursor", "Cursor", "editor", "cursor", Path.Combine(localAppData, "Programs", "cursor", "Cursor.exe") },
+                { "windsurf", "Windsurf", "editor", "windsurf", Path.Combine(localAppData, "Programs", "Windsurf", "Windsurf.exe") },
+                { "notepadpp", "Notepad++", "editor", "notepad", Path.Combine(progFiles, "Notepad++", "notepad++.exe") },
+                { "notepad", "记事本", "editor", "notepad", Path.Combine(winDir, "System32", "notepad.exe") },
+                { "terminal-wt", "Windows Terminal", "terminal", "terminal", Path.Combine(localAppData, "Microsoft", "WindowsApps", "wt.exe") },
+                { "terminal-ps", "PowerShell", "terminal", "terminal", Path.Combine(winDir, "System32", "WindowsPowerShell", "v1.0", "powershell.exe") }
+            };
+            for (int i = 0; i < candidates.GetLength(0); i++)
+            {
+                string exe = candidates[i, 4];
+                if (!string.IsNullOrEmpty(exe) && File.Exists(exe))
+                {
+                    apps.Add(MakeAppEntry(candidates[i, 0], candidates[i, 1], candidates[i, 2], candidates[i, 3]));
+                }
+            }
+            if (!File.Exists(Path.Combine(progFiles, "Notepad++", "notepad++.exe")) &&
+                File.Exists(Path.Combine(progFiles86, "Notepad++", "notepad++.exe")))
+            {
+                apps.Add(MakeAppEntry("notepadpp", "Notepad++", "editor", "notepad"));
+            }
+            return apps;
+        }
+
+        private static string FindWinAppCommand(string appId)
+        {
+            string localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            string progFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
+            string progFiles86 = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86);
+            string winDir = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
+            if (appId == "vscode")
+            {
+                string p1 = Path.Combine(localAppData, "Programs", "Microsoft VS Code", "Code.exe");
+                if (File.Exists(p1)) return p1;
+                string p2 = Path.Combine(progFiles, "Microsoft VS Code", "Code.exe");
+                if (File.Exists(p2)) return p2;
+            }
+            else if (appId == "cursor")
+            {
+                string p1 = Path.Combine(localAppData, "Programs", "cursor", "Cursor.exe");
+                if (File.Exists(p1)) return p1;
+            }
+            else if (appId == "windsurf")
+            {
+                string p1 = Path.Combine(localAppData, "Programs", "Windsurf", "Windsurf.exe");
+                if (File.Exists(p1)) return p1;
+            }
+            else if (appId == "notepadpp")
+            {
+                string p1 = Path.Combine(progFiles, "Notepad++", "notepad++.exe");
+                if (File.Exists(p1)) return p1;
+                string p2 = Path.Combine(progFiles86, "Notepad++", "notepad++.exe");
+                if (File.Exists(p2)) return p2;
+            }
+            else if (appId == "notepad")
+            {
+                return Path.Combine(winDir, "System32", "notepad.exe");
+            }
+            else if (appId == "terminal-wt")
+            {
+                return Path.Combine(localAppData, "Microsoft", "WindowsApps", "wt.exe");
+            }
+            else if (appId == "terminal-ps")
+            {
+                return Path.Combine(winDir, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+            }
+            return null;
+        }
+
+        private static Dictionary<string, object> HandleWinFileAction(Dictionary<string, object> action)
+        {
+            object typeObj;
+            object uriObj;
+            string type = action.TryGetValue("type", out typeObj) ? (typeObj as string ?? "") : "";
+            string uri = action.TryGetValue("uri", out uriObj) ? (uriObj as string ?? "") : "";
+
+            if (type == "file.openWithList")
+            {
+                Dictionary<string, object> res = new Dictionary<string, object>(StringComparer.Ordinal);
+                res["ok"] = true;
+                res["apps"] = DiscoverWinOpenWithApps();
+                return res;
+            }
+
+            string localPath = ResolveLocalWinFilePath(uri);
+            bool exists = File.Exists(localPath) || Directory.Exists(localPath);
+            bool isDir = Directory.Exists(localPath);
+
+            if (type == "file.path")
+            {
+                Dictionary<string, object> res = new Dictionary<string, object>(StringComparer.Ordinal);
+                res["ok"] = true;
+                res["path"] = localPath;
+                res["exists"] = exists;
+                res["isDirectory"] = isDir;
+                return res;
+            }
+
+            if (!exists) throw new FileNotFoundException("File not found: " + localPath);
+
+            if (type == "file.open")
+            {
+                ProcessStartInfo psi = new ProcessStartInfo(localPath);
+                psi.UseShellExecute = true;
+                Process.Start(psi);
+                Dictionary<string, object> res = new Dictionary<string, object>(StringComparer.Ordinal);
+                res["ok"] = true;
+                res["path"] = localPath;
+                return res;
+            }
+            if (type == "file.reveal")
+            {
+                string clean = localPath.Replace("\"", "");
+                ProcessStartInfo psi = new ProcessStartInfo("explorer.exe", "/select,\"" + clean + "\"");
+                psi.UseShellExecute = false;
+                Process.Start(psi);
+                Dictionary<string, object> res = new Dictionary<string, object>(StringComparer.Ordinal);
+                res["ok"] = true;
+                res["path"] = localPath;
+                return res;
+            }
+            if (type == "file.copy")
+            {
+                ProcessStartInfo psi = new ProcessStartInfo("powershell.exe");
+                psi.Arguments = "-NoProfile -NonInteractive -STA -Command \"Set-Clipboard -LiteralPath $env:AGY_FILE_PATH\"";
+                psi.UseShellExecute = false;
+                psi.CreateNoWindow = true;
+                psi.EnvironmentVariables["AGY_FILE_PATH"] = localPath;
+                using (Process p = Process.Start(psi))
+                {
+                    if (p != null) p.WaitForExit(4000);
+                }
+                Dictionary<string, object> res = new Dictionary<string, object>(StringComparer.Ordinal);
+                res["ok"] = true;
+                res["path"] = localPath;
+                return res;
+            }
+            if (type == "file.openWith")
+            {
+                object appIdObj;
+                string appId = action.TryGetValue("appId", out appIdObj) ? (appIdObj as string ?? "default") : "default";
+                if (appId == "default")
+                {
+                    ProcessStartInfo psi = new ProcessStartInfo(localPath);
+                    psi.UseShellExecute = true;
+                    Process.Start(psi);
+                }
+                else
+                {
+                    string cmd = FindWinAppCommand(appId);
+                    if (string.IsNullOrEmpty(cmd) || !File.Exists(cmd))
+                    {
+                        throw new InvalidOperationException("Unsupported or unavailable app: " + appId);
+                    }
+                    string targetDir = isDir ? localPath : (Path.GetDirectoryName(localPath) ?? localPath);
+                    ProcessStartInfo psi = new ProcessStartInfo(cmd);
+                    psi.UseShellExecute = false;
+                    if (appId == "terminal-wt")
+                    {
+                        psi.Arguments = "-d \"" + targetDir.Replace("\"", "").Replace(";", "\\;") + "\"";
+                    }
+                    else if (appId == "terminal-ps")
+                    {
+                        psi.WorkingDirectory = targetDir;
+                    }
+                    else
+                    {
+                        psi.Arguments = "\"" + localPath.Replace("\"", "") + "\"";
+                    }
+                    Process.Start(psi);
+                }
+                Dictionary<string, object> res = new Dictionary<string, object>(StringComparer.Ordinal);
+                res["ok"] = true;
+                res["path"] = localPath;
+                res["appId"] = appId;
+                return res;
+            }
+
+            throw new InvalidOperationException("Unknown file action type: " + type);
         }
     }
 }

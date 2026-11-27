@@ -25,7 +25,7 @@ const RELAUNCH = process.argv.includes('--relaunch');
 const REPLACE_EXISTING = process.argv.includes('--replace');
 const SKIP_IF_RUNNING = process.argv.includes('--skip-if-running');
 const EXIT_ON_HOST_CLOSE_FLAG = MANAGED || process.argv.includes('--exit-on-host-close');
-const LOG_FILE = path.join(__dirname, 'watch.log');
+const LOG_FILE = path.join(cdpApi.STATE_DIR || __dirname, 'watch.log');
 
 function parseIntArg(flag, envName) {
   const prefix = `${flag}=`;
@@ -57,18 +57,25 @@ const POLL_INTERVAL_MS = Math.max(
   Math.min(10000, parseIntArg('--poll-ms', 'AG_WATCH_POLL_MS') || 2000)
 );
 
+let consoleLoggingEnabled = true;
+let activeLogFile = LOG_FILE;
+
 function log(...args) {
   const line = args.map((a) => (typeof a === 'string' ? a : JSON.stringify(a))).join(' ');
-  try {
-    console.log(line);
-  } catch {}
-  if (WATCH) {
+  if (consoleLoggingEnabled) {
     try {
-      const stat = fs.existsSync(LOG_FILE) ? fs.statSync(LOG_FILE) : null;
+      console.log(line);
+    } catch {}
+  }
+  if (WATCH || !consoleLoggingEnabled) {
+    try {
+      const dir = path.dirname(activeLogFile);
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      const stat = fs.existsSync(activeLogFile) ? fs.statSync(activeLogFile) : null;
       if (stat && stat.size > 1024 * 1024) {
-        fs.writeFileSync(LOG_FILE, '');
+        fs.writeFileSync(activeLogFile, '');
       }
-      fs.appendFileSync(LOG_FILE, `[${new Date().toISOString()}] ${line}\n`);
+      fs.appendFileSync(activeLogFile, `[${new Date().toISOString()}] ${line}\n`);
     } catch {}
   }
 }
@@ -94,10 +101,17 @@ async function injectOnce() {
   if (pages.length === 0) throw new Error('未找到 Antigravity 窗口页面');
 
   log(`[+] 调试端口 ${port}，发现 ${pages.length} 个窗口`);
-  const expr = cdpApi.buildInjectExpression();
+  const cfg = cdpApi.readConfig();
+  const codeHash = cdpApi.computeHash(cdpApi.readRuntimeBundle());
+  const configExpr =
+    typeof cdpApi.buildConfigScriptExpression === 'function'
+      ? cdpApi.buildConfigScriptExpression(cfg, codeHash)
+      : null;
+  const expr = cdpApi.buildInjectExpression(cfg);
   for (const page of pages) {
     const session = await cdpApi.CdpSession.connect(page.webSocketDebuggerUrl);
     try {
+      if (configExpr) await session.evaluate(configExpr).catch(() => null);
       const res = await session.evaluate(expr);
       log(`[✓] ${shortTitle(page)} (agy-claude-style ${res.version} · 状态: ${res.status})`);
     } finally {
@@ -107,12 +121,22 @@ async function injectOnce() {
 }
 
 async function launchWithCdp({ autoRelaunchFromConfig = false } = {}) {
+  const cfg =
+    typeof cdpApi.readEffectiveLaunchConfig === 'function'
+      ? cdpApi.readEffectiveLaunchConfig()
+      : cdpApi.readConfig();
   const autoRelaunchWithCdp =
-    WATCH || autoRelaunchFromConfig ? cdpApi.readConfig().autoRelaunchWithCdp === true : false;
+    WATCH || autoRelaunchFromConfig ? cfg.autoRelaunchWithCdp === true : false;
+  const proxyOpts =
+    typeof cdpApi.buildProxyLaunchOptionsFromConfig === 'function'
+      ? cdpApi.buildProxyLaunchOptionsFromConfig(cfg)
+      : { args: [], env: {} };
   const res = await cdpApi.ensureAntigravityWithCdp({
     port: 0,
     relaunch: RELAUNCH,
     autoRelaunchWithCdp,
+    extraArgs: proxyOpts.args,
+    extraEnv: proxyOpts.env,
   });
   if (res.action === 'already-cdp') {
     log(`[✓] Antigravity 已在调试端口 ${res.port} 运行 (${res.pagesCount} 个窗口)`);
@@ -242,6 +266,7 @@ function acquireLock(opts = {}) {
   // Only reached when action is 'write', 'clear' (dead/foreign/invalid), or 'owned' resolved via --replace / prior exit.
   cdpApi.writeFileAtomic(pidFile, String(opts.selfPid || process.pid));
   if (!opts.skipExitHook) {
+    process.removeListener('exit', releasePidFile);
     process.on('exit', releasePidFile);
   }
   return { acquired: true, replaced: decision.action === 'owned', priorStatus: decision.status };
@@ -290,17 +315,47 @@ async function applyPageScripts(entry, { expr, configExpr, refreshOnly = false }
   return await entry.session.evaluate(expr);
 }
 
-async function watch({
+async function createWatchController({
   forceExitOnHostClose = false,
   startupGraceEnabled = false,
   allowGracefulDuplicateExit = false,
+  allowAutoRelaunch = true,
+  manageProcessExit = true,
+  enableConsole = true,
+  logFile = LOG_FILE,
 } = {}) {
-  const lockRes = acquireLock({ allowGracefulDuplicateExit });
-  if (!lockRes || !lockRes.acquired) return;
+  consoleLoggingEnabled = Boolean(enableConsole);
+  if (logFile) activeLogFile = logFile;
+  const lockRes = acquireLock({
+    allowGracefulDuplicateExit,
+    exitFn: manageProcessExit
+      ? (code) => process.exit(code)
+      : () => ({ acquired: false }),
+  });
+  if (!lockRes || !lockRes.acquired) return null;
+  const emitLog = (...args) => {
+    const line = args.map((a) => (typeof a === 'string' ? a : JSON.stringify(a))).join(' ');
+    if (enableConsole) {
+      try { console.log(line); } catch {}
+    }
+    if (logFile) {
+      try {
+        const dir = path.dirname(logFile);
+        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+        const stat = fs.existsSync(logFile) ? fs.statSync(logFile) : null;
+        if (stat && stat.size > 1024 * 1024) fs.writeFileSync(logFile, '');
+        fs.appendFileSync(logFile, `[${new Date().toISOString()}] ${line}\n`);
+      } catch {}
+    }
+  };
   try {
-    fs.writeFileSync(LOG_FILE, '');
+    if (logFile) {
+      const dir = path.dirname(logFile);
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(logFile, '');
+    }
   } catch {}
-  log(
+  emitLog(
     `[*] AGY Claude Style (agy-claude-style) 守护模式启动 (PID ${process.pid})，每 ${POLL_INTERVAL_MS / 1000} 秒检查一次窗口`
   );
 
@@ -318,6 +373,8 @@ async function watch({
   let tickTimer = null;
   let reloadTimer = null;
   let watcher = null;
+  let featuresWatcher = null;
+  let configDirWatcher = null;
 
   function closeAllSessions() {
     for (const entry of attached.values()) {
@@ -331,10 +388,10 @@ async function watch({
     attached.clear();
   }
 
-  function shutdown(code = 0, reason = '') {
+  async function stop({ removeFromPages = false, code = 0, reason = '' } = {}) {
     if (shuttingDown) return;
     shuttingDown = true;
-    if (reason) log(`[*] 守护进程退出: ${reason}`);
+    if (reason) emitLog(`[*] 守护进程退出: ${reason}`);
     if (tickTimer) {
       clearTimeout(tickTimer);
       tickTimer = null;
@@ -344,39 +401,61 @@ async function watch({
       reloadTimer = null;
     }
     if (watcher) {
-      try {
-        watcher.close();
-      } catch {}
+      try { watcher.close(); } catch {}
       watcher = null;
+    }
+    if (featuresWatcher) {
+      try { featuresWatcher.close(); } catch {}
+      featuresWatcher = null;
+    }
+    if (configDirWatcher) {
+      try { configDirWatcher.close(); } catch {}
+      configDirWatcher = null;
+    }
+    if (removeFromPages) {
+      await Promise.allSettled(
+        Array.from(attached.values())
+          .filter((entry) => entry && entry.session)
+          .map((entry) => entry.session.evaluate(cdpApi.REMOVE_EXPRESSION).catch(() => {}))
+      );
     }
     closeAllSessions();
     releasePidFile();
-    process.exit(code);
-  }
-
-  for (const sig of ['SIGINT', 'SIGTERM', 'SIGBREAK']) {
-    process.on(sig, () => shutdown(0, `收到信号 ${sig}`));
-  }
-
-  // Prevent orphan CPU spin when stdout/stderr pipe disconnects (e.g. ELECTRON_RUN_AS_NODE=1)
-  for (const stream of [process.stdout, process.stderr]) {
-    if (stream && typeof stream.on === 'function') {
-      stream.on('error', (err) => {
-        if (err && (err.code === 'EPIPE' || err.code === 'EOF' || err.code === 'ERR_STREAM_DESTROYED')) {
-          shutdown(0);
-        }
-      });
+    process.removeListener('exit', releasePidFile);
+    if (manageProcessExit) {
+      process.exit(code);
     }
   }
-  if ((PARENT_PID || process.env.ELECTRON_RUN_AS_NODE === '1') && process.stdin && !process.stdin.isTTY) {
-    try {
-      const st = fs.fstatSync(0);
-      if (st.isFIFO() || st.isSocket()) {
-        process.stdin.resume();
-        process.stdin.on('end', () => shutdown(0, '标准输入管道已关闭'));
-        process.stdin.on('close', () => shutdown(0, '标准输入管道已断开'));
+
+  function shutdown(code = 0, reason = '') {
+    void stop({ removeFromPages: false, code, reason });
+  }
+
+  if (manageProcessExit) {
+    for (const sig of ['SIGINT', 'SIGTERM', 'SIGBREAK']) {
+      process.on(sig, () => shutdown(0, `收到信号 ${sig}`));
+    }
+
+    // Prevent orphan CPU spin when stdout/stderr pipe disconnects (e.g. ELECTRON_RUN_AS_NODE=1)
+    for (const stream of [process.stdout, process.stderr]) {
+      if (stream && typeof stream.on === 'function') {
+        stream.on('error', (err) => {
+          if (err && (err.code === 'EPIPE' || err.code === 'EOF' || err.code === 'ERR_STREAM_DESTROYED')) {
+            shutdown(0);
+          }
+        });
       }
-    } catch {}
+    }
+    if ((PARENT_PID || process.env.ELECTRON_RUN_AS_NODE === '1') && process.stdin && !process.stdin.isTTY) {
+      try {
+        const st = fs.fstatSync(0);
+        if (st.isFIFO() || st.isSocket()) {
+          process.stdin.resume();
+          process.stdin.on('end', () => shutdown(0, '标准输入管道已关闭'));
+          process.stdin.on('close', () => shutdown(0, '标准输入管道已断开'));
+        }
+      } catch {}
+    }
   }
 
   async function apply(entry, opts = {}) {
@@ -387,6 +466,11 @@ async function watch({
     attached.set(page.id, null);
     try {
       const session = await cdpApi.CdpSession.connect(page.webSocketDebuggerUrl);
+      if (shuttingDown) {
+        try { session.close(); } catch {}
+        attached.delete(page.id);
+        return;
+      }
       const entry = { session, bootstrapScriptId: null, configScriptId: null };
       attached.set(page.id, entry);
       session.onClose = () => {
@@ -394,18 +478,62 @@ async function watch({
         log(`[-] 窗口已关闭: ${shortTitle(page)}`);
       };
       await session.send('Page.enable');
+      if (shuttingDown) {
+        attached.delete(page.id);
+        try { session.onClose = null; session.close(); } catch {}
+        return;
+      }
       session.on('Runtime.bindingCalled', ({ name, payload }) => {
         if (name !== SETTING_BINDING) return;
         try {
           const { key, value } = JSON.parse(payload);
+          if (key === '__fileAction' && value && typeof value === 'object') {
+            const reqId = typeof value.reqId === 'string' && value.reqId ? value.reqId : '';
+            import('./sidecars/panel/lib/file-actions.mjs')
+              .then((m) => m.dispatchFileAction(value))
+              .then((res) => {
+                if (reqId) {
+                  session
+                    .send('Runtime.evaluate', {
+                      expression: `window.__agCsFileActionReply?.(${JSON.stringify(reqId)}, ${JSON.stringify(res || { ok: true })})`,
+                    })
+                    .catch(() => {});
+                }
+              })
+              .catch((err) => {
+                const msg = err && err.message ? err.message : String(err);
+                log(`[!] 文件操作失败: ${msg}`);
+                if (reqId) {
+                  session
+                    .send('Runtime.evaluate', {
+                      expression: `window.__agCsFileActionReply?.(${JSON.stringify(reqId)}, ${JSON.stringify({ ok: false, error: msg })})`,
+                    })
+                    .catch(() => {});
+                }
+              });
+            return;
+          }
+          if (key === '__windowAction' && value === 'hide') {
+            if (typeof cdpApi.hideAntigravityWindow === 'function') {
+              cdpApi.hideAntigravityWindow();
+            }
+            return;
+          }
           if (cdpApi.updateConfigSetting(key, value)) {
             currentConfig = cdpApi.readConfig();
+            proxyMismatchCheckedSig = '';
+            proxyMismatchLastCheckAt = 0;
             log(`[⚙] 设置已保存: ${key} = ${JSON.stringify(value)}`);
           }
         } catch {}
       });
       await session.send('Runtime.enable');
       await session.send('Runtime.addBinding', { name: SETTING_BINDING });
+      if (shuttingDown) {
+        attached.delete(page.id);
+        try { session.onClose = null; session.close(); } catch {}
+        return;
+      }
       const res = await apply(entry);
       hadAttachedWindow = true;
       log(`[✓] 已注入 agy-claude-style: ${shortTitle(page)} (${res.status})`);
@@ -423,9 +551,11 @@ async function watch({
   let consecutivePortFailures = 0;
   let noCdpRunningTicks = 0;
   let warnedNoCdpSig = '';
-  let relaunchedPidSig = '';
-  let lastRelaunchAt = 0;
+  let warnedGuardSig = '';
   let cdpFlagCache = { pidSig: '', hasFlag: false };
+  let proxyMismatchCheckedSig = '';
+  let proxyMismatchLastCheckAt = 0;
+  const PROXY_MISMATCH_RECHECK_MS = 30000;
 
   async function tick() {
     if (busy || shuttingDown) return;
@@ -451,12 +581,87 @@ async function watch({
         noCdpRunningTicks = 0;
         warnedNoCdpSig = '';
         cdpFlagCache = { pidSig: '', hasFlag: false };
-        if (port !== lastPort) {
-          closeAllSessions();
-          log(`[+] 连接到调试端口 ${port}`);
-          lastPort = port;
+
+        let proxyMismatchRelaunched = false;
+        const expectedProxyKey = `${port}|${currentConfig.proxyUrl || ''}`;
+        const nowMs = Date.now();
+        const shouldCheckProxyMismatch =
+          allowAutoRelaunch &&
+          currentConfig.proxyEnabled === true &&
+          !process.env.AG_CDP_PORT &&
+          typeof cdpApi.hasConfiguredProxyFlag === 'function' &&
+          (proxyMismatchCheckedSig !== expectedProxyKey || nowMs - proxyMismatchLastCheckAt >= PROXY_MISMATCH_RECHECK_MS);
+        if (shouldCheckProxyMismatch) {
+          proxyMismatchLastCheckAt = nowMs;
+          const proc = cdpApi.detectAntigravityProcess();
+          const pids = Array.isArray(proc?.pids) ? proc.pids : [];
+          const pidSig = pids.slice().sort((a, b) => a - b).join(',');
+          const checkKey = `${port}|${pidSig}|${currentConfig.proxyUrl || ''}`;
+          if (proc?.running && pidSig && proxyMismatchCheckedSig !== checkKey) {
+            const pCheck = cdpApi.hasConfiguredProxyFlag(pids, currentConfig);
+            if (!pCheck.required || !pCheck.inspected || pCheck.matched) {
+              proxyMismatchCheckedSig = checkKey;
+              if (pCheck.inspected && pCheck.matched) {
+                warnedGuardSig = '';
+                if (typeof cdpApi.resetRelaunchGuard === 'function') {
+                  cdpApi.resetRelaunchGuard({ markSuccess: true });
+                }
+              }
+            } else {
+              const guard = typeof cdpApi.readRelaunchGuard === 'function' ? cdpApi.readRelaunchGuard() : null;
+              const guardPidSig = `proxy:${pidSig}`;
+              const evalRes =
+                typeof cdpApi.evaluateAutoRelaunchGuard === 'function'
+                  ? cdpApi.evaluateAutoRelaunchGuard(guard, { pidSig: guardPidSig, nowMs: Date.now() })
+                  : { allowed: true };
+              if (!evalRes.allowed) {
+                proxyMismatchCheckedSig = checkKey;
+                const gSig = `${evalRes.reason}:${guardPidSig}`;
+                if (warnedGuardSig !== gSig) {
+                  warnedGuardSig = gSig;
+                  log(`[*] 检测到 Antigravity 未携带已配置的独立代理，但处于自动重启保护 (${evalRes.reason})，已跳过`);
+                }
+              } else if (typeof cdpApi.isRelaunchInProgress === 'function' && cdpApi.isRelaunchInProgress()) {
+                log('[*] 检测到已有重启任务进行中，跳过重复代理重启调度');
+              } else {
+                const proxyOpts = cdpApi.buildProxyLaunchOptionsFromConfig(currentConfig);
+                log('[↻] 检测到 Antigravity 已开启 CDP 但未进入已保存的独立代理，正在优雅重启并应用代理...');
+                const res = await cdpApi.relaunchAntigravityWithCdp({
+                  port: 0,
+                  detached: true,
+                  extraArgs: proxyOpts.args,
+                  extraEnv: proxyOpts.env,
+                });
+                if (res.reason === 'relaunch-in-progress') {
+                  log('[*] 检测到已有重启任务进行中，跳过重复代理重启调度');
+                } else {
+                  proxyMismatchCheckedSig = checkKey;
+                  if (typeof cdpApi.recordAutoRelaunchAttempt === 'function') {
+                    cdpApi.recordAutoRelaunchAttempt({ pidSig: guardPidSig, reason: 'cold-start-no-proxy' });
+                  }
+                  if (res.relaunched) {
+                    proxyMismatchRelaunched = true;
+                    log('[✓] 已调度后台重启 Antigravity（CDP + 独立代理模式），等待新窗口就绪...');
+                  }
+                }
+              }
+            }
+          }
+        } else {
+          warnedGuardSig = '';
+          if (typeof cdpApi.resetRelaunchGuard === 'function') {
+            cdpApi.resetRelaunchGuard({ markSuccess: true });
+          }
         }
-        await Promise.all(pages.filter((p) => !attached.has(p.id)).map(attach));
+
+        if (!proxyMismatchRelaunched) {
+          if (port !== lastPort) {
+            closeAllSessions();
+            log(`[+] 连接到调试端口 ${port}`);
+            lastPort = port;
+          }
+          await Promise.all(pages.filter((p) => !attached.has(p.id)).map(attach));
+        }
       } else {
         consecutivePortFailures++;
         if (consecutivePortFailures >= 3 && (attached.size > 0 || lastPort !== null)) {
@@ -486,38 +691,68 @@ async function watch({
         if (proc.running) {
           noCdpRunningTicks++;
           const pidSig = proc.pids.slice().sort((a, b) => a - b).join(',');
-          if (noCdpRunningTicks >= 3) {
-            if (cdpFlagCache.pidSig !== pidSig) {
-              cdpFlagCache = { pidSig, hasFlag: cdpApi.hasRemoteDebuggingFlag(proc.pids) };
+          if (cdpFlagCache.pidSig !== pidSig) {
+            cdpFlagCache = { pidSig, hasFlag: cdpApi.hasRemoteDebuggingFlag(proc.pids) };
+          }
+          if (cdpFlagCache.hasFlag) {
+            if (noCdpRunningTicks >= 3 && warnedNoCdpSig !== `cdp:${pidSig}`) {
+              warnedNoCdpSig = `cdp:${pidSig}`;
+              log('[*] 检测到 Antigravity 已携带 --remote-debugging-port 参数，继续等待调试端口响应...');
             }
-            if (cdpFlagCache.hasFlag) {
-              if (warnedNoCdpSig !== `cdp:${pidSig}`) {
-                warnedNoCdpSig = `cdp:${pidSig}`;
-                log('[*] 检测到 Antigravity 已携带 --remote-debugging-port 参数，继续等待调试端口响应...');
+          } else {
+            if (warnedNoCdpSig !== pidSig) {
+              warnedNoCdpSig = pidSig;
+              log(`[!] ${cdpApi.formatCdpUnavailableMessage({ running: true, port })}`);
+              if (!currentConfig.autoRelaunchWithCdp) {
+                log('[*] 提示：可在 config.json 中设置 "autoRelaunchWithCdp": true 以启用自动温和重启接管');
               }
-            } else {
-              if (warnedNoCdpSig !== pidSig) {
-                warnedNoCdpSig = pidSig;
-                log(`[!] ${cdpApi.formatCdpUnavailableMessage({ running: true, port })}`);
-                if (!currentConfig.autoRelaunchWithCdp) {
-                  log('[*] 提示：可在 config.json 中设置 "autoRelaunchWithCdp": true 以启用自动温和重启接管');
+            }
+            if (allowAutoRelaunch && (currentConfig.autoRelaunchWithCdp === true || currentConfig.proxyEnabled === true)) {
+              const guard = typeof cdpApi.readRelaunchGuard === 'function' ? cdpApi.readRelaunchGuard() : null;
+              const evalRes =
+                typeof cdpApi.evaluateAutoRelaunchGuard === 'function'
+                  ? cdpApi.evaluateAutoRelaunchGuard(guard, { pidSig, nowMs: Date.now() })
+                  : { allowed: true };
+              if (!evalRes.allowed) {
+                const gSig = `${evalRes.reason}:${pidSig}`;
+                if (warnedGuardSig !== gSig) {
+                  warnedGuardSig = gSig;
+                  if (evalRes.reason === 'circuit-breaker') {
+                    log('[!] 自动重启连续失败已达熔断上限（2 次），已暂停自动重启；请在控制室手动点击「立即重启启用」');
+                  } else if (evalRes.reason === 'cooldown') {
+                    const sec = Math.ceil((evalRes.remainingCooldownMs || 0) / 1000);
+                    log(`[*] 自动重启冷却保护中（剩余 ${sec}s），跳过本次冷启动自动重启`);
+                  }
                 }
-              }
-              if (
-                currentConfig.autoRelaunchWithCdp === true &&
-                relaunchedPidSig !== pidSig &&
-                Date.now() - lastRelaunchAt >= 60000
-              ) {
-                relaunchedPidSig = pidSig;
-                lastRelaunchAt = Date.now();
-                log('[↻] autoRelaunchWithCdp 已启用：正在温和重启 Antigravity 并附加 --remote-debugging-port=0 ...');
-                const res = await cdpApi.relaunchAntigravityWithCdp({ port: 0 });
-                if (res.relaunched) {
-                  log('[✓] 已以 CDP 模式重启 Antigravity，等待窗口就绪...');
-                  noCdpRunningTicks = 0;
-                  cdpFlagCache = { pidSig: '', hasFlag: false };
+              } else if (typeof cdpApi.isRelaunchInProgress === 'function' && cdpApi.isRelaunchInProgress()) {
+                log('[*] 检测到已有重启任务进行中，跳过本次冷启动重复重启');
+              } else {
+                const proxyOpts =
+                  typeof cdpApi.buildProxyLaunchOptionsFromConfig === 'function'
+                    ? cdpApi.buildProxyLaunchOptionsFromConfig(currentConfig)
+                    : { args: [], env: {} };
+                log(
+                  `[↻] 冷启动未检测到 CDP，正在优雅重启原版 Antigravity 并附加 --remote-debugging-port=0${proxyOpts.args.length ? ' + 独立代理' : ''} ...`
+                );
+                const res = await cdpApi.relaunchAntigravityWithCdp({
+                  port: 0,
+                  detached: true,
+                  extraArgs: proxyOpts.args,
+                  extraEnv: proxyOpts.env,
+                });
+                if (res.reason === 'relaunch-in-progress') {
+                  log('[*] 检测到已有重启任务进行中，跳过本次冷启动重复重启');
                 } else {
-                  log(`[!] 自动重启未完成 (${res.reason})，请手动完全退出 Antigravity 后以 --remote-debugging-port=0 启动`);
+                  if (typeof cdpApi.recordAutoRelaunchAttempt === 'function') {
+                    cdpApi.recordAutoRelaunchAttempt({ pidSig, reason: 'cold-start-no-cdp' });
+                  }
+                  if (res.relaunched) {
+                    log('[✓] 已调度后台重启 Antigravity（CDP 模式），等待新窗口就绪...');
+                    noCdpRunningTicks = 0;
+                    cdpFlagCache = { pidSig: '', hasFlag: false };
+                  } else {
+                    log(`[!] 自动重启未完成 (${res.reason})，请手动完全退出 Antigravity 后以 --remote-debugging-port=0 启动`);
+                  }
                 }
               }
             }
@@ -539,8 +774,8 @@ async function watch({
     }
   }
 
-  watcher = fs.watch(__dirname, (_, filename) => {
-    if (!filename || !/\.(css|js|json)$/i.test(filename) || filename.startsWith('.')) return;
+  const scheduleHotReload = (filename) => {
+    if (shuttingDown) return;
     clearTimeout(reloadTimer);
     reloadTimer = setTimeout(async () => {
       let refreshOnly = false;
@@ -561,7 +796,7 @@ async function watch({
         }
         configExpr = cdpApi.buildConfigScriptExpression(currentConfig, currentCodeHash);
       } catch (err) {
-        log(`[!] 读取文件失败: ${err.message}`);
+        emitLog(`[!] 读取文件失败: ${err.message}`);
         return;
       }
       let n = 0;
@@ -572,20 +807,63 @@ async function watch({
           n++;
         } catch {}
       }
-      log(`[↻] ${filename} 已变更，已热更新 ${n} 个窗口${refreshOnly ? '（轻量配置同步）' : ''}`);
-    }, 180);
+      emitLog(`[↻] ${filename} 已变更，已热更新 ${n} 个窗口${refreshOnly ? '（轻量配置同步）' : ''}`);
+    }, 120);
+  };
+
+  watcher = fs.watch(__dirname, (_, filename) => {
+    if (!filename || !/\.(css|js|json)$/i.test(filename) || filename.startsWith('.')) return;
+    scheduleHotReload(filename);
   });
 
-  if (WATCH) {
+  const featuresDir = path.join(__dirname, 'features');
+  if (fs.existsSync(featuresDir)) {
+    try {
+      featuresWatcher = fs.watch(featuresDir, (_, filename) => {
+        if (!filename || !/\.js$/i.test(filename) || filename.startsWith('.')) return;
+        scheduleHotReload(`features/${filename}`);
+      });
+      if (typeof featuresWatcher.unref === 'function') featuresWatcher.unref();
+    } catch {}
+  }
+
+  const cfgDir = path.dirname(cdpApi.CONFIG_FILE);
+  const cfgBase = path.basename(cdpApi.CONFIG_FILE);
+  const sameConfigDir =
+    process.platform === 'win32'
+      ? path.resolve(cfgDir).toLowerCase() === path.resolve(__dirname).toLowerCase()
+      : path.resolve(cfgDir) === path.resolve(__dirname);
+  if (!sameConfigDir) {
+    try {
+      if (!fs.existsSync(cfgDir)) fs.mkdirSync(cfgDir, { recursive: true });
+      configDirWatcher = fs.watch(cfgDir, (_, filename) => {
+        if (!filename || String(filename) === cfgBase) {
+          scheduleHotReload(cfgBase);
+        }
+      });
+      if (typeof configDirWatcher.unref === 'function') configDirWatcher.unref();
+    } catch {}
+  }
+
+  if (WATCH && manageProcessExit) {
     process.on('uncaughtException', (err) => {
-      log(`[!] 未捕获异常: ${err && err.stack ? err.stack : err}`);
+      emitLog(`[!] 未捕获异常: ${err && err.stack ? err.stack : err}`);
     });
     process.on('unhandledRejection', (err) => {
-      log(`[!] 未处理 Promise 拒绝: ${err && err.stack ? err.stack : err}`);
+      emitLog(`[!] 未处理 Promise 拒绝: ${err && err.stack ? err.stack : err}`);
     });
   }
 
   await tick();
+  return {
+    stop,
+    isStopped: () => shuttingDown,
+    getAttachedCount: () => attached.size,
+  };
+}
+
+async function watch(opts = {}) {
+  return createWatchController({ ...opts, manageProcessExit: true });
 }
 
 async function main() {
@@ -610,6 +888,8 @@ async function main() {
 }
 
 module.exports = {
+  injectOnce,
+  createWatchController,
   acquireLock,
   applyPageScripts,
 };

@@ -93,8 +93,8 @@
   const hasOwn = Object.prototype.hasOwnProperty;
   const CJK_LATIN = /([\u3400-\u9fff])([A-Za-z])|([A-Za-z])([\u3400-\u9fff])/g;
 
-  // Never descend into opt-out plugin roots or effort pills controlled by our runtime.
-  const OPT_OUT = '[data-ag-no-i18n], [data-ag-cs-effort]';
+  // Leave plugin-managed nodes and the PDF viewer's document text alone.
+  const OPT_OUT = '[data-ag-no-i18n], [data-ag-cs-effort], [data-testid="pdf-text-layer"], .textLayer';
   // Code / editing surfaces: text is untouched, but nested toolbar buttons (e.g. "Copy code") are UI.
   const HARD = [
     'script',
@@ -165,6 +165,7 @@
    */
   function createDomTranslator(resolveBundle, options = {}) {
     const contentSel = joinSel(CONTENT, options && options.content);
+    const fencedSel = HARD + ',' + contentSel;
     const namesSel = joinSel(NAMES, options && options.names);
     const controlsSel = joinSel(CONTROLS, options && options.controls);
     const resolveExtraRules = typeof options?.extraRules === 'function' ? options.extraRules : null;
@@ -176,6 +177,7 @@
     let bundle = null;
     let compiledRules = [];
     let compiledTimeRules = [];
+    let compiledAllRules = [];
     let sentenceMap = new Map();
     let fragmentSet = new Set();
     let origHtmlLang = null;
@@ -186,6 +188,7 @@
       bundle = null;
       compiledRules = [];
       compiledTimeRules = [];
+      compiledAllRules = [];
       sentenceMap = new Map();
       fragmentSet = new Set();
     }
@@ -202,6 +205,7 @@
         re: new RegExp(src, flags),
         to,
       }));
+      compiledAllRules = compiledRules.concat(compiledTimeRules);
       sentenceMap = new Map((nextBundle.sentences || []).map(([text, parts]) => [text, parts]));
       fragmentSet = new Set((nextBundle.sentences || []).flatMap(([, parts]) => Object.keys(parts)));
     }
@@ -270,7 +274,7 @@
         const d = lookup(text, el);
         if (d != null) return d;
       }
-      const list = zone === 2 ? compiledRules.concat(compiledTimeRules) : compiledTimeRules;
+      const list = zone === 2 ? compiledAllRules : compiledTimeRules;
       for (const rule of list) {
         const m = text.match(rule.re);
         if (m) {
@@ -285,15 +289,10 @@
     function zoneOf(el) {
       if (!el) return 0;
       if (closestSel(el, OPT_OUT)) return 0;
-      const hard = closestSel(el, HARD);
-      if (hard) {
+      const fenced = closestSel(el, fencedSel);
+      if (fenced) {
         const ctl = closestSel(el, controlsSel);
-        return ctl && hard.contains(ctl) ? 2 : 0;
-      }
-      const content = closestSel(el, contentSel);
-      if (content) {
-        const ctl = closestSel(el, controlsSel);
-        return ctl && content.contains(ctl) ? 2 : 0;
+        return ctl && fenced.contains(ctl) ? 2 : 0;
       }
       const names = closestSel(el, namesSel);
       if (!names) return 2;
@@ -353,6 +352,8 @@
 
     function walkControlsIn(el) {
       if (!el || typeof el.querySelectorAll !== 'function' || closestSel(el, OPT_OUT)) return;
+      // Fast path for leaf streaming elements (e.g. <span>, <code>, <strong>) that cannot contain nested buttons.
+      if ('firstElementChild' in el && !el.firstElementChild) return;
       for (const ctl of el.querySelectorAll(controlsSel)) {
         if (!closestSel(ctl, OPT_OUT)) walk(ctl);
       }
@@ -364,7 +365,7 @@
       if (root.nodeType !== 1 && root.nodeType !== 9) return;
       if (root.nodeType === 1) {
         if (closestSel(root, OPT_OUT)) return;
-        const fenced = closestSel(root, HARD) || closestSel(root, contentSel);
+        const fenced = closestSel(root, fencedSel);
         if (fenced && !(closestSel(root, controlsSel) && fenced.contains(closestSel(root, controlsSel)))) {
           if (matchesSel(root, FIELD)) doAttrs(root);
           return walkControlsIn(root);
@@ -511,11 +512,28 @@
       const MO = typeof MutationObserver === 'function' ? MutationObserver : targetDoc.defaultView?.MutationObserver;
       if (typeof MO === 'function') {
         observer = new MO((records) => {
+          const seenText = records.length > 1 ? new Set() : null;
+          const seenAdded = records.length > 1 ? new Set() : null;
           for (const r of records) {
-            if (r.type === 'characterData') doText(r.target);
-            else if (r.type === 'attributes') doAttrs(r.target, r.attributeName);
-            else if (r.addedNodes) {
-              for (const n of r.addedNodes) walk(n);
+            if (r.type === 'characterData') {
+              const t = r.target;
+              if (!t || t.isConnected === false) continue;
+              if (seenText) {
+                if (seenText.has(t)) continue;
+                seenText.add(t);
+              }
+              doText(t);
+            } else if (r.type === 'attributes') {
+              if (r.target && r.target.isConnected !== false) doAttrs(r.target, r.attributeName);
+            } else if (r.addedNodes) {
+              for (const n of r.addedNodes) {
+                if (!n || n.isConnected === false) continue;
+                if (seenAdded) {
+                  if (seenAdded.has(n)) continue;
+                  seenAdded.add(n);
+                }
+                walk(n);
+              }
             }
           }
           if (++sincePrune > 500) {

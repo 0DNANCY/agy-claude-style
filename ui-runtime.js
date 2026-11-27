@@ -9,6 +9,15 @@
 
   const VERSION = 2;
   const CODE_HASH = initialConfig?.codeHash || '';
+  if (window.__agClaudeStudio) {
+    try {
+      window.__agClaudeStudio.destroy();
+    } catch {}
+    delete window.__agClaudeStudio;
+  }
+  const studioStyleEl = document.getElementById('ag-claude-studio-css');
+  if (studioStyleEl) studioStyleEl.remove();
+
   if (window.__agTokenHud) {
     try {
       window.__agTokenHud.destroy();
@@ -92,7 +101,7 @@
         } catch {}
         const merged = { ...saved };
         for (const key of Object.keys(cleanBase)) {
-          if (prevBase[key] !== cleanBase[key]) {
+          if (JSON.stringify(prevBase[key]) !== JSON.stringify(cleanBase[key])) {
             merged[key] = cleanBase[key];
           }
         }
@@ -186,24 +195,33 @@
     ensureSettingsSection();
   }
 
+  function setAttrIfChanged(el, name, val) {
+    if (el.getAttribute(name) !== val) el.setAttribute(name, val);
+  }
+
+  function removeAttrIfPresent(el, name) {
+    if (el.hasAttribute(name)) el.removeAttribute(name);
+  }
+
   function applyRootAttrs() {
     const html = document.documentElement;
     if (!html) return;
     const palette = cfg.palette === 'claude' ? 'claude' : cfg.palette === 'host' ? 'host' : 'obsidian';
     const lang = getLang();
-    html.setAttribute('data-ag-cs-style', '1');
-    html.setAttribute('data-ag-cs-palette', palette);
-    html.setAttribute('data-ag-cs-home', cfg.homeLayout === 'classic' ? 'classic' : cfg.homeLayout === 'off' ? 'off' : 'studio');
-    html.setAttribute('data-ag-cs-composer', cfg.composerRestyle === false ? 'off' : 'on');
-    html.setAttribute('data-ag-cs-logo-ink', cfg.logoInk === 'foreground' ? 'foreground' : 'accent');
-    html.setAttribute('data-ag-cs-sidebar', cfg.sidebarRestyle === false ? 'off' : 'on');
-    html.setAttribute('data-ag-cs-sidebar-compact', cfg.sidebarCompact === true ? 'on' : 'off');
-    html.setAttribute('data-ag-cs-hud-compact', cfg.hudCompact === true ? 'on' : 'off');
-    html.setAttribute('data-ag-cs-effort-accent', cfg.effortAccent === false ? 'off' : 'on');
-    html.setAttribute('data-ag-cs-lang', lang);
+    setAttrIfChanged(html, 'data-ag-cs-style', '1');
+    setAttrIfChanged(html, 'data-ag-cs-palette', palette);
+    setAttrIfChanged(html, 'data-ag-cs-home', cfg.homeLayout === 'classic' ? 'classic' : cfg.homeLayout === 'off' ? 'off' : 'studio');
+    setAttrIfChanged(html, 'data-ag-cs-composer', cfg.composerRestyle === false ? 'off' : 'on');
+    setAttrIfChanged(html, 'data-ag-cs-logo-ink', cfg.logoInk === 'foreground' ? 'foreground' : 'accent');
+    setAttrIfChanged(html, 'data-ag-cs-sidebar', cfg.sidebarRestyle === false ? 'off' : 'on');
+    setAttrIfChanged(html, 'data-ag-cs-sidebar-compact', cfg.sidebarCompact === true ? 'on' : 'off');
+    setAttrIfChanged(html, 'data-ag-cs-compact-chat', cfg.compactChatLayout === true ? 'on' : 'off');
+    setAttrIfChanged(html, 'data-ag-cs-hud-compact', cfg.hudCompact === true ? 'on' : 'off');
+    setAttrIfChanged(html, 'data-ag-cs-effort-accent', cfg.effortAccent === false ? 'off' : 'on');
+    setAttrIfChanged(html, 'data-ag-cs-lang', lang);
     const isCjk = i18nCore && typeof i18nCore.isCjkLanguage === 'function' ? i18nCore.isCjkLanguage(lang) : isZh();
-    if (isCjk) html.setAttribute('data-ag-cs-cjk', '1');
-    else html.removeAttribute('data-ag-cs-cjk');
+    if (isCjk) setAttrIfChanged(html, 'data-ag-cs-cjk', '1');
+    else removeAttrIfPresent(html, 'data-ag-cs-cjk');
 
     const prevLang = lastAppliedLang;
     if (lang !== prevLang) {
@@ -221,12 +239,15 @@
       }
     }
 
+    setAttrIfChanged(html, 'data-ag-cs-glass', cfg.glassEffect === false ? 'off' : 'on');
+    setAttrIfChanged(html, 'data-ag-cs-crab', cfg.mascot === 'crab' ? 'on' : 'off');
     const perfBd = cfg.performanceBackdrop === 'page' || cfg.performanceBackdrop === 'off' ? cfg.performanceBackdrop : 'card';
-    html.setAttribute('data-ag-cs-perf-backdrop', perfBd);
+    setAttrIfChanged(html, 'data-ag-cs-perf-backdrop', perfBd);
     if (perfBd !== 'page' || effortCore.normalizeEffortStyle(cfg.effortSliderStyle) !== 'liangwufeng') {
       unmountPerfBackdrop();
     }
     const dark = isDarkTheme();
+    setAttrIfChanged(html, 'data-ag-cs-theme', dark ? 'dark' : 'light');
     const themeKey = `${palette}|${dark ? 'd' : 'l'}`;
     if (themeKey !== lastThemeKey) {
       lastThemeKey = themeKey;
@@ -306,6 +327,10 @@
           if (isAppRootStore(p.store)) bestRootStore = bestRootStore || p.store;
           else if (!fallbackStore) fallbackStore = p.store;
         }
+        if (p && p.value && typeof p.value === 'object') {
+          if (!cachedSvc && typeof p.value.getCascadeTrajectory === 'function') cachedSvc = p.value;
+          if (!cachedTrajCtx && isTrajectoriesContext(p.value)) cachedTrajCtx = p.value;
+        }
         for (let d = f.dependencies && f.dependencies.firstContext; d; d = d.next) {
           const v = d.memoizedValue;
           if (!v || typeof v !== 'object') continue;
@@ -379,7 +404,13 @@
     if (fromCached) return fromCached;
 
     const probes = [];
-    if (scopeEl) probes.push(scopeEl);
+    if (scopeEl) {
+      const scopedFooter = scopeEl.querySelector?.('.agy-composer-footer');
+      if (scopedFooter) probes.push(scopedFooter);
+      probes.push(scopeEl);
+    }
+    const footer = document.querySelector('.agy-composer-footer');
+    if (footer && !probes.includes(footer)) probes.push(footer);
     const cv = document.querySelector('[data-testid="conversation-view"]');
     if (cv && !probes.includes(cv)) probes.push(cv);
     const ib = document.querySelector('[data-testid="agent-input-box"]');
@@ -387,12 +418,20 @@
 
     for (const el of probes) {
       const key = Object.keys(el).find((k) => k.startsWith('__reactFiber$'));
-      for (let f = key && el[key], depth = 0; f && depth < 80; f = f.return, depth++) {
+      for (let f = key && el[key], depth = 0; f && depth < 100; f = f.return, depth++) {
+        const contexts = [];
+        if (f.memoizedProps && f.memoizedProps.value && typeof f.memoizedProps.value === 'object') {
+          contexts.push(f.memoizedProps.value);
+        }
         for (let d = f.dependencies && f.dependencies.firstContext; d; d = d.next) {
-          const v = d.memoizedValue;
-          if (!v || typeof v !== 'object') continue;
+          if (d.memoizedValue && typeof d.memoizedValue === 'object') contexts.push(d.memoizedValue);
+        }
+        for (const v of contexts) {
           if (!cachedTrajCtx && isTrajectoriesContext(v)) {
             cachedTrajCtx = v;
+            const hit = peekFromTrajCtx(v);
+            if (hit) return hit;
+          } else if (isTrajectoriesContext(v)) {
             const hit = peekFromTrajCtx(v);
             if (hit) return hit;
           }
@@ -562,6 +601,30 @@
     };
   }
 
+  function attachLiveContextWindowUsage(res, liveState) {
+    const liveCw = liveState?.contextWindowUsage;
+    if (!res || !liveCw || typeof liveCw !== 'object') return res;
+    if (res.response?.trajectory && typeof res.response.trajectory === 'object') {
+      return {
+        ...res,
+        response: {
+          ...res.response,
+          trajectory: { ...res.response.trajectory, contextWindowUsage: liveCw },
+        },
+      };
+    }
+    if (res.trajectory && typeof res.trajectory === 'object') {
+      return {
+        ...res,
+        trajectory: { ...res.trajectory, contextWindowUsage: liveCw },
+      };
+    }
+    if (typeof res === 'object') {
+      return { ...res, contextWindowUsage: liveCw };
+    }
+    return res;
+  }
+
   async function resolveTrajectoryPayload(cascadeId, sum, h, opts = {}) {
     if (!cascadeId) return null;
     const isCloud = Boolean(sum?.cloud === true || cloudOnlyCascadeIds.has(cascadeId));
@@ -593,7 +656,8 @@
             (Array.isArray(traj?.generatorMetadata) && traj.generatorMetadata.length > 0) ||
             !hasUsableAgentState(liveState))
         ) {
-          return res;
+          const freshLiveState = liveProv ? liveProv.getState?.() || liveState : liveState;
+          return attachLiveContextWindowUsage(res, freshLiveState);
         }
       } catch (err) {
         if (isCloudOnlyTrajectoryError(err)) {
@@ -1545,10 +1609,33 @@
     return '';
   }
 
+  function readDraftText(node) {
+    if (!node || node.hidden || node.nodeType === 8) return '';
+    if (String(node.tagName || '').toUpperCase() === 'BR') return '\n';
+    const children =
+      node.childNodes && node.childNodes.length
+        ? node.childNodes
+        : node.children && node.children.length
+        ? node.children
+        : null;
+    if (!children) return node.textContent || '';
+
+    let text = '';
+    for (const child of children) {
+      const childText = readDraftText(child);
+      if (!childText) continue;
+      const isBlock = /^(BLOCKQUOTE|DIV|H[1-6]|LI|P|PRE)$/.test(String(child.tagName || '').toUpperCase());
+      text += isBlock ? `\n${childText}\n` : childText;
+    }
+    return text;
+  }
+
   function getDraftInfo(card) {
     const scope = card || document.querySelector('[data-testid="agent-input-box"]') || document;
     const ed = scope.querySelector ? scope.querySelector('[contenteditable="true"]') : null;
-    const raw = ed ? String(ed.innerText ?? ed.textContent ?? '').trim() : '';
+    // Avoid innerText: reading innerText forces a synchronous Blink layout pass
+    // across the whole conversation on every composer sync tick.
+    const raw = ed ? readDraftText(ed).trim() : '';
     if (!raw || typeof usageCore.estimateTextTokens !== 'function') {
       return { tokens: 0, chars: 0, cjk: 0, words: 0, codeSymbols: 0 };
     }
@@ -1601,6 +1688,7 @@
           quotaInfo: activeQuota,
           draftTokens: draftEst.tokens,
           ringMode: cfg.ringMode || 'context',
+          quotaCycleMode: cfg.quotaCycleMode || 'auto',
           knownLimits: knownMax > 0 ? { maxContextTokens: knownMax } : null,
         }),
         draftEst,
@@ -1767,8 +1855,8 @@
           </div>
           <div class="ag-cs-ctx-kpi">
             <span class="ag-cs-ctx-k">${escapeHtml(ui.kpiSpeed || 'Output Speed')}</span>
-            <span class="ag-cs-ctx-v">${(data?.displaySpeed || data?.lastSpeed) ? (data.displaySpeed || data.lastSpeed) + ' tok/s' : '—'}</span>
-            <span class="ag-cs-ctx-sub">${escapeHtml(ui.speedAvgShort || 'Avg')} ${data?.avgSpeed || 0} tok/s · TTFT ${(data?.avgTtft || data?.lastTtft || 0).toFixed(2)}s</span>
+            <span class="ag-cs-ctx-v">${(data?.displaySpeed || data?.lastSpeed) ? (data.displaySpeed || data.lastSpeed) + ' tok/s' : data?.lastRateStatus === 'buffered' ? (lang === 'en' ? 'Buffered' : '缓冲突发') : data?.lastRateStatus === 'short' ? (lang === 'en' ? 'Short' : '短样本') : '—'}</span>
+            <span class="ag-cs-ctx-sub">${escapeHtml(ui.speedAvgShort || 'Avg')} ${data?.avgSpeed || 0} tok/s${data?.e2eSpeed ? ' · E2E ' + data.e2eSpeed : ''} · TTFT ${(data?.ttftMedian || data?.avgTtft || data?.lastTtft || 0).toFixed(2)}s</span>
           </div>
           <div class="ag-cs-ctx-kpi">
             <span class="ag-cs-ctx-k">${escapeHtml(ui.kpiSessionTotal || 'Session Total')}</span>
@@ -1940,7 +2028,8 @@
                         </div>
                         <div class="ag-cs-ctx-quota-bar"><span style="width:${Math.max(0, Math.min(100, qPct)).toFixed(1)}%;background:${qCol}"></span></div>
                         <div class="ag-cs-ctx-quota-sub">
-                          <span>${g.b5h && !g.b5h.disabled ? `5h: ${g.b5h.remainingPct.toFixed(1)}% (${escapeHtml(r5h || '—')})` : g.bWeek ? `${escapeHtml(ui.weeklyLabel || 'Weekly')}: ${g.bWeek.remainingPct.toFixed(1)}% (${escapeHtml(rWeek || '—')})` : ''}</span>
+                          ${g.b5h && !g.b5h.disabled && typeof g.b5h.remainingPct === 'number' ? `<span>5h: ${g.b5h.remainingPct.toFixed(1)}% (${escapeHtml(r5h || '—')})</span>` : ''}
+                          ${g.bWeek && g.bWeek !== g.b5h && !g.bWeek.disabled && typeof g.bWeek.remainingPct === 'number' ? `<span>${escapeHtml(ui.weeklyLabel || 'Weekly')}: ${g.bWeek.remainingPct.toFixed(1)}% (${escapeHtml(rWeek || '—')})</span>` : ''}
                         </div>
                       </div>
                     `;
@@ -2226,14 +2315,15 @@
     const sum = sumEntry?.summary || sumEntry || {};
     const isCloud = Boolean(sum?.cloud === true || cloudOnlyCascadeIds.has(cascadeId));
     const liveState = liveProv ? liveProv.getState?.() || null : null;
-    if (liveProv && isCloud) {
+    if (liveProv) {
       watchAgentStateProvider(cascadeId, liveProv);
     }
     const liveSlice = liveState?.trajectorySlice || null;
     const liveSteps = Array.isArray(liveSlice?.stepsInSlice) ? liveSlice.stepsInSlice : [];
     const liveLastStep = liveSteps.length > 0 ? liveSteps[liveSteps.length - 1] : null;
+    const liveCw = liveState?.contextWindowUsage || null;
     const liveSig = liveState
-      ? `${liveSlice?.totalStepsLength || liveSteps.length}:${liveSteps.length}:${liveState.status || 0}:${liveState.fullyIdle ? 1 : 0}:${liveLastStep?.status || 0}:${liveLastStep?.metadata?.modelUsage?.outputTokens || 0}:${liveLastStep?.step?.value?.thinking?.length || 0}:${liveLastStep?.step?.value?.response?.length || 0}:${liveState.contextWindowUsage?.estimatedTokensUsed || 0}`
+      ? `${liveSlice?.totalStepsLength || liveSteps.length}:${liveSteps.length}:${liveState.status || 0}:${liveState.fullyIdle ? 1 : 0}:${liveLastStep?.status || 0}:${liveLastStep?.metadata?.modelUsage?.outputTokens || 0}:${liveLastStep?.step?.value?.thinking?.length || 0}:${liveLastStep?.step?.value?.response?.length || 0}:${liveCw?.estimatedTokensUsed || 0}:${liveCw?.maxContextTokens || 0}:${liveCw?.estimatedAfterCompaction ? 1 : 0}:${liveCw?.generatorMetadataIndex ?? -1}:${liveCw?.lastStepIndex ?? -1}`
       : '';
     const stepCount = Math.max(
       Number(sum?.stepCount || 0),
@@ -2328,7 +2418,7 @@
         const res = await resolveTrajectoryPayload(cascadeId, sum, h, {
           scopeEl,
           allowTempStream: !liveProv,
-          watchLive: isCloud,
+          watchLive: Boolean(liveProv),
           timeoutMs: 3500,
         });
         if (!res) return entry.data;
@@ -2337,7 +2427,14 @@
           cascadeId,
           knownLimits: knownMax > 0 ? { maxContextTokens: knownMax } : undefined,
         });
-        if (entry.data && entry.data.totalSteps > 0 && analyzed && analyzed.totalSteps === 0 && analyzed.totalCalls === 0) {
+        if (
+          entry.data &&
+          entry.data.totalSteps > 0 &&
+          stepCount > 0 &&
+          analyzed &&
+          analyzed.totalSteps === 0 &&
+          analyzed.totalCalls === 0
+        ) {
           return entry.data;
         }
         if (
@@ -2351,13 +2448,20 @@
           if (mKey) knownModelMaxCtx.set(mKey, analyzed.maxContextTokens);
         }
         if (analyzed && analyzed.calls > 0 && typeof usageCore.analyzeTrajectoryForUsage === 'function') {
-          try {
-            const rec = usageCore.analyzeTrajectoryForUsage(res, sum, cascadeId);
-            if (rec) {
-              usageRecords.set(cascadeId, rec);
-              if (isCloud || cloudOnlyCascadeIds.has(cascadeId)) saveUsageCache();
-            }
-          } catch {}
+          // Avoid re-walking the full trajectory twice on every streaming tick; refresh usage rollup
+          // immediately when a turn settles or at most every 15s while streaming.
+          const prevRollupAt = entry.lastUsageRollupAt || 0;
+          const justSettled = Boolean(entry.lastRunning && !running);
+          if (!running || justSettled || !usageRecords.has(cascadeId) || Date.now() - prevRollupAt >= 15000) {
+            try {
+              const rec = usageCore.analyzeTrajectoryForUsage(res, sum, cascadeId);
+              if (rec) {
+                usageRecords.set(cascadeId, rec);
+                entry.lastUsageRollupAt = Date.now();
+                if (isCloud || cloudOnlyCascadeIds.has(cascadeId)) saveUsageCache();
+              }
+            } catch {}
+          }
         }
 
         if (childMetaList.length > 0 && typeof usageCore.attachSubagentSummaries === 'function') {
@@ -3242,9 +3346,25 @@
     // 3. Rim Progress Border (data-ag-cs-rim on composerShell + proportional .ag-cs-hud-rim-progress)
     let rimBar = card.querySelector('.ag-cs-hud-rim-progress');
     if (cfg.hudRimProgress === true) {
+      const rimSrc = cfg.hudRimSource || 'auto';
+      const useQuotaRim =
+        ring.quotaRemainingPct !== null &&
+        (rimSrc === 'quota' || (rimSrc === 'auto' && ring.mode === 'quota'));
+      const rimColor = useQuotaRim
+        ? ring.quotaColor || ring.color
+        : ring.contextRemainingPct <= 10
+        ? '#dc3c3d'
+        : ring.contextRemainingPct <= 30
+        ? '#fbb315'
+        : '#257de0';
+      const rimFillPct = useQuotaRim
+        ? Math.max(2, Math.min(100, ring.quotaRemainingPct))
+        : Math.max(2, Math.min(100, ring.contextUsedPct));
       if (composerShell) {
-        composerShell.setAttribute('data-ag-cs-rim', '1');
-        composerShell.style.setProperty('--ag-cs-rim-color', ring.color);
+        setAttrIfChanged(composerShell, 'data-ag-cs-rim', '1');
+        if (composerShell.style.getPropertyValue('--ag-cs-rim-color') !== rimColor) {
+          composerShell.style.setProperty('--ag-cs-rim-color', rimColor);
+        }
       }
       const rimHost = card.querySelector(':scope > div.relative.w-full') || card;
       if (rimHost) {
@@ -3261,9 +3381,12 @@
         }
         const fill = rimBar.firstElementChild;
         if (fill) {
-          const usedPct = Math.max(2, Math.min(100, 100 - ring.pct));
-          fill.style.width = `${usedPct.toFixed(1)}%`;
-          fill.style.background = ring.color;
+          const nextWidth = `${rimFillPct.toFixed(1)}%`;
+          if (fill.style.width !== nextWidth) fill.style.width = nextWidth;
+          if (fill._agCsRimBg !== rimColor) {
+            fill._agCsRimBg = rimColor;
+            fill.style.background = rimColor;
+          }
         }
       }
     } else {
@@ -4499,7 +4622,7 @@
     for (const ed of editors) {
       const host = ed.parentElement;
       if (!host) continue;
-      host.setAttribute('data-ag-cs-caret-host', '1');
+      setAttrIfChanged(host, 'data-ag-cs-caret-host', '1');
       let caret = host.querySelector('.ag-cs-smooth-caret');
       if (!caret) {
         caret = document.createElement('div');
@@ -4510,10 +4633,16 @@
       }
 
       const isFocused = activeEl === ed || (activeEl && ed.contains && ed.contains(activeEl));
+      if (!isFocused) {
+        removeAttrIfPresent(caret, 'data-ag-cs-caret-visible');
+        removeAttrIfPresent(ed, 'data-ag-cs-smooth-caret');
+        continue;
+      }
+
       const measured = measureEditorCaretBox(ed);
       if (!measured || !measured.collapsed) {
-        caret.removeAttribute('data-ag-cs-caret-visible');
-        ed.removeAttribute('data-ag-cs-smooth-caret');
+        removeAttrIfPresent(caret, 'data-ag-cs-caret-visible');
+        removeAttrIfPresent(ed, 'data-ag-cs-smooth-caret');
         continue;
       }
 
@@ -4526,6 +4655,7 @@
       const isNowEmpty = cleanText.length === 0 && ed.querySelectorAll('p, div').length <= 1;
       const prev = caretPrevState.get(caret);
       const clearedToEmpty = Boolean(prev && prev.empty === false && isNowEmpty);
+      const posChanged = !prev || prev.x !== x || prev.y !== y || prev.h !== h;
 
       if ((isFocused && !wasVisible) || clearedToEmpty) {
         caret.style.transition = 'none';
@@ -4533,30 +4663,25 @@
         caret.style.height = `${h}px`;
         void caret.offsetWidth;
         caret.style.transition = '';
-      } else {
+      } else if (posChanged) {
         caret.style.transform = `translate3d(${x}px, ${y}px, 0)`;
         caret.style.height = `${h}px`;
       }
       caretPrevState.set(caret, { x, y, h, empty: isNowEmpty });
 
-      if (isFocused) {
-        caret.setAttribute('data-ag-cs-caret-visible', '1');
-        ed.setAttribute('data-ag-cs-smooth-caret', '1');
-        if (isTypingEvent) {
-          caret.setAttribute('data-ag-cs-caret-typing', '1');
-          if (caretTypingTimer) clearTimeout(caretTypingTimer);
-          caretTypingTimer = setTimeout(() => {
-            caretTypingTimer = null;
-            if (caret.isConnected) caret.removeAttribute('data-ag-cs-caret-typing');
-          }, 420);
-        } else if (prev && (prev.x !== x || prev.y !== y) && typeof caret.getAnimations === 'function') {
-          for (const anim of caret.getAnimations()) {
-            if (anim && anim.animationName === 'ag-cs-caret-blink') anim.currentTime = 0;
-          }
+      setAttrIfChanged(caret, 'data-ag-cs-caret-visible', '1');
+      setAttrIfChanged(ed, 'data-ag-cs-smooth-caret', '1');
+      if (isTypingEvent) {
+        setAttrIfChanged(caret, 'data-ag-cs-caret-typing', '1');
+        if (caretTypingTimer) clearTimeout(caretTypingTimer);
+        caretTypingTimer = setTimeout(() => {
+          caretTypingTimer = null;
+          if (caret.isConnected) removeAttrIfPresent(caret, 'data-ag-cs-caret-typing');
+        }, 420);
+      } else if (prev && (prev.x !== x || prev.y !== y) && typeof caret.getAnimations === 'function') {
+        for (const anim of caret.getAnimations()) {
+          if (anim && anim.animationName === 'ag-cs-caret-blink') anim.currentTime = 0;
         }
-      } else {
-        caret.removeAttribute('data-ag-cs-caret-visible');
-        ed.removeAttribute('data-ag-cs-smooth-caret');
       }
     }
   }
@@ -4711,10 +4836,10 @@
           else if (/\bextra\b/.test(txt)) level = 'extra';
           if (level) {
             if (sub.getAttribute('data-ag-cs-effort') !== level) sub.setAttribute('data-ag-cs-effort', level);
-            sub.classList.add('ag-cs-effort-badge');
+            if (!sub.classList.contains('ag-cs-effort-badge')) sub.classList.add('ag-cs-effort-badge');
           } else {
             if (sub.hasAttribute('data-ag-cs-effort')) sub.removeAttribute('data-ag-cs-effort');
-            sub.classList.remove('ag-cs-effort-badge');
+            if (sub.classList.contains('ag-cs-effort-badge')) sub.classList.remove('ag-cs-effort-badge');
           }
         }
       }
@@ -4726,8 +4851,17 @@
       const inConvo = Boolean(cascadeId || card.closest('[data-testid="conversation-view"]'));
 
       if (!footer || cfg.inlineStats === false || cfg.composerRestyle === false) {
+        const composerShell = card.querySelector(':scope > div.relative.w-full') || card;
+        if (composerShell && composerShell.hasAttribute('data-ag-cs-rim')) {
+          composerShell.removeAttribute('data-ag-cs-rim');
+          composerShell.style.removeProperty('--ag-cs-rim-color');
+        }
+        if (card.hasAttribute('data-ag-cs-rim')) {
+          card.removeAttribute('data-ag-cs-rim');
+          card.style.removeProperty('--ag-cs-rim-color');
+        }
         card
-          .querySelectorAll('.ag-cs-inline-stats, .ag-cs-context-ring, .ag-cs-hud-top-bar, .ag-cs-hud-bottom-bar, .ag-cs-hud-rim-progress, .ag-cs-hud-footer-chip')
+          .querySelectorAll('.ag-cs-inline-stats, .ag-cs-quota-ring, .ag-cs-context-ring, .ag-cs-hud-top-bar, .ag-cs-hud-bottom-bar, .ag-cs-hud-rim-progress, .ag-cs-hud-footer-chip')
           .forEach((n) => n.remove());
         continue;
       }
@@ -4761,6 +4895,8 @@
       }
       const needQuotaPoll =
         cfg.ringMode === 'quota' ||
+        cfg.ringMode === 'both' ||
+        (cfg.hudRimProgress === true && cfg.hudRimSource === 'quota') ||
         cfg.hudBottomBar === true ||
         Boolean(openPopover && openPopover.isConnected && activeHudTab === 'quotas');
       if (needQuotaPoll) {
@@ -4791,7 +4927,6 @@
     const d = data || createEmptyConvoData('', getKnownMaxContextForCard(card, data));
     card._agCsLastData = d;
     let statsBtn = footer.querySelector('.ag-cs-inline-stats');
-    let ringBtn = footer.querySelector('.ag-cs-context-ring');
 
     // Bottom-right circular ring displays REMAINING capacity percentage (usageCore.computeRingTelemetry)
     const { ring, draftEst } = getRingTelemetryForCard(card, d);
@@ -4842,12 +4977,49 @@
       if (cacheEl) cacheEl.textContent = cacheTxt;
     }
 
-    const pct = Math.max(0, Math.min(100, ring.pct));
-    const r = 5.5;
-    const circ = 2 * Math.PI * r;
-    const dash = ((pct / 100) * circ).toFixed(2);
-    const color = ring.color;
-    const pctRound = ring.pctRound;
+    const syncRingBtn = (cls, { pctVal, labelText, colorVal, modeAttr, lowCtxAttr, titleText, targetTab }) => {
+      const clamped = Math.max(0, Math.min(100, pctVal));
+      const r = 5.5;
+      const circ = 2 * Math.PI * r;
+      const dash = ((clamped / 100) * circ).toFixed(2);
+      const lowAttr = lowCtxAttr || '';
+      const key = `${modeAttr}|${lowAttr}|${labelText}|${dash}|${colorVal}|${titleText}|${targetTab}`;
+      let btn = footer.querySelector(`.${cls}`);
+      if (!btn) {
+        btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = cls;
+        btn.setAttribute('data-ag-no-i18n', '');
+        btn.setAttribute('data-ring-mode', modeAttr);
+        if (lowAttr) btn.setAttribute('data-ctx-low', lowAttr);
+        btn.setAttribute('title', titleText);
+        btn.innerHTML = `<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="${r}" fill="none" stroke="var(--ag-cs-heat-empty)" stroke-width="2.2"/><circle class="ag-cs-ring-fill" cx="8" cy="8" r="${r}" fill="none" stroke="${colorVal}" stroke-width="2.2" stroke-dasharray="${dash} ${circ.toFixed(2)}" stroke-linecap="round"/></svg><span>${labelText}</span>`;
+        btn.addEventListener('click', (ev) => {
+          ev.stopPropagation();
+          const tab = btn.getAttribute('data-ag-cs-tab') || targetTab;
+          openContextPopover(btn, resolveCardConvoData(card, d), tab);
+        });
+        btn.setAttribute('data-ag-cs-tab', targetTab);
+        btn.setAttribute('data-ag-cs-ring-key', key);
+        footer.appendChild(btn);
+      } else if (btn.getAttribute('data-ag-cs-ring-key') !== key) {
+        btn.setAttribute('data-ag-cs-ring-key', key);
+        btn.setAttribute('data-ag-cs-tab', targetTab);
+        btn.setAttribute('data-ring-mode', modeAttr);
+        if (lowAttr) btn.setAttribute('data-ctx-low', lowAttr);
+        else btn.removeAttribute('data-ctx-low');
+        btn.setAttribute('title', titleText);
+        const fillCircle = btn.querySelector('.ag-cs-ring-fill');
+        const pctSpan = btn.querySelector('span');
+        if (fillCircle) {
+          fillCircle.setAttribute('stroke', colorVal);
+          fillCircle.setAttribute('stroke-dasharray', `${dash} ${circ.toFixed(2)}`);
+        }
+        if (pctSpan) pctSpan.textContent = labelText;
+      }
+      return btn;
+    };
+
     const remStr = formatCompactK(ring.remainingTokens);
     const maxStr = formatCompactK(ring.maxTokens);
     const usedStr = formatCompactK(ring.usedTokens);
@@ -4856,49 +5028,71 @@
         ? ui.ringTooltip(remStr, maxStr, ring.contextRemainingPct.toFixed(1), usedStr, ring.contextUsedPct.toFixed(1), ring.quotaRemainingPct)
         : `Remaining ${remStr} / ${maxStr} (${ring.contextRemainingPct.toFixed(1)}%) · Used ${usedStr} (${ring.contextUsedPct.toFixed(1)}%)`;
     const lowCtxRingAttr =
-      ring.mode === 'context' && (d.calls > 0 || ring.usedTokens > 0) && ring.contextRemainingPct <= 20
+      (ring.mode === 'context' || cfg.ringMode === 'both') && (d.calls > 0 || ring.usedTokens > 0) && ring.contextRemainingPct <= 20
         ? ring.contextRemainingPct <= 10
           ? 'danger'
           : 'warn'
         : '';
-    const ringKey = `${ring.mode}|${lowCtxRingAttr}|${pctRound}|${dash}|${color}|${ringTitle}`;
 
-    if (!ringBtn) {
-      ringBtn = document.createElement('button');
-      ringBtn.type = 'button';
-      ringBtn.className = 'ag-cs-context-ring';
-      ringBtn.setAttribute('data-ag-no-i18n', '');
-      ringBtn.setAttribute('data-ring-mode', ring.mode);
-      if (lowCtxRingAttr) ringBtn.setAttribute('data-ctx-low', lowCtxRingAttr);
-      ringBtn.setAttribute('title', ringTitle);
-      ringBtn.innerHTML = `<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="${r}" fill="none" stroke="var(--ag-cs-heat-empty)" stroke-width="2.2"/><circle class="ag-cs-ring-fill" cx="8" cy="8" r="${r}" fill="none" stroke="${color}" stroke-width="2.2" stroke-dasharray="${dash} ${circ.toFixed(2)}" stroke-linecap="round"/></svg><span>${pctRound}%</span>`;
-      ringBtn.addEventListener('click', (ev) => {
-        ev.stopPropagation();
-        const targetTab = cfg.ringMode === 'quota' ? 'quotas' : 'breakdown';
-        openContextPopover(ringBtn, resolveCardConvoData(card, d), targetTab);
+    if (cfg.ringMode === 'both') {
+      const qPct = ring.quotaRemainingPct;
+      const qVal = qPct !== null ? qPct : 0;
+      const qLabel = qPct !== null ? `${Math.round(qPct)}%` : '--';
+      const qColor = qPct === null ? 'var(--muted-foreground)' : qPct <= 10 ? '#dc3c3d' : qPct <= 30 ? '#fbb315' : '#257de0';
+      const qCycleTag =
+        ring.quotaCycleUsed === '5h'
+          ? '5h'
+          : ring.quotaCycleUsed === 'weekly'
+          ? (lang !== 'en' ? '周限额' : 'Weekly')
+          : '';
+      const qTitle =
+        qPct !== null
+          ? `${ui.optRingQuota || 'Quota Rem %'}${qCycleTag ? ` (${qCycleTag})` : ''}: ${qPct.toFixed(1)}% · ${ringTitle}`
+          : ringTitle;
+      syncRingBtn('ag-cs-quota-ring', {
+        pctVal: qVal,
+        labelText: qLabel,
+        colorVal: qColor,
+        modeAttr: 'quota',
+        lowCtxAttr: '',
+        titleText: qTitle,
+        targetTab: 'quotas',
       });
-      footer.appendChild(ringBtn);
-      ringBtn.setAttribute('data-ag-cs-ring-key', ringKey);
-    } else if (ringBtn.getAttribute('data-ag-cs-ring-key') !== ringKey) {
-      ringBtn.setAttribute('data-ag-cs-ring-key', ringKey);
-      ringBtn.setAttribute('data-ring-mode', ring.mode);
-      if (lowCtxRingAttr) ringBtn.setAttribute('data-ctx-low', lowCtxRingAttr);
-      else ringBtn.removeAttribute('data-ctx-low');
-      ringBtn.setAttribute('title', ringTitle);
-      const fillCircle = ringBtn.querySelector('.ag-cs-ring-fill');
-      const pctSpan = ringBtn.querySelector('span');
-      if (fillCircle) {
-        fillCircle.setAttribute('stroke', color);
-        fillCircle.setAttribute('stroke-dasharray', `${dash} ${circ.toFixed(2)}`);
-      }
-      if (pctSpan) pctSpan.textContent = `${pctRound}%`;
+
+      const uPct = ring.contextUsedPct;
+      const uColor = uPct >= 90 ? '#dc3c3d' : uPct >= 70 ? '#fbb315' : '#257de0';
+      syncRingBtn('ag-cs-context-ring', {
+        pctVal: uPct,
+        labelText: `${Math.round(uPct)}%`,
+        colorVal: uColor,
+        modeAttr: 'context-used',
+        lowCtxAttr: lowCtxRingAttr,
+        titleText: ringTitle,
+        targetTab: 'breakdown',
+      });
+    } else {
+      const staleQuota = footer.querySelector('.ag-cs-quota-ring');
+      if (staleQuota) staleQuota.remove();
+      syncRingBtn('ag-cs-context-ring', {
+        pctVal: ring.pct,
+        labelText: `${ring.pctRound}%`,
+        colorVal: ring.color,
+        modeAttr: ring.mode,
+        lowCtxAttr: lowCtxRingAttr,
+        titleText: ringTitle,
+        targetTab: cfg.ringMode === 'quota' ? 'quotas' : 'breakdown',
+      });
     }
   }
 
   // ── Settings Panel Integration ─────────────────────────────────────────
+  // Kept active alongside the native Aux Pane control panel (sidecars/panel)
+  // so standalone installer & CLI users retain full Settings -> Appearance UI
+  // synced bidirectionally via config.json.
   const SETTINGS_SEC_ID = 'ag-cs-settings-sec';
 
   function ensureSettingsSection() {
+    if (destroyed) return;
     const lang = getLang();
     const ui = uiText(lang);
     const targetTitles = ['Appearance', '外观', '外觀', '外観'];
@@ -5096,6 +5290,7 @@
         opts: [
           ['context', ui.optRingContext || 'Context Rem %'],
           ['quota', ui.optRingQuota || 'Quota Rem %'],
+          ['both', ui.optRingBoth || 'Dual Rings'],
         ],
       },
       turnBadges: {
@@ -5152,24 +5347,187 @@
           [false, ui.offLabel || 'Off'],
         ],
       },
+      rewindPanel: {
+        key: 'rewindPanel',
+        title: ui.setRewindPanelTitle || 'Rewind Timeline Panel',
+        desc: ui.setRewindPanelDesc || 'Type /rewind or press Esc twice in composer to open the inline Claude Code-style rewind bar.',
+        opts: [
+          [true, ui.onLabel || 'On'],
+          [false, ui.offLabel || 'Off'],
+        ],
+      },
+      undoConfirmMode: {
+        key: 'undoConfirmMode',
+        title: ui.setUndoConfirmTitle || 'Undo Button Behavior',
+        desc: ui.setUndoConfirmDesc || 'Behavior when clicking Undo on a turn: open the Rewind bar, keep native confirm, or auto-confirm.',
+        opts: [
+          ['picker', ui.optUndoPicker || 'Rewind Picker (Default)'],
+          ['prompt', ui.optUndoPrompt || 'Ask (Native Dialog)'],
+          ['auto_both', ui.optUndoAutoBoth || 'Auto (Code + Chat)'],
+          ['auto_chat', ui.optUndoAutoChat || 'Auto (Chat Only)'],
+        ],
+      },
+      glassEffect: {
+        key: 'glassEffect',
+        title: ui.setGlassTitle || 'Frosted Glass Effect',
+        desc: ui.setGlassDesc || 'Enable frosted-glass translucency and hairline specular highlights.',
+        opts: [
+          [true, ui.onLabel || 'On'],
+          [false, ui.offLabel || 'Off'],
+        ],
+      },
+      compactChatLayout: {
+        key: 'compactChatLayout',
+        title: ui.setCompactChatTitle || 'Compact Chat Layout',
+        desc: ui.setCompactChatDesc || 'Tighten message paragraph spacing and list margins for denser reading.',
+        opts: [
+          [true, ui.onLabel || 'On'],
+          [false, ui.offLabel || 'Off'],
+        ],
+      },
+      quotaCycleMode: {
+        key: 'quotaCycleMode',
+        title: ui.setQuotaCycleTitle || 'Quota Display Cycle',
+        desc: ui.setQuotaCycleDesc || 'Choose whether rings & HUD prioritize 5h window or Weekly quota.',
+        opts: [
+          ['auto', ui.optQuotaAuto || 'Auto'],
+          ['5h', ui.optQuota5h || '5h Window'],
+          ['weekly', ui.optQuotaWeekly || 'Weekly Quota'],
+        ],
+      },
+      hudRimSource: {
+        key: 'hudRimSource',
+        title: ui.setHudRimSourceTitle || 'Rim Progress Source',
+        desc: ui.setHudRimSourceDesc || 'Select telemetry metric shown by the composer rim bar.',
+        opts: [
+          ['auto', ui.optRimAuto || 'Auto'],
+          ['context', ui.optRimContext || 'Context Usage'],
+          ['quota', ui.optRimQuota || 'Model Quota'],
+        ],
+      },
+      stageCollapse: {
+        key: 'stageCollapse',
+        title: ui.setStageCollapseTitle || 'Auto-Collapse Stages',
+        desc: ui.setStageCollapseDesc || 'Stream live execution steps and auto-collapse worked stages once done.',
+        opts: [
+          [true, ui.onLabel || 'On'],
+          [false, ui.offLabel || 'Off'],
+        ],
+      },
+      stagePromptInjection: {
+        key: 'stagePromptInjection',
+        subRow: true,
+        title: ui.setStagePromptTitle || 'Stage Update Prompt Injection',
+        desc: ui.setStagePromptDesc || 'Append agy_cs_stage_updates instruction so the model emits compact progress updates (default OFF).',
+        opts: [
+          [true, ui.onLabel || 'On'],
+          [false, ui.offLabel || 'Off'],
+        ],
+      },
+      taskProgressCard: {
+        key: 'taskProgressCard',
+        title: ui.setTaskProgressTitle || 'Task Progress Card',
+        desc: ui.setTaskProgressDesc || 'Show docked or draggable live task checklist, phase, and subagent timings.',
+        opts: [
+          [true, ui.onLabel || 'On'],
+          [false, ui.offLabel || 'Off'],
+        ],
+      },
+      windowUnreadTitle: {
+        key: 'windowUnreadTitle',
+        title: ui.setUnreadTitleTitle || 'Window Title Unread Badge',
+        desc: ui.setUnreadTitleDesc || 'Prefix window title with [N] when background conversations finish or await approval.',
+        opts: [
+          [true, ui.onLabel || 'On'],
+          [false, ui.offLabel || 'Off'],
+        ],
+      },
+      branchSession: {
+        key: 'branchSession',
+        title: ui.setBranchSessionTitle || 'Branch From Response',
+        desc: ui.setBranchSessionDesc || 'Add a Fork button to assistant responses to branch a conversation at that step.',
+        opts: [
+          [true, ui.onLabel || 'On'],
+          [false, ui.offLabel || 'Off'],
+        ],
+      },
+      messageEdit: {
+        key: 'messageEdit',
+        title: ui.setMessageEditTitle || 'In-Place Message Edit',
+        desc: ui.setMessageEditDesc || 'Edit previous user prompts in-place and rewind + resend from that turn.',
+        opts: [
+          [true, ui.onLabel || 'On'],
+          [false, ui.offLabel || 'Off'],
+        ],
+      },
+      fileContextMenu: {
+        key: 'fileContextMenu',
+        title: ui.setFileMenuTitle || 'File & Media Context Menu',
+        desc: ui.setFileMenuDesc || 'Right-click file links and chat images to open, reveal, copy, or attach.',
+        opts: [
+          [true, ui.onLabel || 'On'],
+          [false, ui.offLabel || 'Off'],
+        ],
+      },
+      headerExtensionsBar: {
+        key: 'headerExtensionsBar',
+        title: ui.setHeaderExtTitle || 'Header Extensions Dock',
+        desc: ui.setHeaderExtDesc || 'Pin favorite sidecar extensions in the top header bar for 1-click access.',
+        opts: [
+          [true, ui.onLabel || 'On'],
+          [false, ui.offLabel || 'Off'],
+        ],
+      },
+      sidebarExtensionsSection: {
+        key: 'sidebarExtensionsSection',
+        title: ui.setSidebarExtTitle || 'Sidebar Extensions Section',
+        desc: ui.setSidebarExtDesc || 'List installed sidecar extensions in the left sidebar with header-pin toggles.',
+        opts: [
+          [true, ui.onLabel || 'On'],
+          [false, ui.offLabel || 'Off'],
+        ],
+      },
+      hideOnClose: {
+        key: 'hideOnClose',
+        title: ui.setHideOnCloseTitle || 'Hide Window on Close',
+        desc: ui.setHideOnCloseDesc || 'Hide or minimize the window on native close instead of terminating the app.',
+        opts: [
+          [true, ui.onLabel || 'On'],
+          [false, ui.offLabel || 'Off'],
+        ],
+      },
+      autoRelaunchWithCdp: {
+        key: 'autoRelaunchWithCdp',
+        title: ui.setAutoCdpTitle || 'Auto-Relaunch With CDP',
+        desc: ui.setAutoCdpDesc || 'Allow native plugin host to relaunch Antigravity automatically with CDP debugging.',
+        opts: [
+          [true, ui.onLabel || 'On'],
+          [false, ui.offLabel || 'Off'],
+        ],
+      },
     };
 
     const groups = [
       {
         id: 'appearance',
         title: ui.grpAppearance || 'Appearance & Layout',
-        keys: ['language', 'homeLayout', 'palette', 'logoInk', 'sidebarRestyle', 'composerRestyle'],
+        keys: ['language', 'homeLayout', 'palette', 'glassEffect', 'logoInk', 'sidebarRestyle', 'composerRestyle', 'compactChatLayout'],
       },
       {
         id: 'interaction',
         title: ui.grpInteraction || 'Slider, Caret & Mascot',
-        keys: ['effortSliderStyle', 'effortAccent', 'performanceBackdrop', 'smoothCaret', 'mascot', 'homeRipple'],
+        keys: ['effortSliderStyle', 'effortAccent', 'performanceBackdrop', 'smoothCaret', 'mascot', 'homeRipple', 'rewindPanel', 'undoConfirmMode'],
       },
       {
         id: 'telemetry',
         title: ui.grpTelemetry || 'Usage Ring & HUD',
-        keys: ['inlineStats', 'ringMode', 'turnBadges'],
-        hudKeys: ['hudTopBar', 'hudBottomBar', 'hudRimProgress', 'hudFooterChip', 'hudCompact'],
+        keys: ['inlineStats', 'ringMode', 'quotaCycleMode', 'turnBadges'],
+        hudKeys: ['hudTopBar', 'hudBottomBar', 'hudRimProgress', 'hudRimSource', 'hudFooterChip', 'hudCompact'],
+      },
+      {
+        id: 'powertools',
+        title: ui.setGrpPowertools || 'Powertools & Extensions',
+        keys: ['taskProgressCard', 'stageCollapse', 'stagePromptInjection', 'windowUnreadTitle', 'branchSession', 'messageEdit', 'fileContextMenu', 'headerExtensionsBar', 'sidebarExtensionsSection', 'hideOnClose', 'autoRelaunchWithCdp'],
       },
     ];
 
@@ -5310,20 +5668,378 @@
     syncQueued = false;
   }
 
+  // ── Feature host ─────────────────────────────────────────────────────
+  // Self-contained features live in ui-<feature>.js and register on
+  // globalThis.__agCsFeatures.<name> = { create(ctx) }. Each instance may expose
+  // sync(), onClick(ev), onKeyDown(ev) -> boolean (consumed), onEscape(ev, info), destroy().
+  const FEATURE_ORDER = ['rewind', 'branchEdit', 'fileMenu', 'taskProgress', 'extensionsDock', 'hideOnClose', 'unreadTitle', 'stageCollapse'];
+  const featureCtx = {
+    getCfg: () => cfg,
+    getUi: () => uiText(getLang()),
+    isDestroyed: () => destroyed,
+    saveSetting,
+    scheduleSync: () => scheduleSync(),
+  };
+  const features = [];
+  for (const name of FEATURE_ORDER) {
+    const mod = globalThis.__agCsFeatures && globalThis.__agCsFeatures[name];
+    if (!mod || typeof mod.create !== 'function') continue;
+    try {
+      const inst = mod.create(featureCtx);
+      if (inst) features.push(inst);
+    } catch (e) {
+      if (typeof console !== 'undefined' && console.error) console.error('[agy-claude-style] feature init failed:', name, e);
+    }
+  }
+  function forEachFeature(method, ...args) {
+    for (const f of features) {
+      if (typeof f[method] !== 'function') continue;
+      try {
+        f[method](...args);
+      } catch {}
+    }
+  }
+  function featuresConsume(method, ev) {
+    for (const f of features) {
+      if (typeof f[method] !== 'function') continue;
+      try {
+        if (f[method](ev)) return true;
+      } catch {}
+    }
+    return false;
+  }
+  const FEATURE_OWN_SELECTORS = features.map((f) => f.ownSelector).filter(Boolean);
+
   function isOwnPluginNode(target) {
     const el = target && target.closest ? target : target?.parentElement;
     if (!el || !el.closest) return false;
     return Boolean(
       el.closest(
-        '.ag-cs-home-panel-seat, .ag-cs-ripple-host, .ag-cs-crab, .ag-cs-inline-stats, .ag-cs-context-ring, .ag-cs-ctx-popover, .ag-cs-effort-popover, .ag-cs-perf-backdrop, .ag-cs-smooth-caret, .ag-cs-turn-bar, .ag-cs-hud-top-bar, .ag-cs-hud-bottom-bar, .ag-cs-hud-footer-chip, #' +
+        '.ag-cs-home-panel-seat, .ag-cs-ripple-host, .ag-cs-crab, .ag-cs-inline-stats, .ag-cs-quota-ring, .ag-cs-context-ring, .ag-cs-ctx-popover, .ag-cs-effort-popover, .ag-cs-perf-backdrop, .ag-cs-smooth-caret, .ag-cs-turn-bar, .ag-cs-hud-top-bar, .ag-cs-hud-bottom-bar, .ag-cs-hud-footer-chip, #' +
           SETTINGS_SEC_ID +
-          ', #ag-claude-style-css'
+          ', #ag-claude-style-css' +
+          (FEATURE_OWN_SELECTORS.length ? ', ' + FEATURE_OWN_SELECTORS.join(', ') : '')
       )
     );
   }
 
+  let imeComposing = false;
+  let imeSafetyTimer = null;
+  let imePendingSync = false;
+  let scrollingUntil = 0;
+  let scrollFlushTimer = null;
+
+  function onDocCompositionStart() {
+    imeComposing = true;
+    if (imeSafetyTimer) clearTimeout(imeSafetyTimer);
+    imeSafetyTimer = setTimeout(() => {
+      imeSafetyTimer = null;
+      if (imeComposing) {
+        imeComposing = false;
+        if (imePendingSync && !destroyed) {
+          imePendingSync = false;
+          scheduleSync();
+        }
+      }
+    }, 10000);
+  }
+
+  function onDocCompositionEnd(ev) {
+    imeComposing = false;
+    if (imeSafetyTimer) {
+      clearTimeout(imeSafetyTimer);
+      imeSafetyTimer = null;
+    }
+    onDocCaretEvent(ev);
+    if (imePendingSync && !destroyed) {
+      imePendingSync = false;
+      setTimeout(() => {
+        if (!destroyed && !imeComposing) scheduleSync();
+      }, 16);
+    }
+  }
+
+  function onDocScrollThrottled(ev) {
+    onDocCaretEvent(ev);
+    const t = ev?.target;
+    const isChatScroll =
+      t &&
+      typeof t.closest === 'function' &&
+      Boolean(t.closest('[data-testid="autoscroll-viewport"], [data-testid="conversation-view"]'));
+    if (!isChatScroll) return;
+    scrollingUntil = Date.now() + 180;
+    if (scrollFlushTimer) clearTimeout(scrollFlushTimer);
+    scrollFlushTimer = setTimeout(() => {
+      scrollFlushTimer = null;
+      if (!destroyed && !imeComposing) scheduleSync();
+    }, 200);
+  }
+
+  // ── Rewind / Message-Deletion Viewport Recovery ────────────────────────
+  // Antigravity paginates long conversations into a tail slice (`load-older-messages-button`)
+  // and disables scroll anchoring (`overflow-anchor: none`) on `[data-testid="autoscroll-viewport"]`.
+  // When Rewind deletes messages, the rendered slice can shrink sharply or empty out while
+  // earlier turns remain unloaded/offscreen until the user manually scrolls up and down.
+  const rewindViewportState = {
+    cascadeId: '',
+    lastMsgCount: 0,
+    lastTurnCount: 0,
+    lastScrollHeight: 0,
+    lastStepCount: 0,
+    recoverTimer: null,
+    recoverRaf: 0,
+    recoverTries: 0,
+    lastClickAt: 0,
+    pendingRewindUntil: 0,
+  };
+
+  function cancelRewindRecoveryTimers() {
+    if (rewindViewportState.recoverTimer) {
+      clearTimeout(rewindViewportState.recoverTimer);
+      rewindViewportState.recoverTimer = null;
+    }
+    if (rewindViewportState.recoverRaf) {
+      if (typeof cancelAnimationFrame === 'function') cancelAnimationFrame(rewindViewportState.recoverRaf);
+      rewindViewportState.recoverRaf = 0;
+    }
+  }
+
+  function nudgeAutoscrollViewport(av, targetScrollTop) {
+    if (!av) return;
+    const maxScroll = Math.max(0, (av.scrollHeight || 0) - (av.clientHeight || 0));
+    const target = Math.max(0, Math.min(maxScroll, Number.isFinite(targetScrollTop) ? targetScrollTop : maxScroll));
+    try {
+      if (target > 0) {
+        av.scrollTop = Math.max(0, target - 1);
+        av.dispatchEvent(new Event('scroll', { bubbles: false }));
+        if (typeof requestAnimationFrame === 'function') {
+          if (rewindViewportState.recoverRaf) cancelAnimationFrame(rewindViewportState.recoverRaf);
+          rewindViewportState.recoverRaf = requestAnimationFrame(() => {
+            rewindViewportState.recoverRaf = 0;
+            if (destroyed || !av.isConnected) return;
+            const freshMax = Math.max(0, (av.scrollHeight || 0) - (av.clientHeight || 0));
+            av.scrollTop = Math.min(freshMax, target);
+            av.dispatchEvent(new Event('scroll', { bubbles: false }));
+          });
+        } else {
+          av.scrollTop = target;
+          av.dispatchEvent(new Event('scroll', { bubbles: false }));
+        }
+      } else {
+        av.scrollTop = 0;
+        av.dispatchEvent(new Event('scroll', { bubbles: false }));
+      }
+    } catch {}
+  }
+
+  function clearStalePostRewindMinHeight(av, isRunning) {
+    if (!av || isRunning) return false;
+    const col = av.querySelector('.relative.flex.flex-col');
+    if (!col) return false;
+    let cleared = false;
+    for (const child of Array.from(col.children)) {
+      const mh = String(child?.style?.minHeight || '');
+      if (mh && /cqh|vh/i.test(mh)) {
+        child.style.minHeight = '';
+        cleared = true;
+      }
+    }
+    return cleared;
+  }
+
+  function measureLastVisibleContentBottom(av) {
+    if (!av || typeof av.getBoundingClientRect !== 'function') return null;
+    const col = av.querySelector('.relative.flex.flex-col');
+    if (col) {
+      const children = Array.from(col.children);
+      for (let i = children.length - 1; i >= 0; i--) {
+        const ch = children[i];
+        if (!ch || ch.tagName === 'H1' || ch.classList?.contains('sr-only')) continue;
+        // Antigravity wraps each turn in div.flex.items-start (which may carry min-height: calc(75cqh - 50px));
+        // measure its actual inner content container so artificial min-height does not count as real content.
+        const inner = ch.firstElementChild || ch;
+        const r = inner.getBoundingClientRect();
+        if (r.height > 2) return r.bottom;
+      }
+    }
+    const msgs = av.querySelectorAll('[data-testid="user-input-step"], [data-testid="agent-response"]');
+    if (msgs.length > 0) {
+      const last = msgs[msgs.length - 1];
+      const r = last.getBoundingClientRect();
+      if (r.height > 0) return r.bottom;
+    }
+    return null;
+  }
+
+  function runRewindViewportRecovery(expectedCid, prevScrollHeight) {
+    if (destroyed) return;
+    const cv = document.querySelector('[data-testid="conversation-view"]');
+    const cid = cv ? normalizeCascadeId(cv.getAttribute('data-cascade-id')) || resolveCascadeId(null) : '';
+    if (!cv || (expectedCid && cid && cid !== expectedCid)) {
+      cancelRewindRecoveryTimers();
+      return;
+    }
+    const av = cv.querySelector('[data-testid="autoscroll-viewport"]');
+    if (!av) return;
+
+    const isRunning = Boolean(cv.querySelector('[data-testid="input-cancel-button"]'));
+    const col = av.querySelector('.relative.flex.flex-col');
+    const msgs = av.querySelectorAll('[data-testid="user-input-step"], [data-testid="agent-response"]');
+    const msgCount = msgs.length;
+    const turnCount = col ? col.children.length : msgCount;
+    const loadOlderBtn = av.querySelector('button[data-testid="load-older-messages-button"]');
+    const canLoadOlder = Boolean(
+      loadOlderBtn && !loadOlderBtn.disabled && loadOlderBtn.getAttribute('aria-disabled') !== 'true'
+    );
+
+    // 1. Clear stale idle min-height: calc(75cqh - 50px) spacer that leaves a 500-650px white void below the rewound turn.
+    const clearedMinHeight = clearStalePostRewindMinHeight(av, isRunning);
+
+    const clientH = av.clientHeight || 0;
+    const scrollH = av.scrollHeight || 0;
+    const maxScroll = Math.max(0, scrollH - clientH);
+    const isStarved = msgCount === 0 || (clientH > 0 && scrollH <= clientH + 80);
+
+    // 2. If rewinding emptied/starved the current pagination slice, pull earlier messages automatically.
+    let clickedLoadOlder = false;
+    if (canLoadOlder && isStarved && Date.now() - rewindViewportState.lastClickAt >= 180) {
+      try {
+        rewindViewportState.lastClickAt = Date.now();
+        loadOlderBtn.click();
+        clickedLoadOlder = true;
+      } catch {}
+    }
+
+    // 3. Align the ACTUAL last real message bottom near the bottom of the viewport (never scroll into a blank spacer).
+    const avRect = typeof av.getBoundingClientRect === 'function' ? av.getBoundingClientRect() : null;
+    const contentBottom = measureLastVisibleContentBottom(av);
+    const blankGapBelow =
+      avRect && avRect.height > 0 && contentBottom !== null ? avRect.bottom - contentBottom : 0;
+    const shrankSharply = prevScrollHeight > 0 && scrollH < prevScrollHeight - 60;
+    const overshot = (av.scrollTop || 0) > maxScroll + 1;
+
+    if (!isRunning && avRect && avRect.height > 0 && contentBottom !== null && blankGapBelow > 120 && (av.scrollTop || 0) > 0) {
+      // Pull earlier messages smoothly back down into view so no huge white gap remains below the last message.
+      const desiredTarget = Math.max(0, (av.scrollTop || 0) - (blankGapBelow - 48));
+      nudgeAutoscrollViewport(av, desiredTarget);
+    } else if (overshot || clearedMinHeight || shrankSharply || msgCount === 0) {
+      const target =
+        !isRunning && avRect && contentBottom !== null && blankGapBelow > 80
+          ? Math.max(0, (av.scrollTop || 0) - (blankGapBelow - 48))
+          : maxScroll;
+      nudgeAutoscrollViewport(av, target);
+    }
+
+    rewindViewportState.lastMsgCount = msgCount;
+    rewindViewportState.lastTurnCount = turnCount;
+    rewindViewportState.lastScrollHeight = av.scrollHeight || 0;
+
+    // 4. Schedule bounded follow-up passes (160ms, 360ms) so async React effects (Q1b/hXc) cannot re-introduce blank space.
+    const needsFollowUp =
+      clickedLoadOlder ||
+      (canLoadOlder && isStarved) ||
+      (!isRunning && blankGapBelow > 120) ||
+      rewindViewportState.recoverTries < 2;
+    if (needsFollowUp && rewindViewportState.recoverTries < 4) {
+      rewindViewportState.recoverTries += 1;
+      if (rewindViewportState.recoverTimer) clearTimeout(rewindViewportState.recoverTimer);
+      rewindViewportState.recoverTimer = setTimeout(() => {
+        rewindViewportState.recoverTimer = null;
+        runRewindViewportRecovery(expectedCid, rewindViewportState.lastScrollHeight);
+      }, rewindViewportState.recoverTries <= 2 ? 160 : 240);
+    }
+  }
+
+  function syncRewindViewportRecovery() {
+    const cv = document.querySelector('[data-testid="conversation-view"]');
+    if (!cv) {
+      rewindViewportState.cascadeId = '';
+      rewindViewportState.lastMsgCount = 0;
+      rewindViewportState.lastTurnCount = 0;
+      rewindViewportState.lastScrollHeight = 0;
+      rewindViewportState.lastStepCount = 0;
+      cancelRewindRecoveryTimers();
+      return;
+    }
+    const av = cv.querySelector('[data-testid="autoscroll-viewport"]');
+    if (!av) return;
+    const cid = normalizeCascadeId(cv.getAttribute('data-cascade-id')) || resolveCascadeId(null) || '__active__';
+    const col = av.querySelector('.relative.flex.flex-col');
+    const msgs = av.querySelectorAll('[data-testid="user-input-step"], [data-testid="agent-response"]');
+    const msgCount = msgs.length;
+    const turnCount = col ? col.children.length : msgCount;
+    const scrollH = av.scrollHeight || 0;
+    const cachedStepCount = Number(activeTrajCache.get(cid)?.data?.totalSteps || 0);
+    const loadOlderBtn = av.querySelector('button[data-testid="load-older-messages-button"]');
+    const canLoadOlder = Boolean(
+      loadOlderBtn && !loadOlderBtn.disabled && loadOlderBtn.getAttribute('aria-disabled') !== 'true'
+    );
+    const isRunning = Boolean(cv.querySelector('[data-testid="input-cancel-button"]'));
+
+    if (rewindViewportState.cascadeId !== cid) {
+      cancelRewindRecoveryTimers();
+      rewindViewportState.cascadeId = cid;
+      rewindViewportState.lastMsgCount = msgCount;
+      rewindViewportState.lastTurnCount = turnCount;
+      rewindViewportState.lastScrollHeight = scrollH;
+      rewindViewportState.lastStepCount = cachedStepCount;
+      rewindViewportState.recoverTries = 0;
+      if (msgCount === 0 && canLoadOlder) {
+        runRewindViewportRecovery(cid, scrollH);
+      }
+      return;
+    }
+
+    const prevMsgCount = rewindViewportState.lastMsgCount;
+    const prevTurnCount = rewindViewportState.lastTurnCount;
+    const prevScrollH = rewindViewportState.lastScrollHeight;
+    const prevStepCount = rewindViewportState.lastStepCount;
+
+    const msgDropped = msgCount < prevMsgCount;
+    const turnDropped = turnCount < prevTurnCount;
+    const stepsDropped = cachedStepCount > 0 && prevStepCount > 0 && cachedStepCount < prevStepCount;
+    const starvedEmptySlice = msgCount === 0 && canLoadOlder;
+    const recentRewindClick =
+      Date.now() < rewindViewportState.pendingRewindUntil && (msgDropped || turnDropped || scrollH < prevScrollH - 60);
+
+    // Also catch idle giant blank gap below the very last message (e.g. >35% of viewport height) when scrolled past it.
+    // Check cheap drop/rewind guards BEFORE calling getBoundingClientRect() to avoid forced sync layout on every idle sync.
+    let giantIdleBlankGap = false;
+    const mayHaveRewindBlankGap =
+      msgDropped ||
+      turnDropped ||
+      stepsDropped ||
+      Date.now() < rewindViewportState.pendingRewindUntil ||
+      scrollH < prevScrollH - 40;
+    if (!isRunning && mayHaveRewindBlankGap && (av.scrollTop || 0) > 0 && typeof av.getBoundingClientRect === 'function') {
+      const avRect = av.getBoundingClientRect();
+      const contentBottom = measureLastVisibleContentBottom(av);
+      if (avRect.height > 200 && contentBottom !== null) {
+        const gap = avRect.bottom - contentBottom;
+        if (gap > Math.max(180, avRect.height * 0.35)) {
+          giantIdleBlankGap = true;
+        }
+      }
+    }
+
+    rewindViewportState.lastMsgCount = msgCount;
+    rewindViewportState.lastTurnCount = turnCount;
+    rewindViewportState.lastScrollHeight = scrollH;
+    if (cachedStepCount > 0) rewindViewportState.lastStepCount = cachedStepCount;
+
+    if (msgDropped || turnDropped || stepsDropped || starvedEmptySlice || recentRewindClick || giantIdleBlankGap) {
+      rewindViewportState.recoverTries = 0;
+      runRewindViewportRecovery(cid, prevScrollH);
+    }
+  }
+
   function runSync() {
     if (destroyed) return;
+    if (!document.getElementById('ag-claude-style-css') && typeof globalThis.__agCsEnsureStyle === 'function') {
+      try {
+        globalThis.__agCsEnsureStyle();
+      } catch {}
+    }
     if (openPopover && (!openPopover.isConnected || !openPopoverAnchor || !openPopoverAnchor.isConnected)) {
       closeContextPopover();
     }
@@ -5339,18 +6055,60 @@
       unmountPanelSeat();
     }
     syncRipple();
-    syncComposers();
+    if (imeComposing) {
+      // Never mutate composer DOM / smooth caret while IME composition is active (prevents Windows IME flicker)
+      imePendingSync = true;
+    } else {
+      syncComposers();
+    }
     ensureSettingsSection();
+    if (Date.now() >= scrollingUntil) {
+      syncRewindViewportRecovery();
+      forEachFeature('sync');
+    }
   }
+
+  let lastSyncRunAt = 0;
+  const STREAM_SYNC_MIN_GAP_MS = 64;
 
   function scheduleSync() {
     if (destroyed || syncQueued) return;
+    if (imeComposing) {
+      imePendingSync = true;
+      return;
+    }
+    const now = Date.now();
+    const scrollWait = scrollingUntil - now;
+    if (scrollWait > 0) {
+      syncQueued = true;
+      syncIsRaf = false;
+      syncTimer = setTimeout(() => {
+        syncTimer = null;
+        syncQueued = false;
+        lastSyncRunAt = Date.now();
+        runSync();
+      }, Math.min(200, scrollWait + 16));
+      return;
+    }
+    const burstWait = STREAM_SYNC_MIN_GAP_MS - (now - lastSyncRunAt);
+    if (burstWait > 16) {
+      syncQueued = true;
+      syncIsRaf = false;
+      syncTimer = setTimeout(() => {
+        syncTimer = null;
+        syncQueued = false;
+        lastSyncRunAt = Date.now();
+        runSync();
+      }, burstWait);
+      return;
+    }
     syncQueued = true;
     if (!document.hidden && typeof requestAnimationFrame === 'function') {
       syncIsRaf = true;
       syncTimer = requestAnimationFrame(() => {
         syncTimer = null;
         syncQueued = false;
+        lastSyncRunAt = Date.now();
         runSync();
       });
     } else {
@@ -5358,6 +6116,7 @@
       syncTimer = setTimeout(() => {
         syncTimer = null;
         syncQueued = false;
+        lastSyncRunAt = Date.now();
         runSync();
       }, 50);
     }
@@ -5426,6 +6185,7 @@
   }
 
   function onDocClick(ev) {
+    if (featuresConsume('onClick', ev)) return;
     const effortBadge = findClickedEffortBadge(ev);
     if (effortBadge) {
       ev.stopPropagation();
@@ -5440,6 +6200,13 @@
       closeEffortPopover();
     }
     const submitBtn = ev?.target?.closest ? ev.target.closest('button') : null;
+    if (submitBtn) {
+      const btnTid = String(submitBtn.getAttribute('data-testid') || '');
+      const btnText = String(submitBtn.textContent || '').trim();
+      if (btnTid === 'revert-button' || /\b(rewind|revert)\b|回退|撤销到此处|撤銷到此處/i.test(btnText)) {
+        rewindViewportState.pendingRewindUntil = Date.now() + 4000;
+      }
+    }
     if (submitBtn && submitBtn.closest && submitBtn.closest('[data-testid="agent-input-box"]')) {
       const tid = String(submitBtn.getAttribute('data-testid') || '');
       const bType = String(submitBtn.getAttribute('type') || '');
@@ -5451,9 +6218,12 @@
   }
 
   function onDocKeyDown(ev) {
+    if (featuresConsume('onKeyDown', ev)) return;
     if (ev.key === 'Escape') {
+      const hadPopover = Boolean(openPopover || openEffortPop);
       if (openPopover) closeContextPopover();
       if (openEffortPop) closeEffortPopover();
+      forEachFeature('onEscape', ev, { hadPopover });
       return;
     }
     if (
@@ -5585,6 +6355,8 @@
       return true;
     }
     const targetEl = m.target && typeof m.target.closest === 'function' ? m.target : m.target?.parentElement;
+    // PDF.js can add thousands of text spans that do not affect composer state.
+    if (targetEl?.closest?.('[data-testid="pdf-text-layer"], .textLayer')) return true;
     if (m.type === 'characterData') {
       if (!targetEl || typeof targetEl.closest !== 'function') return true;
       return !targetEl.closest('[data-testid="conversation-view"], [data-testid="agent-input-box"]');
@@ -5604,6 +6376,10 @@
   let charDataThrottleTimer = null;
   const observer = new MutationObserver((mutations) => {
     if (mutations.length === 0 || mutations.every(isIgnorableMutation)) return;
+    if (imeComposing) {
+      imePendingSync = true;
+      return;
+    }
     const onlyCharData = mutations.every((m) => isIgnorableMutation(m) || m.type === 'characterData');
     if (onlyCharData) {
       if (!charDataThrottleTimer) {
@@ -5628,9 +6404,10 @@
     ['selectionchange', onDocCaretEvent],
     ['focusin', onDocCaretEvent],
     ['focusout', onDocCaretEvent],
-    ['scroll', onDocCaretEvent],
+    ['scroll', onDocScrollThrottled],
+    ['compositionstart', onDocCompositionStart],
     ['compositionupdate', onDocCaretEvent],
-    ['compositionend', onDocCaretEvent],
+    ['compositionend', onDocCompositionEnd],
     ['transitionend', onDocTransitionEnd],
   ];
 
@@ -5641,6 +6418,17 @@
     coreTornDown = true;
     destroyed = true;
     cancelScheduledSync();
+    if (imeSafetyTimer) {
+      clearTimeout(imeSafetyTimer);
+      imeSafetyTimer = null;
+    }
+    if (scrollFlushTimer) {
+      clearTimeout(scrollFlushTimer);
+      scrollFlushTimer = null;
+    }
+    cancelRewindRecoveryTimers();
+    imeComposing = false;
+    imePendingSync = false;
     if (pollTimer !== null) {
       clearInterval(pollTimer);
       pollTimer = null;
@@ -5715,7 +6503,7 @@
     }
 
     pollTimer = setInterval(() => {
-      if (destroyed) return;
+      if (destroyed || document.hidden) return;
       applyRootAttrs();
       if (document.querySelector('.agy-home') && cfg.homeLayout === 'studio') {
         refreshUsageRollup(false);
@@ -5794,6 +6582,7 @@
         unmountPanelSeat,
         unmountCrab,
         restoreGreetings,
+        () => forEachFeature('destroy'),
         () => domTranslator && typeof domTranslator.destroy === 'function' && domTranslator.destroy(),
       ]) {
         try {
@@ -5816,7 +6605,7 @@
       });
       document
         .querySelectorAll(
-          '.ag-cs-inline-stats, .ag-cs-context-ring, .ag-cs-hud-top-bar, .ag-cs-hud-bottom-bar, .ag-cs-hud-rim-progress, .ag-cs-hud-footer-chip, .ag-cs-perf-backdrop, #' + SETTINGS_SEC_ID
+          '.ag-cs-inline-stats, .ag-cs-quota-ring, .ag-cs-context-ring, .ag-cs-hud-top-bar, .ag-cs-hud-bottom-bar, .ag-cs-hud-rim-progress, .ag-cs-hud-footer-chip, .ag-cs-perf-backdrop, .ag-cs-rewind-bar, .ag-cs-rewind-notice, .ag-cs-rewind-backdrop, .ag-cs-branch-btn, .ag-cs-edit-btn, .ag-cs-inline-edit, .ag-cs-file-menu, .ag-cs-file-submenu, .ag-cs-progress-card, .ag-cs-action-toast, .ag-cs-stage-bar, .ag-cs-stage-badge, .ag-cs-stage-meta-inline, .ag-cs-ext-header-bar, .ag-cs-ext-sidebar-sec, .ag-cs-ext-popover, .ag-cs-ext-tooltip, #' + SETTINGS_SEC_ID
         )
         .forEach((el) => el.remove());
       const html = document.documentElement;
@@ -5824,11 +6613,15 @@
         for (const attr of [
           'data-ag-cs-style',
           'data-ag-cs-palette',
+          'data-ag-cs-theme',
+          'data-ag-cs-glass',
+          'data-ag-cs-crab',
           'data-ag-cs-home',
           'data-ag-cs-composer',
           'data-ag-cs-logo-ink',
           'data-ag-cs-sidebar',
           'data-ag-cs-sidebar-compact',
+          'data-ag-cs-compact-chat',
           'data-ag-cs-hud-compact',
           'data-ag-cs-effort-accent',
           'data-ag-cs-perf-backdrop',

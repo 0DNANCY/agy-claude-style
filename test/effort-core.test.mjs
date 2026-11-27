@@ -228,3 +228,17 @@ test('normalizeEffortStyle and Codex effort math stay consistent with dsh-codex-
   assert.equal(m.x, 1);
   assert.equal(m.v, 0);
 });
+
+test('resolveClaudeEffortSteps preserves context window suffix (200k vs 1M) when matching options', () => {
+  const options = [
+    { label: 'Claude Sonnet 4.6 (Low) · 200k' },
+    { label: 'Claude Sonnet 4.6 (High) · 200k' },
+    { label: 'Claude Sonnet 4.6 (Low) · 1M' },
+    { label: 'Claude Sonnet 4.6 (High) · 1M' },
+  ];
+  const res200k = effortCore.resolveClaudeEffortSteps(options, 'Claude Sonnet 4.6 (Low) · 200k');
+  assert.equal(res200k.steps.find((s) => s.id === 'high')?.option?.label, 'Claude Sonnet 4.6 (High) · 200k');
+  const res1m = effortCore.resolveClaudeEffortSteps(options, 'Claude Sonnet 4.6 (Low) · 1M');
+  assert.equal(res1m.steps.find((s) => s.id === 'high')?.option?.label, 'Claude Sonnet 4.6 (High) · 1M');
+});
+
