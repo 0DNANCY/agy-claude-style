@@ -53,7 +53,7 @@ export function resolveLocalFilePath(rawUri = '', { platform = process.platform 
     if (!LOOPBACK_HOSTS.has(host)) {
       throw new Error(`Non-local file URI host rejected: ${host}`);
     }
-    const useWinUrl = platform === 'win32';
+    const useWinUrl = platform === 'win32' && /^\/[a-zA-Z]:(?:\/|$)/.test(parsed.pathname || '');
     fsPath = fileURLToPath(parsed, { windows: useWinUrl });
   } else if (isAbsolute(input) || /^[a-zA-Z]:[\\/]/.test(input)) {
     fsPath = stripLineColAnchor(input);

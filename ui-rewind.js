@@ -235,6 +235,7 @@
     let rewindState = null;
     let pendingRewindAction = null;
     let bypassUndoInterceptBtn = null;
+    let restoreRetryTimer = null;
     let lastEmptyEscAt = 0;
     const handledKeyEvents = typeof WeakSet === 'function' ? new WeakSet() : null;
     const handledEscEvents = typeof WeakSet === 'function' ? new WeakSet() : null;
@@ -474,11 +475,26 @@
       return eds.find((ed) => !ed.closest?.('[data-testid="subagent-tab-conversation"]')) || eds[0] || null;
     }
 
-    function fillComposerText(text) {
-      const ed = findComposerEditor();
+    function isLexicalEditor(ed) {
       if (!ed) return false;
+      if (ed.getAttribute?.('data-lexical-editor') === 'true') return true;
       try {
-        if (typeof ed.focus === 'function') ed.focus();
+        return Object.keys(ed).some((k) => k.startsWith('__lexical'));
+      } catch {
+        return false;
+      }
+    }
+
+    function selectAllInEditor(ed) {
+      if (!ed) return;
+      if (typeof ed.focus === 'function') ed.focus();
+      let selected = false;
+      if (typeof document.execCommand === 'function') {
+        try {
+          selected = Boolean(document.execCommand('selectAll', false, null));
+        } catch {}
+      }
+      if (!selected) {
         const sel = window.getSelection ? window.getSelection() : null;
         if (sel && document.createRange) {
           const range = document.createRange();
@@ -486,11 +502,40 @@
           sel.removeAllRanges();
           sel.addRange(range);
         }
+      }
+    }
+
+    function cancelRestoreRetryTimer() {
+      if (restoreRetryTimer) {
+        clearTimeout(restoreRetryTimer);
+        restoreRetryTimer = null;
+      }
+    }
+
+    function fillComposerText(text) {
+      const ed = findComposerEditor();
+      if (!ed) return false;
+      if (compactCompare(ed.textContent) === compactCompare(text)) {
+        if (typeof ed.focus === 'function') ed.focus();
+        return true;
+      }
+      const lexical = isLexicalEditor(ed);
+      try {
+        if (typeof ed.focus === 'function') ed.focus();
+        if (stripZeroWidth(ed.textContent)) {
+          selectAllInEditor(ed);
+          if (typeof document.execCommand === 'function') {
+            document.execCommand('delete', false);
+          }
+        }
         let inserted = false;
         if (typeof document.execCommand === 'function') {
-          inserted = document.execCommand('insertText', false, text);
+          inserted = Boolean(document.execCommand('insertText', false, text));
         }
-        if (!inserted || compactCompare(ed.textContent) !== compactCompare(text)) {
+        // On Lexical editors, never mutate ed.textContent or dispatch a synthetic InputEvent
+        // after execCommand('insertText') succeeds — Lexical owns paragraph DOM reconciliation
+        // and mutating textContent + firing insertText duplicates the prompt.
+        if (!inserted || (!lexical && compactCompare(ed.textContent) !== compactCompare(text))) {
           ed.textContent = text;
           if (typeof InputEvent === 'function') {
             ed.dispatchEvent(new InputEvent('input', { bubbles: true, data: text, inputType: 'insertText' }));
@@ -504,14 +549,22 @@
       }
     }
 
-    function restorePromptIntoComposer(promptText) {
+    function restorePromptIntoComposer(promptText, { onlyIfEmpty = false } = {}) {
       const cleanText = preservePromptText(promptText);
       if (!cleanText) return;
+      cancelRestoreRetryTimer();
+      const ed = findComposerEditor();
+      if (ed && compactCompare(ed.textContent) === compactCompare(cleanText)) {
+        if (typeof ed.focus === 'function') ed.focus();
+        return;
+      }
+      if (onlyIfEmpty && ed && stripZeroWidth(ed.textContent)) return;
       fillComposerText(cleanText);
-      setTimeout(() => {
+      restoreRetryTimer = setTimeout(() => {
+        restoreRetryTimer = null;
         if (isDestroyed()) return;
-        const ed = findComposerEditor();
-        if (ed && !stripZeroWidth(ed.textContent)) {
+        const curEd = findComposerEditor();
+        if (curEd && !stripZeroWidth(curEd.textContent)) {
           fillComposerText(cleanText);
         }
       }, 120);
@@ -652,14 +705,14 @@
         if (stepHandler && typeof stepHandler.revertToIndex === 'function') {
           try {
             await stepHandler.revertToIndex(cid, revertIdx, { conversationOnly: !revertFiles });
-            restorePromptIntoComposer(promptToRestore);
+            restorePromptIntoComposer(promptToRestore, { onlyIfEmpty: true });
             return;
           } catch {}
         }
         if (svc && typeof svc.revertToCascadeStep === 'function') {
           try {
             await svc.revertToCascadeStep(cid, revertIdx, undefined, !revertFiles);
-            restorePromptIntoComposer(promptToRestore);
+            restorePromptIntoComposer(promptToRestore, { onlyIfEmpty: true });
             return;
           } catch {}
         }
@@ -1358,6 +1411,7 @@
             document.removeEventListener('click', onUndoClick, true);
           } catch {}
         }
+        cancelRestoreRetryTimer();
         closeRewindModal();
         if (noticeBar && noticeBar.isConnected) noticeBar.remove();
         noticeBar = null;

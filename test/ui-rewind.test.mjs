@@ -649,6 +649,86 @@ test('ui-rewind: preserves newlines, indentation, and Lexical paragraph insertio
   }
 });
 
+test('ui-rewind: does not duplicate prompt on Lexical composer across pre/post revertToIndex restore', async () => {
+  const dom = createFakeDom();
+  const promptText = '/Users/demo/model.onnx\n检查这个';
+  let clearOnRevert = false;
+  const { editor } = buildConversationTree(
+    dom,
+    [{ text: '/Users/demo/model.onnx 检查这个', top: 10 }],
+    {
+      svc: {
+        async getCascadeTrajectory() {
+          return {
+            trajectory: {
+              steps: [
+                {
+                  step: {
+                    case: 'userInput',
+                    value: { items: [{ chunk: { value: promptText } }] },
+                  },
+                },
+              ],
+            },
+          };
+        },
+      },
+      stepHandler: {
+        async getRevertPreviews() {
+          return [];
+        },
+        async revertToIndex() {
+          await new Promise((r) => setTimeout(r, 15));
+          if (clearOnRevert) editor.textContent = '';
+        },
+      },
+    }
+  );
+  editor.setAttribute('data-lexical-editor', 'true');
+
+  // Simulate real Lexical behavior where a second insertText without async selection sync APPENDS
+  let insertCount = 0;
+  const origExec = dom.doc.execCommand;
+  dom.doc.execCommand = (cmd, _ui, val) => {
+    if (cmd === 'insertText') {
+      insertCount++;
+      editor.textContent = (editor.textContent || '') + String(val).replace(/\n+/g, '');
+      return true;
+    }
+    return origExec(cmd, _ui, val);
+  };
+
+  const { inst, destroy } = loadFeatureInDom(dom, { undoConfirmMode: 'picker' });
+  try {
+    // Case 1: revertToIndex leaves composer untouched -> insertText must run exactly ONCE
+    inst.open();
+    await new Promise((r) => setTimeout(r, 10));
+    dom.win.emitKeyDown({ key: 'Enter', preventDefault() {}, stopPropagation() {}, stopImmediatePropagation() {} });
+    await new Promise((r) => setTimeout(r, 10));
+    dom.win.emitKeyDown({ key: '1', preventDefault() {}, stopPropagation() {}, stopImmediatePropagation() {} });
+    await new Promise((r) => setTimeout(r, 40));
+
+    assert.equal(insertCount, 1, 'must not insert prompt a second time after revertToIndex');
+    assert.equal(editor.textContent, '/Users/demo/model.onnx检查这个');
+
+    // Case 2: if revertToIndex clears the composer, post-revert restore refills it cleanly
+    editor.textContent = '';
+    insertCount = 0;
+    clearOnRevert = true;
+    inst.open();
+    await new Promise((r) => setTimeout(r, 10));
+    dom.win.emitKeyDown({ key: 'Enter', preventDefault() {}, stopPropagation() {}, stopImmediatePropagation() {} });
+    await new Promise((r) => setTimeout(r, 10));
+    dom.win.emitKeyDown({ key: '1', preventDefault() {}, stopPropagation() {}, stopImmediatePropagation() {} });
+    await new Promise((r) => setTimeout(r, 40));
+
+    assert.equal(insertCount, 2, 'should re-insert once when revertToIndex cleared composer');
+    assert.equal(editor.textContent, '/Users/demo/model.onnx检查这个');
+  } finally {
+    destroy();
+  }
+});
+
 test('ui-rewind: clicking duplicate-text Undo button with timestamp matches exact turn and does not jump on async hydration', async () => {
   const dom = createFakeDom();
   const reverts = [];
