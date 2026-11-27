@@ -138,13 +138,14 @@ jobs:
         run: |
           set -euo pipefail
           cat > release-notes.md <<EOF
-          ## 📦 开箱即用安装包 / Standalone Downloads
+          ## 📦 开箱即用原生插件安装器 / Standalone Plugin Installers
 
-          无需安装 Node.js 或任何运行时依赖，下载后直接运行即可完成配置与无损注入（默认采用 **托管启动模式**——随 Antigravity 启动并自动退出、平时 0 后台常驻；亦可按需切换为 **常驻守护模式** 开启开机自启）：
+          **零后台守护进程、零外部依赖**：安装器仅负责将 `agy-claude-style` 原生插件包部署至 Antigravity Desktop 插件目录（`~/.gemini/config/plugins/agy-claude-style`）并自动启用，**安装器本身与磁盘上不包含任何外部 CDP 注入器或开机自启守护进程**。安装后由 Antigravity Desktop 原生插件宿主在内部自动完成 CDP 注入、热更新与右侧 `Claude Style` 控制室挂载（内置 Electron 运行时，目标机器无需安装 Node.js）：
 
-          - **Windows (x64 / Windows 10 & 11)**：下载 \`${WIN_FILE}\`，双击运行可自由选择「免后台常驻 · 托管启动（推荐）」或「开机自启 · 常驻守护」并安装，使用开始菜单 / 桌面快捷方式 \`Antigravity (AGY Claude Style)\` 一站式带 CDP 启动并注入。
-          - **macOS (Apple Silicon + Intel Universal)**：下载 \`${MAC_FILE}\`，打开后拖入「应用程序」并运行 \`AGY Claude Style.app\`，可自由选择「托管启动（推荐）」或「常驻守护（LaunchAgent）」；使用生成的 \`Antigravity (AGY Claude Style).app\` 或 \`launch-antigravity.command\` 启动即可。
+          - **Windows (x64 / Windows 10 & 11)**：下载 \`${WIN_FILE}\`，双击运行一键部署（或更新 / 卸载）Antigravity Desktop 原生插件；升级时自动迁移旧版 `config.json` 至 `~/.gemini/antigravity/plugin_data/agy-claude-style/` 并清理旧版外部 Watcher 与快捷方式残留。
+          - **macOS (Apple Silicon + Intel Universal)**：下载 \`${MAC_FILE}\`，打开后运行 `AGY Claude Style.app` 一键部署（或更新 / 卸载）Antigravity Desktop 原生插件；升级时自动迁移旧版 `config.json` 并清理旧版 `LaunchAgent` 与外部启动器残留。
             > **macOS 首次打开提示说明**：本构建采用 Ad-hoc 签名；若 macOS 提示“无法验证开发者”，请**右键点击 App → 打开**，或在终端执行 \`xattr -cr "/Applications/AGY Claude Style.app"\` 后再次打开。
+          - **手动原生插件安装（全平台）**：亦可直接执行 \`git clone https://github.com/0DNANCY/agy-claude-style.git ~/.gemini/config/plugins/agy-claude-style\` 后在 Antigravity 插件管理中启用。
 
           ### 🔐 SHA256 Checksums
           \`\`\`text

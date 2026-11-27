@@ -5087,8 +5087,8 @@
 
   // ── Settings Panel Integration ─────────────────────────────────────────
   // Kept active alongside the native Aux Pane control panel (sidecars/panel)
-  // so standalone installer & CLI users retain full Settings -> Appearance UI
-  // synced bidirectionally via config.json.
+  // so Antigravity Settings -> Appearance UI stays synced bidirectionally
+  // via config.json.
   const SETTINGS_SEC_ID = 'ag-cs-settings-sec';
 
   function ensureSettingsSection() {

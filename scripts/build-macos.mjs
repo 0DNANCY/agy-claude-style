@@ -11,8 +11,7 @@ import {
   cdp,
   normalizeVersion,
   getArtifactNames,
-  createManifest,
-  resolveActiveConfigFile,
+  collectPluginPayloadFiles,
   renderCrabIconPng,
   buildIcns,
 } from './build-common.mjs';
@@ -183,7 +182,6 @@ function buildMacosApp({
   appOut,
   dmgOut,
   createDmg = true,
-  configPath,
   version = cdp.PLUGIN_VERSION,
 } = {}) {
   const cleanVersion = normalizeVersion(version);
@@ -195,27 +193,14 @@ function buildMacosApp({
 
   try {
     const commonMiniJson = path.join(ROOT_DIR, 'installer', 'macos', 'Common', 'MiniJson.swift');
-    const commonCdpClient = path.join(ROOT_DIR, 'installer', 'macos', 'Common', 'CdpClient.swift');
-    const watcherMain = path.join(ROOT_DIR, 'installer', 'macos', 'Watcher', 'main.swift');
     const setupMain = path.join(ROOT_DIR, 'installer', 'macos', 'Setup', 'main.swift');
-
-    const watcherOut = path.join(stageDir, 'agy-claude-style-watcher');
-    compileUniversalSwift({
-      swiftc,
-      lipo,
-      sdkPath,
-      sources: [commonMiniJson, commonCdpClient, watcherMain],
-      outputPath: watcherOut,
-      stageDir,
-      name: 'watcher',
-    });
 
     const setupOut = path.join(stageDir, 'AGY Claude Style');
     compileUniversalSwift({
       swiftc,
       lipo,
       sdkPath,
-      sources: [commonMiniJson, commonCdpClient, setupMain],
+      sources: [commonMiniJson, setupMain],
       frameworks: ['Cocoa'],
       outputPath: setupOut,
       stageDir,
@@ -236,25 +221,10 @@ function buildMacosApp({
 
     fs.copyFileSync(setupOut, path.join(macosDir, 'AGY Claude Style'));
     fs.chmodSync(path.join(macosDir, 'AGY Claude Style'), 0o755);
-    fs.copyFileSync(watcherOut, path.join(macosDir, 'agy-claude-style-watcher'));
-    fs.chmodSync(path.join(macosDir, 'agy-claude-style-watcher'), 0o755);
 
     generateIcnsFile(path.join(resourcesDir, 'AppIcon.icns'), stageDir);
 
-    const manifest = createManifest(cleanVersion);
-    const manifestJson = JSON.stringify(manifest, null, 2) + '\n';
-    const activeConfigFile = resolveActiveConfigFile(configPath);
-
-    const payloadEntries = [
-      { name: 'manifest.json', data: Buffer.from(manifestJson, 'utf8') },
-      { name: 'style.css', data: fs.readFileSync(path.join(ROOT_DIR, 'style.css')) },
-      { name: 'config.json', data: fs.readFileSync(activeConfigFile) },
-      { name: 'config.example.json', data: fs.readFileSync(path.join(ROOT_DIR, 'config.example.json')) },
-      ...cdp.RUNTIME_PARTS.map((part) => ({
-        name: part,
-        data: fs.readFileSync(path.join(ROOT_DIR, part)),
-      })),
-    ];
+    const payloadEntries = collectPluginPayloadFiles(ROOT_DIR);
 
     for (const entry of payloadEntries) {
       const destPath = path.join(payloadDir, entry.name);
@@ -289,7 +259,6 @@ function buildMacosApp({
       dmgOut: createDmg ? resolvedDmgOut : null,
       appSizeBytes: dirSizeBytes(resolvedAppOut),
       dmgSizeBytes,
-      watcherSizeBytes: fs.statSync(watcherOut).size,
       fileCount: payloadEntries.length,
     };
   } finally {

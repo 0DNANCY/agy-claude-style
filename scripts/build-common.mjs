@@ -30,22 +30,54 @@ function getArtifactNames(version = cdp.PLUGIN_VERSION) {
   };
 }
 
-function createManifest(version = cdp.PLUGIN_VERSION) {
-  return {
-    version: normalizeVersion(version),
-    styleId: cdp.STYLE_ID,
-    settingBinding: cdp.SETTING_BINDING,
-    parts: cdp.RUNTIME_PARTS,
-    defaultConfig: cdp.DEFAULT_CONFIG,
-    validators: VALIDATORS,
-    removeExpression: cdp.REMOVE_EXPRESSION,
-  };
+const PAYLOAD_ROOT_FILES = [
+  'plugin.json',
+  'mcp_config.json',
+  'package.json',
+  'LICENSE',
+  'README.md',
+  'config.example.json',
+  'style.css',
+  'cdp.js',
+  'inject.js',
+];
+
+const PAYLOAD_DIRS = ['assets', 'plugin', 'sidecars', 'features'];
+const PAYLOAD_SKIP_NAMES = new Set(['.DS_Store', 'Thumbs.db', 'desktop.ini', 'node_modules', '.watch.pid', 'watch.log', 'config.json']);
+
+function collectDirFiles(rootDir, relDir, outMap) {
+  const absDir = path.join(rootDir, relDir);
+  if (!fs.existsSync(absDir)) return;
+  const entries = fs.readdirSync(absDir, { withFileTypes: true });
+  for (const entry of entries) {
+    if (PAYLOAD_SKIP_NAMES.has(entry.name)) continue;
+    const relPath = `${relDir}/${entry.name}`.replace(/\\/g, '/');
+    const absPath = path.join(absDir, entry.name);
+    if (entry.isDirectory()) {
+      collectDirFiles(rootDir, relPath, outMap);
+    } else if (entry.isFile()) {
+      outMap.set(relPath, fs.readFileSync(absPath));
+    }
+  }
 }
 
-function resolveActiveConfigFile(configPath) {
-  if (configPath) return configPath;
-  const localCfg = path.join(ROOT_DIR, 'config.json');
-  return fs.existsSync(localCfg) ? localCfg : path.join(ROOT_DIR, 'config.example.json');
+function collectPluginPayloadFiles(rootDir = ROOT_DIR) {
+  const files = new Map();
+  const rootCandidates = [...PAYLOAD_ROOT_FILES, ...cdp.RUNTIME_PARTS];
+  for (const rawRel of rootCandidates) {
+    const rel = String(rawRel || '').replace(/\\/g, '/');
+    if (!rel || files.has(rel)) continue;
+    const abs = path.join(rootDir, rel);
+    if (fs.existsSync(abs) && fs.statSync(abs).isFile()) {
+      files.set(rel, fs.readFileSync(abs));
+    }
+  }
+  for (const dir of PAYLOAD_DIRS) {
+    collectDirFiles(rootDir, dir, files);
+  }
+  return Array.from(files.entries())
+    .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+    .map(([name, data]) => ({ name, data }));
 }
 
 // --- Pure Node PNG + Multi-Size ICO + Apple ICNS generator (Pixel Crab on Obsidian Badge) ---
@@ -306,8 +338,7 @@ export {
   VALIDATORS,
   normalizeVersion,
   getArtifactNames,
-  createManifest,
-  resolveActiveConfigFile,
+  collectPluginPayloadFiles,
   renderCrabIconPng,
   buildMultiResIco,
   buildIcns,

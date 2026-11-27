@@ -42,7 +42,7 @@ function readPluginVersion() {
   const parsed = readPluginManifest();
   return typeof parsed?.version === 'string' && parsed.version.trim()
     ? parsed.version.trim()
-    : cdpApi.PLUGIN_VERSION || '2.2.0';
+    : cdpApi.PLUGIN_VERSION || '3.0.0';
 }
 
 function readPluginName() {
@@ -59,7 +59,7 @@ function resolveHostPluginConfigPath({ env = process.env, homeDir = os.homedir()
   return path.join(homeDir, '.gemini', 'config', 'config.json');
 }
 
-function handleMcpJsonRpcMessage(msg, serverVersion = '2.2.0') {
+function handleMcpJsonRpcMessage(msg, serverVersion = '3.0.0') {
   if (!msg || typeof msg !== 'object') return null;
   const hasId = Object.prototype.hasOwnProperty.call(msg, 'id') && msg.id !== undefined;
   if (!hasId) return null;
@@ -227,6 +227,7 @@ function startMcpPluginHost() {
   if (!passiveMcpOnly) {
     try {
       fs.mkdirSync(stateDir, { recursive: true });
+      process.chdir(stateDir);
     } catch {}
     hostLease = registerMcpHost({
       stateDir,
@@ -267,11 +268,8 @@ function startMcpPluginHost() {
 
     try {
       const ctrl = await createWatchController({
-        forceExitOnHostClose: false,
-        startupGraceEnabled: false,
         allowGracefulDuplicateExit: true,
         allowAutoRelaunch: true,
-        manageProcessExit: false,
         enableConsole: false,
         logFile,
       });

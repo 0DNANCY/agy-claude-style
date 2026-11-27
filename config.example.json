@@ -48,6 +48,5 @@
   "proxyForceHttp1": true,
   "proxyColdStartAlert": true,
   "autoRelaunchWithCdp": true,
-  "exitOnHostClose": false,
   "pollIntervalMs": 2500
 }
