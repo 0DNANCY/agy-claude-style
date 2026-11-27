@@ -309,7 +309,14 @@ test('createDomTranslator translates full Antigravity UI across all 5 locales, g
     const optOutTime = makeEl('span', { text: 'now' });
     optOut.append(optOutTime);
 
-    body.append(dialog, sidebarRow, modelBtn, workedBtn, homeGreeting, sentenceP, prose, optOut);
+    const pdfPreview = makeEl('div');
+    const pdfToolbarButton = makeEl('button', { text: 'Zoom in' });
+    const pdfTextLayer = makeEl('div', { className: 'textLayer', attrs: { 'data-testid': 'pdf-text-layer' } });
+    const pdfPageLabel = makeEl('span', { text: 'Zoom in' });
+    pdfTextLayer.append(pdfPageLabel);
+    pdfPreview.append(pdfToolbarButton, pdfTextLayer);
+
+    body.append(dialog, sidebarRow, modelBtn, workedBtn, homeGreeting, sentenceP, prose, optOut, pdfPreview);
 
     const translator = i18nCore.createDomTranslator(i18nLocales.resolveLocaleBundle);
 
@@ -331,6 +338,12 @@ test('createDomTranslator translates full Antigravity UI across all 5 locales, g
     assert.equal(codeEl.textContent, 'now'); // code untouched
     assert.equal(copyCodeBtn.textContent, '复制代码'); // control inside prose translated
     assert.equal(optOutTime.textContent, 'now'); // opt-out untouched
+    assert.equal(pdfToolbarButton.textContent, '放大');
+    assert.equal(pdfPageLabel.textContent, 'Zoom in', 'PDF text must remain verbatim');
+    const appendedPdfText = makeEl('span', { text: 'Zoom out' });
+    pdfTextLayer.append(appendedPdfText);
+    emitMutation([{ type: 'childList', target: pdfTextLayer, addedNodes: [appendedPdfText] }]);
+    assert.equal(appendedPdfText.textContent, 'Zoom out', 'dynamically rendered PDF text must remain verbatim');
 
     // Verify characterData mutation inside protected code/opt-out (zone === 0) does NOT trigger timeRules!
     codeEl.childNodes[0].nodeValue = '5m';

@@ -1545,10 +1545,26 @@
     return '';
   }
 
+  function readDraftText(node) {
+    if (node.hidden || node.nodeType === 8) return '';
+    if (node.tagName === 'BR') return '\n';
+    if (!node.childNodes?.length) return node.textContent || '';
+
+    let text = '';
+    for (const child of node.childNodes) {
+      const childText = readDraftText(child);
+      if (!childText) continue;
+      const isBlock = /^(BLOCKQUOTE|DIV|H[1-6]|LI|P|PRE)$/.test(child.tagName);
+      text += isBlock ? `\n${childText}\n` : childText;
+    }
+    return text;
+  }
+
   function getDraftInfo(card) {
     const scope = card || document.querySelector('[data-testid="agent-input-box"]') || document;
     const ed = scope.querySelector ? scope.querySelector('[contenteditable="true"]') : null;
-    const raw = ed ? String(ed.innerText ?? ed.textContent ?? '').trim() : '';
+    // innerText can force layout of the whole conversation during a HUD update.
+    const raw = ed ? readDraftText(ed).trim() : '';
     if (!raw || typeof usageCore.estimateTextTokens !== 'function') {
       return { tokens: 0, chars: 0, cjk: 0, words: 0, codeSymbols: 0 };
     }
@@ -4510,6 +4526,12 @@
       }
 
       const isFocused = activeEl === ed || (activeEl && ed.contains && ed.contains(activeEl));
+      if (!isFocused) {
+        caret.removeAttribute('data-ag-cs-caret-visible');
+        ed.removeAttribute('data-ag-cs-smooth-caret');
+        continue;
+      }
+
       const measured = measureEditorCaretBox(ed);
       if (!measured || !measured.collapsed) {
         caret.removeAttribute('data-ag-cs-caret-visible');
@@ -4527,7 +4549,7 @@
       const prev = caretPrevState.get(caret);
       const clearedToEmpty = Boolean(prev && prev.empty === false && isNowEmpty);
 
-      if ((isFocused && !wasVisible) || clearedToEmpty) {
+      if (!wasVisible || clearedToEmpty) {
         caret.style.transition = 'none';
         caret.style.transform = `translate3d(${x}px, ${y}px, 0)`;
         caret.style.height = `${h}px`;
@@ -4539,24 +4561,19 @@
       }
       caretPrevState.set(caret, { x, y, h, empty: isNowEmpty });
 
-      if (isFocused) {
-        caret.setAttribute('data-ag-cs-caret-visible', '1');
-        ed.setAttribute('data-ag-cs-smooth-caret', '1');
-        if (isTypingEvent) {
-          caret.setAttribute('data-ag-cs-caret-typing', '1');
-          if (caretTypingTimer) clearTimeout(caretTypingTimer);
-          caretTypingTimer = setTimeout(() => {
-            caretTypingTimer = null;
-            if (caret.isConnected) caret.removeAttribute('data-ag-cs-caret-typing');
-          }, 420);
-        } else if (prev && (prev.x !== x || prev.y !== y) && typeof caret.getAnimations === 'function') {
-          for (const anim of caret.getAnimations()) {
-            if (anim && anim.animationName === 'ag-cs-caret-blink') anim.currentTime = 0;
-          }
+      caret.setAttribute('data-ag-cs-caret-visible', '1');
+      ed.setAttribute('data-ag-cs-smooth-caret', '1');
+      if (isTypingEvent) {
+        caret.setAttribute('data-ag-cs-caret-typing', '1');
+        if (caretTypingTimer) clearTimeout(caretTypingTimer);
+        caretTypingTimer = setTimeout(() => {
+          caretTypingTimer = null;
+          if (caret.isConnected) caret.removeAttribute('data-ag-cs-caret-typing');
+        }, 420);
+      } else if (prev && (prev.x !== x || prev.y !== y) && typeof caret.getAnimations === 'function') {
+        for (const anim of caret.getAnimations()) {
+          if (anim && anim.animationName === 'ag-cs-caret-blink') anim.currentTime = 0;
         }
-      } else {
-        caret.removeAttribute('data-ag-cs-caret-visible');
-        ed.removeAttribute('data-ag-cs-smooth-caret');
       }
     }
   }
@@ -5585,6 +5602,8 @@
       return true;
     }
     const targetEl = m.target && typeof m.target.closest === 'function' ? m.target : m.target?.parentElement;
+    // PDF.js can add thousands of text spans that do not affect composer state.
+    if (targetEl?.closest?.('[data-testid="pdf-text-layer"], .textLayer')) return true;
     if (m.type === 'characterData') {
       if (!targetEl || typeof targetEl.closest !== 'function') return true;
       return !targetEl.closest('[data-testid="conversation-view"], [data-testid="agent-input-box"]');
