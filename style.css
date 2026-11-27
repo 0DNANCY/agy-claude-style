@@ -9,8 +9,7 @@
    Antigravity's inline style on <html> when palette !== "host". */
 
 /* 1a. Obsidian Blue-Dark (Default — matches Figure 1 / dsh-claude-style DeepSeek Dark) */
-html[data-ag-cs-style][data-ag-cs-palette="obsidian"]:has(> body.theme-dark),
-html[data-ag-cs-style][data-ag-cs-palette="obsidian"]:has(> body.dark),
+html[data-ag-cs-style][data-ag-cs-palette="obsidian"][data-ag-cs-theme="dark"],
 html[data-ag-cs-style][data-ag-cs-palette="obsidian"] > body.theme-dark,
 html[data-ag-cs-style][data-ag-cs-palette="obsidian"] > body.dark {
   color-scheme: dark !important;
@@ -116,9 +115,7 @@ html[data-ag-cs-style][data-ag-cs-palette="obsidian"] > body.dark {
 }
 
 /* 1b. Obsidian Cool-Light */
-html[data-ag-cs-style][data-ag-cs-palette="obsidian"]:has(> body.theme-light),
-html[data-ag-cs-style][data-ag-cs-palette="obsidian"]:has(> body.light-theme),
-html[data-ag-cs-style][data-ag-cs-palette="obsidian"]:has(> body.light),
+html[data-ag-cs-style][data-ag-cs-palette="obsidian"][data-ag-cs-theme="light"],
 html[data-ag-cs-style][data-ag-cs-palette="obsidian"] > body.theme-light,
 html[data-ag-cs-style][data-ag-cs-palette="obsidian"] > body.light-theme,
 html[data-ag-cs-style][data-ag-cs-palette="obsidian"] > body.light {
@@ -207,8 +204,7 @@ html[data-ag-cs-style][data-ag-cs-palette="obsidian"] > body.light {
 }
 
 /* 1c. Claude Charcoal-Dark */
-html[data-ag-cs-style][data-ag-cs-palette="claude"]:has(> body.theme-dark),
-html[data-ag-cs-style][data-ag-cs-palette="claude"]:has(> body.dark),
+html[data-ag-cs-style][data-ag-cs-palette="claude"][data-ag-cs-theme="dark"],
 html[data-ag-cs-style][data-ag-cs-palette="claude"] > body.theme-dark,
 html[data-ag-cs-style][data-ag-cs-palette="claude"] > body.dark {
   color-scheme: dark !important;
@@ -296,9 +292,7 @@ html[data-ag-cs-style][data-ag-cs-palette="claude"] > body.dark {
 }
 
 /* 1d. Claude Classic Light */
-html[data-ag-cs-style][data-ag-cs-palette="claude"]:has(> body.theme-light),
-html[data-ag-cs-style][data-ag-cs-palette="claude"]:has(> body.light-theme),
-html[data-ag-cs-style][data-ag-cs-palette="claude"]:has(> body.light),
+html[data-ag-cs-style][data-ag-cs-palette="claude"][data-ag-cs-theme="light"],
 html[data-ag-cs-style][data-ag-cs-palette="claude"] > body.theme-light,
 html[data-ag-cs-style][data-ag-cs-palette="claude"] > body.light-theme,
 html[data-ag-cs-style][data-ag-cs-palette="claude"] > body.light {
@@ -433,8 +427,9 @@ html[data-ag-cs-style] {
   --ag-cs-data-9: #65616c;
   --ag-cs-col-max: max(30vw, var(--max-conversation-width, 48rem));
 }
-html[data-ag-cs-style]:has(> body.theme-dark),
-html[data-ag-cs-style]:has(> body.dark) {
+html[data-ag-cs-style][data-ag-cs-theme="dark"],
+html[data-ag-cs-style] > body.theme-dark,
+html[data-ag-cs-style] > body.dark {
   --ag-cs-data-0: #82aaff;
   --ag-cs-data-1: #f0a35e;
   --ag-cs-data-2: #63c59a;
@@ -1392,9 +1387,9 @@ html[data-ag-cs-style] [data-ag-cs-effort="extra"] { color: var(--ag-cs-effort-x
   visibility: hidden;
 }
 /* Tuck crab smoothly away when slash-command / mention popup opens directly above composer */
-[data-testid="agent-input-box"]:has([role="listbox"], [role="option"], [data-testid="slash-command-menu"]) .ag-cs-crab,
-.relative.w-full:has([role="listbox"], [role="option"]) ~ .surface-composer .ag-cs-crab,
-div.relative.w-full:has([role="listbox"], [role="option"]) .ag-cs-crab {
+html[data-ag-cs-style][data-ag-cs-crab="on"] [data-testid="agent-input-box"]:has([role="listbox"], [role="option"], [data-testid="slash-command-menu"]) .ag-cs-crab,
+html[data-ag-cs-style][data-ag-cs-crab="on"] [data-testid="agent-input-box"] .relative.w-full:has([role="listbox"], [role="option"]) ~ .surface-composer .ag-cs-crab,
+html[data-ag-cs-style][data-ag-cs-crab="on"] [data-testid="agent-input-box"] div.relative.w-full:has([role="listbox"], [role="option"]) .ag-cs-crab {
   opacity: 0 !important;
   pointer-events: none !important;
 }
@@ -1444,20 +1439,16 @@ div.relative.w-full:has([role="listbox"], [role="option"]) .ag-cs-crab {
 }
 
 /* Prevent Queued-Message ("排队中的消息 / 待发消息"), Q&A / Permission Takeover Card,
-   Side-Question Panel, and active Running-Tasks Panel from overlapping Clawd mascot */
-html[data-ag-cs-style] div:has(> [data-testid="interaction-takeover-card"]):has(~ * [data-testid="agent-input-box"] .ag-cs-crab, ~ [data-testid="agent-input-box"] .ag-cs-crab),
-html[data-ag-cs-style] [data-testid="interaction-takeover-card"]:has(~ * [data-testid="agent-input-box"] .ag-cs-crab, ~ [data-testid="agent-input-box"] .ag-cs-crab),
-html[data-ag-cs-style] [data-testid="side-question-panel"]:has(~ * [data-testid="agent-input-box"] .ag-cs-crab, ~ [data-testid="agent-input-box"] .ag-cs-crab) {
+   Side-Question Panel, and active Running-Tasks Panel from overlapping Clawd mascot
+   (driven by syncCrabClearance() attributes — avoids global div:has(~ *) style invalidation). */
+html[data-ag-cs-style][data-ag-cs-crab="on"] [data-testid="interaction-takeover-card"],
+html[data-ag-cs-style][data-ag-cs-crab="on"] [data-testid="side-question-panel"] {
   position: relative !important;
   z-index: 12 !important;
 }
 
-html[data-ag-cs-style] [data-testid="agent-input-box"]:has(.ag-cs-crab):not(:has([data-testid="running-items-panel"][class*="grid-rows-[1fr]"])) > div.hidden-if-empty:not(:empty),
-html[data-ag-cs-style] [data-testid="agent-input-box"] > div[data-ag-cs-queued="1"],
-html[data-ag-cs-style] [data-testid="agent-input-box"]:has(.ag-cs-crab) #antigravity\.agentSidePanelInputBox > div:has(> [data-testid="running-items-panel"][class*="grid-rows-[1fr]"]),
-html[data-ag-cs-style] [data-testid="side-question-panel"]:has(~ * [data-testid="agent-input-box"] .ag-cs-crab, ~ [data-testid="agent-input-box"] .ag-cs-crab):not(:has(~ * [data-testid="agent-input-box"] > div.hidden-if-empty:not(:empty), ~ * [data-testid="agent-input-box"] [data-testid="running-items-panel"][class*="grid-rows-[1fr]"])),
-html[data-ag-cs-style] div:has(> [data-testid="interaction-takeover-card"]):has(~ * [data-testid="agent-input-box"] .ag-cs-crab, ~ [data-testid="agent-input-box"] .ag-cs-crab):not(:has(~ [data-testid="side-question-panel"], ~ * [data-testid="agent-input-box"] > div.hidden-if-empty:not(:empty), ~ * [data-testid="agent-input-box"] [data-testid="running-items-panel"][class*="grid-rows-[1fr]"])),
-html[data-ag-cs-style] [data-testid="interaction-takeover-card"]:has(~ * [data-testid="agent-input-box"] .ag-cs-crab, ~ [data-testid="agent-input-box"] .ag-cs-crab):not(:has(~ [data-testid="side-question-panel"], ~ * [data-testid="agent-input-box"] > div.hidden-if-empty:not(:empty), ~ * [data-testid="agent-input-box"] [data-testid="running-items-panel"][class*="grid-rows-[1fr]"])),
+html[data-ag-cs-style][data-ag-cs-crab="on"] [data-testid="agent-input-box"] > div[data-ag-cs-queued="1"],
+html[data-ag-cs-style][data-ag-cs-crab="on"] #antigravity\.agentSidePanelInputBox > div[data-ag-cs-queued="1"],
 html[data-ag-cs-style] [data-ag-cs-takeover="1"] {
   margin-bottom: 46px !important;
   position: relative !important;
@@ -1530,7 +1521,7 @@ html[data-ag-cs-style][data-ag-cs-sidebar="on"] [data-testid="conversation-row-s
 }
 
 /* Conversation bottom clearance so last turn / badges clear pixel crab cleanly */
-html[data-ag-cs-style]:has([data-testid="conversation-view"] .ag-cs-crab) [data-testid="conversation-view"] [data-testid="autoscroll-viewport"] > div.mx-auto.w-full {
+html[data-ag-cs-style][data-ag-cs-crab="on"] [data-testid="conversation-view"] [data-testid="autoscroll-viewport"] > div.mx-auto.w-full {
   padding-bottom: 44px !important;
 }
 
@@ -3414,8 +3405,9 @@ html[data-ag-cs-style][data-ag-cs-glass="on"] .surface-composer-card > div.relat
     0 10px 30px rgba(15, 23, 42, 0.08),
     inset 0 1px 0 rgba(255, 255, 255, 0.78) !important;
 }
-html[data-ag-cs-style][data-ag-cs-glass="on"]:has(> body.theme-dark) .surface-composer-card > div.relative.w-full,
-html[data-ag-cs-style][data-ag-cs-glass="on"]:has(> body.dark) .surface-composer-card > div.relative.w-full {
+html[data-ag-cs-style][data-ag-cs-glass="on"][data-ag-cs-theme="dark"] .surface-composer-card > div.relative.w-full,
+html[data-ag-cs-style][data-ag-cs-glass="on"] > body.theme-dark .surface-composer-card > div.relative.w-full,
+html[data-ag-cs-style][data-ag-cs-glass="on"] > body.dark .surface-composer-card > div.relative.w-full {
   background: color-mix(in srgb, var(--ag-cs-composer-bg, var(--card, #1c1f28)) 72%, transparent) !important;
   border-color: rgba(255, 255, 255, 0.14) !important;
   box-shadow:
@@ -3439,14 +3431,18 @@ html[data-ag-cs-style][data-ag-cs-glass="on"] .settings-modal-container div.roun
     0 10px 28px rgba(15, 23, 42, 0.10),
     inset 0 1px 0 rgba(255, 255, 255, 0.72) !important;
 }
-html[data-ag-cs-style][data-ag-cs-glass="on"]:has(> body.theme-dark) .ag-cs-home-panel,
-html[data-ag-cs-style][data-ag-cs-glass="on"]:has(> body.dark) .ag-cs-home-panel,
-html[data-ag-cs-style][data-ag-cs-glass="on"]:has(> body.theme-dark) .ag-cs-ctx-popover,
-html[data-ag-cs-style][data-ag-cs-glass="on"]:has(> body.dark) .ag-cs-ctx-popover,
-html[data-ag-cs-style][data-ag-cs-glass="on"]:has(> body.theme-dark) .ag-cs-effort-popover,
-html[data-ag-cs-style][data-ag-cs-glass="on"]:has(> body.dark) .ag-cs-effort-popover,
-html[data-ag-cs-style][data-ag-cs-glass="on"]:has(> body.theme-dark) .ag-cs-rewind-bar,
-html[data-ag-cs-style][data-ag-cs-glass="on"]:has(> body.dark) .ag-cs-rewind-bar {
+html[data-ag-cs-style][data-ag-cs-glass="on"][data-ag-cs-theme="dark"] .ag-cs-home-panel,
+html[data-ag-cs-style][data-ag-cs-glass="on"][data-ag-cs-theme="dark"] .ag-cs-ctx-popover,
+html[data-ag-cs-style][data-ag-cs-glass="on"][data-ag-cs-theme="dark"] .ag-cs-effort-popover,
+html[data-ag-cs-style][data-ag-cs-glass="on"][data-ag-cs-theme="dark"] .ag-cs-rewind-bar,
+html[data-ag-cs-style][data-ag-cs-glass="on"] > body.theme-dark .ag-cs-home-panel,
+html[data-ag-cs-style][data-ag-cs-glass="on"] > body.dark .ag-cs-home-panel,
+html[data-ag-cs-style][data-ag-cs-glass="on"] > body.theme-dark .ag-cs-ctx-popover,
+html[data-ag-cs-style][data-ag-cs-glass="on"] > body.dark .ag-cs-ctx-popover,
+html[data-ag-cs-style][data-ag-cs-glass="on"] > body.theme-dark .ag-cs-effort-popover,
+html[data-ag-cs-style][data-ag-cs-glass="on"] > body.dark .ag-cs-effort-popover,
+html[data-ag-cs-style][data-ag-cs-glass="on"] > body.theme-dark .ag-cs-rewind-bar,
+html[data-ag-cs-style][data-ag-cs-glass="on"] > body.dark .ag-cs-rewind-bar {
   box-shadow:
     0 14px 36px rgba(0, 0, 0, 0.48),
     inset 0 1px 0 rgba(255, 255, 255, 0.09) !important;
@@ -3507,10 +3503,12 @@ html[data-ag-cs-style][data-ag-cs-glass="on"] .agy-user-bubble {
     0 3px 14px color-mix(in srgb, var(--ag-cs-accent, #4d6bfe) 10%, rgba(0, 0, 0, 0.08)),
     inset 0 1px 0 rgba(255, 255, 255, 0.55) !important;
 }
-html[data-ag-cs-style][data-ag-cs-glass="on"]:has(> body.theme-dark) [data-testid="user-message-bubble"],
-html[data-ag-cs-style][data-ag-cs-glass="on"]:has(> body.dark) [data-testid="user-message-bubble"],
-html[data-ag-cs-style][data-ag-cs-glass="on"]:has(> body.theme-dark) .agy-user-bubble,
-html[data-ag-cs-style][data-ag-cs-glass="on"]:has(> body.dark) .agy-user-bubble {
+html[data-ag-cs-style][data-ag-cs-glass="on"][data-ag-cs-theme="dark"] [data-testid="user-message-bubble"],
+html[data-ag-cs-style][data-ag-cs-glass="on"][data-ag-cs-theme="dark"] .agy-user-bubble,
+html[data-ag-cs-style][data-ag-cs-glass="on"] > body.theme-dark [data-testid="user-message-bubble"],
+html[data-ag-cs-style][data-ag-cs-glass="on"] > body.dark [data-testid="user-message-bubble"],
+html[data-ag-cs-style][data-ag-cs-glass="on"] > body.theme-dark .agy-user-bubble,
+html[data-ag-cs-style][data-ag-cs-glass="on"] > body.dark .agy-user-bubble {
   box-shadow:
     0 4px 16px rgba(0, 0, 0, 0.34),
     inset 0 1px 0 rgba(255, 255, 255, 0.08) !important;
@@ -3803,6 +3801,7 @@ html[data-ag-cs-style][data-ag-cs-glass="on"] .ag-cs-file-submenu {
   background: color-mix(in srgb, var(--popover, var(--card, #ffffff)) 92%, transparent);
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.16), 0 1px 4px rgba(0, 0, 0, 0.08);
   transition: box-shadow 150ms ease;
+  contain: layout style;
 }
 .ag-cs-progress-card.is-floating.is-dragging {
   box-shadow: 0 16px 38px rgba(0, 0, 0, 0.26);
@@ -4062,6 +4061,7 @@ html[data-ag-cs-style][data-ag-cs-glass="on"] .ag-cs-progress-card.is-floating {
   justify-content: center;
 }
 .ag-cs-trail-dot {
+  position: relative;
   width: 6px;
   height: 6px;
   border-radius: 50%;
@@ -4072,12 +4072,20 @@ html[data-ag-cs-style][data-ag-cs-glass="on"] .ag-cs-progress-card.is-floating {
   background: #22c55e;
 }
 @keyframes ag-cs-beacon {
-  0% { box-shadow: 0 0 0 2px var(--popover, var(--card, #fff)), 0 0 0 2px rgba(217, 119, 87, 0.45); }
-  75% { box-shadow: 0 0 0 2px var(--popover, var(--card, #fff)), 0 0 0 7px transparent; }
-  100% { box-shadow: 0 0 0 2px var(--popover, var(--card, #fff)), 0 0 0 7px transparent; }
+  0% { transform: scale(1); opacity: 0.65; }
+  75% { transform: scale(2.8); opacity: 0; }
+  100% { transform: scale(2.8); opacity: 0; }
 }
 .ag-cs-trail-node.is-running .ag-cs-trail-dot {
   background: var(--ag-cs-accent, #d97757);
+}
+.ag-cs-trail-node.is-running .ag-cs-trail-dot::after {
+  content: '';
+  position: absolute;
+  inset: -1px;
+  border-radius: 50%;
+  background: rgba(217, 119, 87, 0.55);
+  pointer-events: none;
   animation: ag-cs-beacon 1.6s ease-out infinite;
 }
 .ag-cs-trail-label {
@@ -4439,7 +4447,7 @@ html[data-ag-cs-style][data-ag-cs-glass="on"] .ag-cs-progress-card.is-floating {
   padding: 2px 7px;
   border-radius: 6px;
   cursor: pointer;
-  transition: all 140ms ease;
+  transition: color 140ms ease, border-color 140ms ease, background-color 140ms ease;
 }
 .ag-cs-ext-pop-full:hover {
   color: var(--ag-cs-accent, #d97757);

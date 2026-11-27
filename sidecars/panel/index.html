@@ -373,6 +373,9 @@
           document.getElementById('meta-line').textContent = err.message;
         }
       },
+      isPanelVisible() {
+        return document.visibilityState !== 'hidden' && window.innerWidth > 0 && window.innerHeight > 0;
+      },
       async postAction(endpoint, labelKey) {
         const btns = document.querySelectorAll('.actions button');
         btns.forEach((b) => (b.disabled = true));
@@ -414,10 +417,23 @@
     }
 
     controlTab.renderStaticChrome();
-    app.refreshStatus();
+    let wasPanelVisible = app.isPanelVisible();
+    if (wasPanelVisible) {
+      app.refreshStatus();
+    }
+    const handleVisibilityRestore = () => {
+      const nowVisible = app.isPanelVisible();
+      if (nowVisible && !wasPanelVisible) {
+        if (activeTab === 'dashboard') dashboardTab.onActivate();
+        else void app.refreshStatus();
+      }
+      wasPanelVisible = nowVisible;
+    };
+    window.addEventListener('resize', handleVisibilityRestore);
+    document.addEventListener('visibilitychange', handleVisibilityRestore);
     setInterval(() => {
-      if (document.visibilityState !== 'hidden' && activeTab === 'control') void app.refreshStatus();
-    }, 8000);
+      if (app.isPanelVisible() && activeTab === 'control') void app.refreshStatus();
+    }, 12000);
   </script>
 </body>
 </html>

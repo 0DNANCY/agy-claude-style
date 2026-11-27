@@ -948,6 +948,15 @@
           el.textContent = formatClock(Math.max(0, now - since));
         }
       });
+      const collapsedBadgeEl = cardEl.querySelector('.ag-cs-progress-badge[data-elapsed-since]');
+      if (collapsedBadgeEl) {
+        const since = Number(collapsedBadgeEl.getAttribute('data-elapsed-since'));
+        const prefix = collapsedBadgeEl.getAttribute('data-badge-prefix') || '';
+        if (Number.isFinite(since) && since > 0 && prefix) {
+          const nextTxt = `${prefix} ${formatClock(Math.max(0, now - since))}`;
+          if (collapsedBadgeEl.textContent !== nextTxt) collapsedBadgeEl.textContent = nextTxt;
+        }
+      }
       if (lastInfo.running && lastInfo.phase === 'thinking' && lastInfo.phaseSinceMs) {
         const waitSec = Math.floor(Math.max(0, now - lastInfo.phaseSinceMs) / 1000);
         const titleEl = cardEl.querySelector('.ag-cs-progress-headline');
@@ -1101,24 +1110,48 @@
       observeConversationLayout(!docked ? convoView : null);
       applyFloatPosition(cardEl);
 
-      const sig = JSON.stringify({
-        docked,
-        collapsed,
-        conversationId: info.conversationId,
-        parentConversationId: info.parentConversationId,
-        status: info.status,
-        phase: info.phase,
-        baseHeadline,
-        subText,
-        badge,
-        badgeTone,
-        percent: info.percent,
-        checklist: info.checklist,
-        recentActivity: info.recentActivity.map((a) => [a.id, a.label, a.status, a.durationMs]),
-        modelWait: [info.modelWaitTotalMs, info.modelWaitLastMs, info.modelWaitCount, Boolean(info.modelWaitSinceMs)],
-        subagents: info.subagents.map((s) => [s.id, s.status, s.stepCount, s.phaseLabel, s.modelWaitTotalMs, expandedSubIds.has(s.id)]),
-        toolCount: info.toolCount,
-      });
+      const useLiveCollapsedBadge = Boolean(collapsed && info.totalCount === 0 && info.startedAtMs);
+      const badgeKey = useLiveCollapsedBadge ? `${shortLive}|${info.startedAtMs}` : badge;
+      const sig = collapsed
+        ? JSON.stringify({
+            docked,
+            collapsed,
+            conversationId: info.conversationId,
+            status: info.status,
+            phase: info.phase,
+            badgeKey,
+            badgeTone,
+          })
+        : JSON.stringify({
+            docked,
+            collapsed,
+            conversationId: info.conversationId,
+            parentConversationId: info.parentConversationId,
+            status: info.status,
+            phase: info.phase,
+            baseHeadline,
+            subText,
+            badgeKey,
+            badgeTone,
+            percent: info.percent,
+            checklist: info.checklist,
+            recentActivity: info.recentActivity.map((a) => [a.id, a.label, a.status, Math.floor((a.durationMs || 0) / 1000)]),
+            modelWait: [
+              Math.floor((info.modelWaitTotalMs || 0) / 1000),
+              Math.floor((info.modelWaitLastMs || 0) / 1000),
+              info.modelWaitCount,
+              Boolean(info.modelWaitSinceMs),
+            ],
+            subagents: info.subagents.map((s) => [
+              s.id,
+              s.status,
+              s.stepCount,
+              s.phaseLabel,
+              Math.floor((s.modelWaitTotalMs || 0) / 1000),
+              expandedSubIds.has(s.id),
+            ]),
+            toolCount: info.toolCount,
+          });
       if (cardEl.getAttribute('data-sig') === sig) {
         updateLiveClocks();
         return;
@@ -1134,10 +1167,13 @@
       head.title = docked
         ? (isZh ? '点击折叠/展开任务进度' : 'Toggle task progress')
         : (isZh ? '拖动移动位置 · 双击复位 · 点击折叠' : 'Drag to move · Double-click to reset · Click to collapse');
+      const liveBadgeAttrs = useLiveCollapsedBadge
+        ? ` data-elapsed-since="${info.startedAtMs}" data-badge-prefix="${escapeHtml(shortLive)}"`
+        : '';
       head.innerHTML = `
         ${!docked ? '<span class="ag-cs-drag-grip" aria-hidden="true">⋮⋮</span>' : ''}
         <span class="ag-cs-progress-label">${isZh ? '任务进度' : 'Task Progress'}</span>
-        ${badge ? `<span class="ag-cs-progress-badge"${badgeTone ? ` data-tone="${badgeTone}"` : ''}>${escapeHtml(badge)}</span>` : ''}
+        ${badge ? `<span class="ag-cs-progress-badge"${badgeTone ? ` data-tone="${badgeTone}"` : ''}${liveBadgeAttrs}>${escapeHtml(badge)}</span>` : ''}
         <span class="ag-cs-progress-head-right">
           ${!docked ? `<button type="button" class="ag-cs-progress-close" data-action="close" title="${isZh ? '暂时隐藏（本会话）' : 'Hide for this conversation'}" aria-label="Close">×</button>` : ''}
           <span class="ag-cs-progress-chev" aria-hidden="true">${collapsed ? '▸' : '▾'}</span>

@@ -102,7 +102,11 @@ export function normalizeChildSubagent(conv, trajSummary) {
   };
 }
 
-export async function fetchSubagentTree({ env = process.env, fetchFn = null } = {}) {
+const SUBAGENT_CACHE_TTL_MS = 4000;
+let subagentCache = { data: null, expiresAt: 0 };
+let subagentInFlight = null;
+
+async function fetchSubagentTreeUncached({ env = process.env, fetchFn = null } = {}) {
   const listRes = await callRpc(
     'product.v1.ConversationService',
     'ListConversations',
@@ -183,4 +187,29 @@ export async function fetchSubagentTree({ env = process.env, fetchFn = null } = 
     recent,
     checkedAt: new Date().toISOString(),
   };
+}
+
+export async function fetchSubagentTree({ env = process.env, fetchFn = null, force = false } = {}) {
+  const canCache = !force && typeof fetchFn !== 'function' && env === process.env;
+  if (!canCache) {
+    return fetchSubagentTreeUncached({ env, fetchFn });
+  }
+  const now = Date.now();
+  if (subagentCache.data && now < subagentCache.expiresAt) {
+    return subagentCache.data;
+  }
+  if (subagentInFlight) {
+    return subagentInFlight;
+  }
+  subagentInFlight = fetchSubagentTreeUncached({ env, fetchFn })
+    .then((res) => {
+      if (res && res.ok) {
+        subagentCache = { data: res, expiresAt: Date.now() + SUBAGENT_CACHE_TTL_MS };
+      }
+      return res;
+    })
+    .finally(() => {
+      subagentInFlight = null;
+    });
+  return subagentInFlight;
 }

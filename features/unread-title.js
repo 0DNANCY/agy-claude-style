@@ -51,9 +51,18 @@
     return 'idle';
   }
 
-  function findReduxStoreAndActiveCid() {
-    let store = null;
-    let activeCid = '';
+  function readActiveCidFromDom() {
+    const view = document.querySelector('[data-testid="conversation-view"][data-cascade-id]');
+    const attrCid = view?.getAttribute?.('data-cascade-id');
+    if (attrCid) return attrCid;
+    const m = typeof location !== 'undefined' ? String(location.pathname || '').match(/\/c\/([0-9a-f-]{36})/i) : null;
+    return m && m[1] ? m[1] : '';
+  }
+
+  function findReduxStoreAndActiveCid(cachedStore) {
+    let store = cachedStore && typeof cachedStore.getState === 'function' ? cachedStore : null;
+    let activeCid = readActiveCidFromDom();
+    if (store && activeCid) return { store, activeCid };
     const anchors = [
       document.querySelector('[data-testid="conversation-view"]'),
       document.querySelector('[data-testid="agent-input-box"]'),
@@ -97,6 +106,10 @@
     let pendingCount = 0;
     let lastCheckAt = 0;
     let timer = null;
+    let cachedStore = null;
+    let lastSummariesRef = null;
+    let lastActiveCid = '';
+    let lastWindowFocused = null;
 
     function isEnabled() {
       const cfg = ctx.getCfg ? ctx.getCfg() : {};
@@ -139,7 +152,8 @@
       if (!force && now - lastCheckAt < 900) return;
       lastCheckAt = now;
 
-      const { store, activeCid } = findReduxStoreAndActiveCid();
+      const { store, activeCid } = findReduxStoreAndActiveCid(cachedStore);
+      if (store) cachedStore = store;
       const windowFocused = !document.hidden && (typeof document.hasFocus !== 'function' || document.hasFocus());
       if (windowFocused && activeCid && unreadIds.has(activeCid)) {
         unreadIds.delete(activeCid);
@@ -148,6 +162,12 @@
       let nextPending = 0;
       const summaries = store?.getState?.()?.trajectorySummaries?.summaries;
       if (summaries && typeof summaries === 'object') {
+        if (!force && summaries === lastSummariesRef && activeCid === lastActiveCid && windowFocused === lastWindowFocused) {
+          return;
+        }
+        lastSummariesRef = summaries;
+        lastActiveCid = activeCid;
+        lastWindowFocused = windowFocused;
         const nextStates = new Map();
         for (const [id, summary] of Object.entries(summaries)) {
           if (!id || !summary || typeof summary !== 'object') continue;
@@ -164,6 +184,7 @@
         }
         prevStates = nextStates;
       } else {
+        lastSummariesRef = null;
         // DOM fallback: detect sidebar loading spinners transitioning to done while unfocused
         const spinners = document.querySelectorAll('[data-testid="conversation-row-sidebar"] [data-testid="status-loading-spinner"]').length;
         const prevSpinners = prevStates.get('__dom_spinners__') || 0;
@@ -179,7 +200,7 @@
 
     function onFocusOrVisible() {
       if (document.hidden) return;
-      const { activeCid } = findReduxStoreAndActiveCid();
+      const { activeCid } = findReduxStoreAndActiveCid(cachedStore);
       if (activeCid) unreadIds.delete(activeCid);
       // Clear anonymous DOM badges and completed unread markers when user returns to window
       for (const id of Array.from(unreadIds)) {

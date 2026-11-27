@@ -533,7 +533,11 @@
         renderModelHealth(d.modelHealth || null);
         renderModelsBreakdown(d.modelsBreakdown || []);
         renderWeeklyQuotaCard(lastWeeklyQuota);
-        void refreshSubagents();
+        const nowSubMs = Date.now();
+        if (!silent || nowSubMs - lastSubagentFetchAt >= 8000) {
+          lastSubagentFetchAt = nowSubMs;
+          void refreshSubagents();
+        }
         const todayText = document.getElementById('heat-today-text');
         const filterTodayBtn = document.getElementById('btn-filter-today');
         if (lastTodaySummary) {
@@ -653,14 +657,16 @@
       }
     }
 
+    let lastSubagentFetchAt = 0;
     function startAutoPoll() {
       stopAutoPoll();
       if (!autoRefresh) return;
       autoTimer = setInterval(() => {
-        if (document.visibilityState !== 'hidden' && app.getActiveTab() === 'dashboard') {
+        const visible = typeof app.isPanelVisible === 'function' ? app.isPanelVisible() : document.visibilityState !== 'hidden';
+        if (visible && app.getActiveTab() === 'dashboard') {
           void refresh({ syncSsh: false, preserveScroll: true, silent: true });
         }
-      }, 5000);
+      }, 8000);
     }
 
     function stopAutoPoll() {

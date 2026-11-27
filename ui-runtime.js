@@ -195,25 +195,33 @@
     ensureSettingsSection();
   }
 
+  function setAttrIfChanged(el, name, val) {
+    if (el.getAttribute(name) !== val) el.setAttribute(name, val);
+  }
+
+  function removeAttrIfPresent(el, name) {
+    if (el.hasAttribute(name)) el.removeAttribute(name);
+  }
+
   function applyRootAttrs() {
     const html = document.documentElement;
     if (!html) return;
     const palette = cfg.palette === 'claude' ? 'claude' : cfg.palette === 'host' ? 'host' : 'obsidian';
     const lang = getLang();
-    html.setAttribute('data-ag-cs-style', '1');
-    html.setAttribute('data-ag-cs-palette', palette);
-    html.setAttribute('data-ag-cs-home', cfg.homeLayout === 'classic' ? 'classic' : cfg.homeLayout === 'off' ? 'off' : 'studio');
-    html.setAttribute('data-ag-cs-composer', cfg.composerRestyle === false ? 'off' : 'on');
-    html.setAttribute('data-ag-cs-logo-ink', cfg.logoInk === 'foreground' ? 'foreground' : 'accent');
-    html.setAttribute('data-ag-cs-sidebar', cfg.sidebarRestyle === false ? 'off' : 'on');
-    html.setAttribute('data-ag-cs-sidebar-compact', cfg.sidebarCompact === true ? 'on' : 'off');
-    html.setAttribute('data-ag-cs-compact-chat', cfg.compactChatLayout === true ? 'on' : 'off');
-    html.setAttribute('data-ag-cs-hud-compact', cfg.hudCompact === true ? 'on' : 'off');
-    html.setAttribute('data-ag-cs-effort-accent', cfg.effortAccent === false ? 'off' : 'on');
-    html.setAttribute('data-ag-cs-lang', lang);
+    setAttrIfChanged(html, 'data-ag-cs-style', '1');
+    setAttrIfChanged(html, 'data-ag-cs-palette', palette);
+    setAttrIfChanged(html, 'data-ag-cs-home', cfg.homeLayout === 'classic' ? 'classic' : cfg.homeLayout === 'off' ? 'off' : 'studio');
+    setAttrIfChanged(html, 'data-ag-cs-composer', cfg.composerRestyle === false ? 'off' : 'on');
+    setAttrIfChanged(html, 'data-ag-cs-logo-ink', cfg.logoInk === 'foreground' ? 'foreground' : 'accent');
+    setAttrIfChanged(html, 'data-ag-cs-sidebar', cfg.sidebarRestyle === false ? 'off' : 'on');
+    setAttrIfChanged(html, 'data-ag-cs-sidebar-compact', cfg.sidebarCompact === true ? 'on' : 'off');
+    setAttrIfChanged(html, 'data-ag-cs-compact-chat', cfg.compactChatLayout === true ? 'on' : 'off');
+    setAttrIfChanged(html, 'data-ag-cs-hud-compact', cfg.hudCompact === true ? 'on' : 'off');
+    setAttrIfChanged(html, 'data-ag-cs-effort-accent', cfg.effortAccent === false ? 'off' : 'on');
+    setAttrIfChanged(html, 'data-ag-cs-lang', lang);
     const isCjk = i18nCore && typeof i18nCore.isCjkLanguage === 'function' ? i18nCore.isCjkLanguage(lang) : isZh();
-    if (isCjk) html.setAttribute('data-ag-cs-cjk', '1');
-    else html.removeAttribute('data-ag-cs-cjk');
+    if (isCjk) setAttrIfChanged(html, 'data-ag-cs-cjk', '1');
+    else removeAttrIfPresent(html, 'data-ag-cs-cjk');
 
     const prevLang = lastAppliedLang;
     if (lang !== prevLang) {
@@ -231,13 +239,15 @@
       }
     }
 
-    html.setAttribute('data-ag-cs-glass', cfg.glassEffect === false ? 'off' : 'on');
+    setAttrIfChanged(html, 'data-ag-cs-glass', cfg.glassEffect === false ? 'off' : 'on');
+    setAttrIfChanged(html, 'data-ag-cs-crab', cfg.mascot === 'crab' ? 'on' : 'off');
     const perfBd = cfg.performanceBackdrop === 'page' || cfg.performanceBackdrop === 'off' ? cfg.performanceBackdrop : 'card';
-    html.setAttribute('data-ag-cs-perf-backdrop', perfBd);
+    setAttrIfChanged(html, 'data-ag-cs-perf-backdrop', perfBd);
     if (perfBd !== 'page' || effortCore.normalizeEffortStyle(cfg.effortSliderStyle) !== 'liangwufeng') {
       unmountPerfBackdrop();
     }
     const dark = isDarkTheme();
+    setAttrIfChanged(html, 'data-ag-cs-theme', dark ? 'dark' : 'light');
     const themeKey = `${palette}|${dark ? 'd' : 'l'}`;
     if (themeKey !== lastThemeKey) {
       lastThemeKey = themeKey;
@@ -1602,7 +1612,9 @@
   function getDraftInfo(card) {
     const scope = card || document.querySelector('[data-testid="agent-input-box"]') || document;
     const ed = scope.querySelector ? scope.querySelector('[contenteditable="true"]') : null;
-    const raw = ed ? String(ed.innerText ?? ed.textContent ?? '').trim() : '';
+    // Use textContent instead of innerText: reading innerText forces a synchronous
+    // Blink style-recalc + layout pass on every composer sync tick.
+    const raw = ed ? String(ed.textContent ?? '').trim() : '';
     if (!raw || typeof usageCore.estimateTextTokens !== 'function') {
       return { tokens: 0, chars: 0, cjk: 0, words: 0, codeSymbols: 0 };
     }
@@ -2415,13 +2427,20 @@
           if (mKey) knownModelMaxCtx.set(mKey, analyzed.maxContextTokens);
         }
         if (analyzed && analyzed.calls > 0 && typeof usageCore.analyzeTrajectoryForUsage === 'function') {
-          try {
-            const rec = usageCore.analyzeTrajectoryForUsage(res, sum, cascadeId);
-            if (rec) {
-              usageRecords.set(cascadeId, rec);
-              if (isCloud || cloudOnlyCascadeIds.has(cascadeId)) saveUsageCache();
-            }
-          } catch {}
+          // Avoid re-walking the full trajectory twice on every streaming tick; refresh usage rollup
+          // immediately when a turn settles or at most every 15s while streaming.
+          const prevRollupAt = entry.lastUsageRollupAt || 0;
+          const justSettled = Boolean(entry.lastRunning && !running);
+          if (!running || justSettled || !usageRecords.has(cascadeId) || Date.now() - prevRollupAt >= 15000) {
+            try {
+              const rec = usageCore.analyzeTrajectoryForUsage(res, sum, cascadeId);
+              if (rec) {
+                usageRecords.set(cascadeId, rec);
+                entry.lastUsageRollupAt = Date.now();
+                if (isCloud || cloudOnlyCascadeIds.has(cascadeId)) saveUsageCache();
+              }
+            } catch {}
+          }
         }
 
         if (childMetaList.length > 0 && typeof usageCore.attachSubagentSummaries === 'function') {
@@ -3321,8 +3340,10 @@
         ? Math.max(2, Math.min(100, ring.quotaRemainingPct))
         : Math.max(2, Math.min(100, ring.contextUsedPct));
       if (composerShell) {
-        composerShell.setAttribute('data-ag-cs-rim', '1');
-        composerShell.style.setProperty('--ag-cs-rim-color', rimColor);
+        setAttrIfChanged(composerShell, 'data-ag-cs-rim', '1');
+        if (composerShell.style.getPropertyValue('--ag-cs-rim-color') !== rimColor) {
+          composerShell.style.setProperty('--ag-cs-rim-color', rimColor);
+        }
       }
       const rimHost = card.querySelector(':scope > div.relative.w-full') || card;
       if (rimHost) {
@@ -3339,8 +3360,9 @@
         }
         const fill = rimBar.firstElementChild;
         if (fill) {
-          fill.style.width = `${rimFillPct.toFixed(1)}%`;
-          fill.style.background = rimColor;
+          const nextWidth = `${rimFillPct.toFixed(1)}%`;
+          if (fill.style.width !== nextWidth) fill.style.width = nextWidth;
+          if (fill.style.background !== rimColor) fill.style.background = rimColor;
         }
       }
     } else {
@@ -4576,7 +4598,7 @@
     for (const ed of editors) {
       const host = ed.parentElement;
       if (!host) continue;
-      host.setAttribute('data-ag-cs-caret-host', '1');
+      setAttrIfChanged(host, 'data-ag-cs-caret-host', '1');
       let caret = host.querySelector('.ag-cs-smooth-caret');
       if (!caret) {
         caret = document.createElement('div');
@@ -4587,10 +4609,16 @@
       }
 
       const isFocused = activeEl === ed || (activeEl && ed.contains && ed.contains(activeEl));
+      if (!isFocused) {
+        removeAttrIfPresent(caret, 'data-ag-cs-caret-visible');
+        removeAttrIfPresent(ed, 'data-ag-cs-smooth-caret');
+        continue;
+      }
+
       const measured = measureEditorCaretBox(ed);
       if (!measured || !measured.collapsed) {
-        caret.removeAttribute('data-ag-cs-caret-visible');
-        ed.removeAttribute('data-ag-cs-smooth-caret');
+        removeAttrIfPresent(caret, 'data-ag-cs-caret-visible');
+        removeAttrIfPresent(ed, 'data-ag-cs-smooth-caret');
         continue;
       }
 
@@ -4603,6 +4631,7 @@
       const isNowEmpty = cleanText.length === 0 && ed.querySelectorAll('p, div').length <= 1;
       const prev = caretPrevState.get(caret);
       const clearedToEmpty = Boolean(prev && prev.empty === false && isNowEmpty);
+      const posChanged = !prev || prev.x !== x || prev.y !== y || prev.h !== h;
 
       if ((isFocused && !wasVisible) || clearedToEmpty) {
         caret.style.transition = 'none';
@@ -4610,30 +4639,25 @@
         caret.style.height = `${h}px`;
         void caret.offsetWidth;
         caret.style.transition = '';
-      } else {
+      } else if (posChanged) {
         caret.style.transform = `translate3d(${x}px, ${y}px, 0)`;
         caret.style.height = `${h}px`;
       }
       caretPrevState.set(caret, { x, y, h, empty: isNowEmpty });
 
-      if (isFocused) {
-        caret.setAttribute('data-ag-cs-caret-visible', '1');
-        ed.setAttribute('data-ag-cs-smooth-caret', '1');
-        if (isTypingEvent) {
-          caret.setAttribute('data-ag-cs-caret-typing', '1');
-          if (caretTypingTimer) clearTimeout(caretTypingTimer);
-          caretTypingTimer = setTimeout(() => {
-            caretTypingTimer = null;
-            if (caret.isConnected) caret.removeAttribute('data-ag-cs-caret-typing');
-          }, 420);
-        } else if (prev && (prev.x !== x || prev.y !== y) && typeof caret.getAnimations === 'function') {
-          for (const anim of caret.getAnimations()) {
-            if (anim && anim.animationName === 'ag-cs-caret-blink') anim.currentTime = 0;
-          }
+      setAttrIfChanged(caret, 'data-ag-cs-caret-visible', '1');
+      setAttrIfChanged(ed, 'data-ag-cs-smooth-caret', '1');
+      if (isTypingEvent) {
+        setAttrIfChanged(caret, 'data-ag-cs-caret-typing', '1');
+        if (caretTypingTimer) clearTimeout(caretTypingTimer);
+        caretTypingTimer = setTimeout(() => {
+          caretTypingTimer = null;
+          if (caret.isConnected) removeAttrIfPresent(caret, 'data-ag-cs-caret-typing');
+        }, 420);
+      } else if (prev && (prev.x !== x || prev.y !== y) && typeof caret.getAnimations === 'function') {
+        for (const anim of caret.getAnimations()) {
+          if (anim && anim.animationName === 'ag-cs-caret-blink') anim.currentTime = 0;
         }
-      } else {
-        caret.removeAttribute('data-ag-cs-caret-visible');
-        ed.removeAttribute('data-ag-cs-smooth-caret');
       }
     }
   }
@@ -4788,10 +4812,10 @@
           else if (/\bextra\b/.test(txt)) level = 'extra';
           if (level) {
             if (sub.getAttribute('data-ag-cs-effort') !== level) sub.setAttribute('data-ag-cs-effort', level);
-            sub.classList.add('ag-cs-effort-badge');
+            if (!sub.classList.contains('ag-cs-effort-badge')) sub.classList.add('ag-cs-effort-badge');
           } else {
             if (sub.hasAttribute('data-ag-cs-effort')) sub.removeAttribute('data-ag-cs-effort');
-            sub.classList.remove('ag-cs-effort-badge');
+            if (sub.classList.contains('ag-cs-effort-badge')) sub.classList.remove('ag-cs-effort-badge');
           }
         }
       }
@@ -5803,13 +5827,20 @@
       Date.now() < rewindViewportState.pendingRewindUntil && (msgDropped || turnDropped || scrollH < prevScrollH - 60);
 
     // Also catch idle giant blank gap below the very last message (e.g. >35% of viewport height) when scrolled past it.
+    // Check cheap drop/rewind guards BEFORE calling getBoundingClientRect() to avoid forced sync layout on every idle sync.
     let giantIdleBlankGap = false;
-    if (!isRunning && (av.scrollTop || 0) > 0 && typeof av.getBoundingClientRect === 'function') {
+    const mayHaveRewindBlankGap =
+      msgDropped ||
+      turnDropped ||
+      stepsDropped ||
+      Date.now() < rewindViewportState.pendingRewindUntil ||
+      scrollH < prevScrollH - 40;
+    if (!isRunning && mayHaveRewindBlankGap && (av.scrollTop || 0) > 0 && typeof av.getBoundingClientRect === 'function') {
       const avRect = av.getBoundingClientRect();
       const contentBottom = measureLastVisibleContentBottom(av);
       if (avRect.height > 200 && contentBottom !== null) {
         const gap = avRect.bottom - contentBottom;
-        if (gap > Math.max(180, avRect.height * 0.35) && (msgDropped || turnDropped || stepsDropped || Date.now() < rewindViewportState.pendingRewindUntil || scrollH < prevScrollH - 40)) {
+        if (gap > Math.max(180, avRect.height * 0.35)) {
           giantIdleBlankGap = true;
         }
       }
@@ -5861,21 +5892,38 @@
     }
   }
 
+  let lastSyncRunAt = 0;
+  const STREAM_SYNC_MIN_GAP_MS = 64;
+
   function scheduleSync() {
     if (destroyed || syncQueued) return;
     if (imeComposing) {
       imePendingSync = true;
       return;
     }
-    const scrollWait = scrollingUntil - Date.now();
+    const now = Date.now();
+    const scrollWait = scrollingUntil - now;
     if (scrollWait > 0) {
       syncQueued = true;
       syncIsRaf = false;
       syncTimer = setTimeout(() => {
         syncTimer = null;
         syncQueued = false;
+        lastSyncRunAt = Date.now();
         runSync();
       }, Math.min(200, scrollWait + 16));
+      return;
+    }
+    const burstWait = STREAM_SYNC_MIN_GAP_MS - (now - lastSyncRunAt);
+    if (burstWait > 16) {
+      syncQueued = true;
+      syncIsRaf = false;
+      syncTimer = setTimeout(() => {
+        syncTimer = null;
+        syncQueued = false;
+        lastSyncRunAt = Date.now();
+        runSync();
+      }, burstWait);
       return;
     }
     syncQueued = true;
@@ -5884,6 +5932,7 @@
       syncTimer = requestAnimationFrame(() => {
         syncTimer = null;
         syncQueued = false;
+        lastSyncRunAt = Date.now();
         runSync();
       });
     } else {
@@ -5891,6 +5940,7 @@
       syncTimer = setTimeout(() => {
         syncTimer = null;
         syncQueued = false;
+        lastSyncRunAt = Date.now();
         runSync();
       }, 50);
     }
@@ -6275,7 +6325,7 @@
     }
 
     pollTimer = setInterval(() => {
-      if (destroyed) return;
+      if (destroyed || document.hidden) return;
       applyRootAttrs();
       if (document.querySelector('.agy-home') && cfg.homeLayout === 'studio') {
         refreshUsageRollup(false);

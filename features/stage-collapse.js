@@ -55,10 +55,13 @@
   }
 
   function isElementVisible(el) {
-    if (!el) return false;
+    if (!el || el.isConnected === false) return false;
     if (el.classList && el.classList.contains('hidden')) return false;
+    if (el.style && (el.style.display === 'none' || el.style.visibility === 'hidden')) return false;
     try {
-      if (typeof getComputedStyle === 'function') {
+      if (typeof el.checkVisibility === 'function') {
+        if (!el.checkVisibility({ checkOpacity: false, checkVisibilityCSS: true })) return false;
+      } else if (typeof getComputedStyle === 'function') {
         const cs = getComputedStyle(el);
         if (cs.display === 'none' || cs.visibility === 'hidden') return false;
       }
@@ -692,6 +695,7 @@
       return workedBtn && workedVisible ? workedBtn : null;
     }
 
+    let legacyCleaned = false;
     function sync() {
       if (ctx.isDestroyed && ctx.isDestroyed()) return;
       const enabled = isEnabled();
@@ -701,8 +705,11 @@
         return;
       }
 
-      // Clean up any legacy floating stage bars or sibling badge buttons
-      document.querySelectorAll('.ag-cs-stage-bar, .ag-cs-stage-badge').forEach((el) => el.remove());
+      // Clean up any legacy floating stage bars or sibling badge buttons once
+      if (!legacyCleaned) {
+        legacyCleaned = true;
+        document.querySelectorAll('.ag-cs-stage-bar, .ag-cs-stage-badge').forEach((el) => el.remove());
+      }
 
       const zh = isZhLang();
       const responses = Array.from(document.querySelectorAll('[data-testid="agent-response"]'));
@@ -719,9 +726,21 @@
           Boolean(resp.querySelector('[data-testid="agent-loading"]')) ||
           (isLast && (convoRunning || hasCancelBtn));
 
-        const domStats = extractStageSummary(resp);
         const fOffset = fiberTurnStats.length - responses.length;
         const fStats = fOffset + i >= 0 && fOffset + i < fiberTurnStats.length ? fiberTurnStats[fOffset + i] : null;
+        const expanded = workedBtn ? workedBtn.getAttribute('aria-expanded') === 'true' : false;
+
+        // Fast-path skip for settled historical turns whose button & stats are unchanged,
+        // avoiding repeated getComputedStyle/getBoundingClientRect layout flushes during streaming.
+        const settleSig =
+          !turnIsRunning && !isLast
+            ? `${zh ? 1 : 0}|${expanded ? 1 : 0}|${workedBtn?.className || ''}|${workedBtn?.style?.cssText || ''}|${fStats?.updateCount || 0}|${fStats?.toolCount || 0}|${fStats?.thinkCount || 0}|${resp.childElementCount || 0}`
+            : '';
+        if (settleSig && st.lastSettledSig === settleSig && st.lastWorkedBtn === workedBtn) {
+          continue;
+        }
+
+        const domStats = extractStageSummary(resp);
         const mergedStats = {
           updateCount: Math.max(fStats?.updateCount || 0, st.lastStats?.updateCount || 0),
           toolCount: Math.max(domStats.toolCount, fStats?.toolCount || 0, st.lastStats?.toolCount || 0),
@@ -733,11 +752,11 @@
         }
 
         const workedVisible = workedBtn ? isElementVisible(workedBtn) : false;
-        const expanded = workedBtn ? workedBtn.getAttribute('aria-expanded') === 'true' : false;
 
         if (turnIsRunning) {
           st.seenRunning = true;
           st.autoCollapsed = false;
+          st.lastSettledSig = '';
 
           // Recovery guard: if an earlier state left a running turn's hidden worked-for-collapsible
           // stuck in aria-expanded="false" (which hides all steps with no visible toggle), restore it.
@@ -757,6 +776,8 @@
 
         if (!workedBtn) {
           syncInlineWorkedMeta(null, '', resp);
+          st.lastWorkedBtn = null;
+          st.lastSettledSig = settleSig;
           continue;
         }
 
@@ -786,6 +807,8 @@
             workedBtn.click();
           } catch {}
         }
+        st.lastWorkedBtn = workedBtn;
+        st.lastSettledSig = settleSig;
       }
     }
 

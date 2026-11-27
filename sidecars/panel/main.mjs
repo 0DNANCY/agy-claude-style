@@ -148,6 +148,24 @@ function resolveCdpPollStatus({ port, pagesList = null, nowMs = Date.now(), trac
   };
 }
 
+const PROXY_RUNTIME_CACHE_TTL_MS = 5000;
+let proxyRuntimeCache = { key: '', value: null, expiresAt: 0 };
+
+function getCachedProxyRuntime(config) {
+  const key = `${Boolean(config.proxyEnabled)}|${config.proxyUrl || ''}|${Boolean(config.proxyForceHttp1)}`;
+  const now = Date.now();
+  if (proxyRuntimeCache.value && proxyRuntimeCache.key === key && now < proxyRuntimeCache.expiresAt) {
+    return proxyRuntimeCache.value;
+  }
+  const value = detectHostProxyRuntime({
+    proxyEnabled: Boolean(config.proxyEnabled),
+    proxyUrl: config.proxyUrl,
+    proxyForceHttp1: Boolean(config.proxyForceHttp1),
+  });
+  proxyRuntimeCache = { key, value, expiresAt: now + PROXY_RUNTIME_CACHE_TTL_MS };
+  return value;
+}
+
 async function getPanelStatus() {
   const config = cdp.readConfig();
   const watcher = readWatcherStatus();
@@ -199,11 +217,7 @@ async function getPanelStatus() {
     conflicts: {
       studio: inspectCompanionPlugin('agy-claude-studio'),
     },
-    proxyRuntime: detectHostProxyRuntime({
-      proxyEnabled: Boolean(config.proxyEnabled),
-      proxyUrl: config.proxyUrl,
-      proxyForceHttp1: Boolean(config.proxyForceHttp1),
-    }),
+    proxyRuntime: getCachedProxyRuntime(config),
   };
 }
 
