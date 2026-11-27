@@ -4715,3 +4715,8 @@ html[data-ag-cs-style] [data-testid="conversation-view"] [data-testid="autoscrol
   content-visibility: auto;
   contain-intrinsic-size: auto 240px;
 }
+
+/* ── 19. Release stale calc(75cqh - 50px) min-height spacer once a turn finishes/collapses ── */
+html[data-ag-cs-style] [data-testid="autoscroll-viewport"] [data-ag-cs-collapse-minh="1"] {
+  min-height: 0 !important;
+}

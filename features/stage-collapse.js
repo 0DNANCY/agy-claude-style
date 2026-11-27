@@ -518,7 +518,7 @@
     function getOrInitState(el) {
       let st = turnState.get(el);
       if (!st) {
-        st = { seenRunning: false, autoCollapsed: false, userToggled: false, lastStats: null };
+        st = { seenRunning: false, autoCollapsed: false, userToggled: false, didShrinkAfterRun: false, lastStats: null };
         turnState.set(el, st);
       }
       return st;
@@ -645,6 +645,7 @@
       // If expanding a historical turn whose DOM still has a nested "已探索" tool-group-collapsible,
       // auto-expand inner collapsed tool groups so one click on "已运行" reveals the steps immediately.
       const wasCollapsed = workedBtn.getAttribute('aria-expanded') === 'false';
+      const wasExpanded = workedBtn.getAttribute('aria-expanded') === 'true';
       if (wasCollapsed && isEnabled()) {
         setTimeout(() => {
           if (ctx.isDestroyed?.() || !isEnabled()) return;
@@ -658,6 +659,12 @@
             }
           }
         }, 40);
+      } else if (wasExpanded && isEnabled()) {
+        // User manually collapsed an expanded execution block: release stale min-height spacer and shrink viewport.
+        setTimeout(() => {
+          if (ctx.isDestroyed?.()) return;
+          if (typeof ctx.onStageCollapse === 'function') ctx.onStageCollapse();
+        }, 30);
       }
     }
 
@@ -756,6 +763,7 @@
         if (turnIsRunning) {
           st.seenRunning = true;
           st.autoCollapsed = false;
+          st.didShrinkAfterRun = false;
           st.lastSettledSig = '';
 
           // Recovery guard: if an earlier state left a running turn's hidden worked-for-collapsible
@@ -789,6 +797,7 @@
         syncInlineWorkedMeta(workedBtn, badgeText, resp);
 
         // Fallback auto-collapse for completed turns that didn't have stage updates handled by segment hook
+        let didClickCollapse = false;
         if (
           shouldAutoCollapseTurn({
             turnIsRunning,
@@ -803,9 +812,22 @@
           })
         ) {
           st.autoCollapsed = true;
+          didClickCollapse = true;
           try {
             workedBtn.click();
           } catch {}
+        }
+        if (isLast && (didClickCollapse || (st.seenRunning && !st.didShrinkAfterRun))) {
+          st.didShrinkAfterRun = true;
+          if (typeof ctx.onStageCollapse === 'function') {
+            if (didClickCollapse) {
+              setTimeout(() => {
+                if (!ctx.isDestroyed?.()) ctx.onStageCollapse();
+              }, 30);
+            } else {
+              ctx.onStageCollapse();
+            }
+          }
         }
         st.lastWorkedBtn = workedBtn;
         st.lastSettledSig = settleSig;

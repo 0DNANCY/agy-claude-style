@@ -1465,13 +1465,20 @@ test('usage-core: preserves post-/compact estimatedAfterCompaction even when che
 
 test('ui-runtime: rewind viewport recovery hooks into autoscroll-viewport and load-older-messages-button', () => {
   const src = fs.readFileSync(new URL('../ui-runtime.js', import.meta.url), 'utf8');
+  const css = fs.readFileSync(new URL('../style.css', import.meta.url), 'utf8');
+  const stageSrc = fs.readFileSync(new URL('../features/stage-collapse.js', import.meta.url), 'utf8');
   assert.ok(src.includes('function syncRewindViewportRecovery()'));
   assert.ok(src.includes('function clearStalePostRewindMinHeight('));
+  assert.ok(src.includes('function shrinkViewportAfterCollapse('));
+  assert.ok(src.includes('data-ag-cs-collapse-minh'));
+  assert.ok(src.includes('onStageCollapse: () => shrinkViewportAfterCollapse()'));
   assert.ok(src.includes('function measureLastVisibleContentBottom('));
   assert.ok(src.includes('button[data-testid="load-older-messages-button"]'));
   assert.ok(src.includes('function nudgeAutoscrollViewport('));
   assert.ok(src.includes('cancelRewindRecoveryTimers()'));
   assert.ok(src.includes('stepCount > 0'));
+  assert.ok(css.includes('[data-ag-cs-collapse-minh="1"]'));
+  assert.ok(stageSrc.includes('ctx.onStageCollapse'));
 });
 
 test('cdp: hasConfiguredProxyFlag detects missing proxy on CDP-enabled host and passes when matched', () => {

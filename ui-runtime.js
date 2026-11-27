@@ -5524,6 +5524,7 @@
     getUi: () => uiText(getLang()),
     isDestroyed: () => destroyed,
     saveSetting,
+    onStageCollapse: () => shrinkViewportAfterCollapse(),
   };
   const features = [];
   for (const name of FEATURE_ORDER) {
@@ -5631,6 +5632,7 @@
     lastTurnCount: 0,
     lastScrollHeight: 0,
     lastStepCount: 0,
+    lastIsRunning: false,
     recoverTimer: null,
     recoverRaf: 0,
     recoverTries: 0,
@@ -5677,19 +5679,77 @@
     } catch {}
   }
 
+  function hasSettledTurnContent(el) {
+    if (!el || typeof el.querySelector !== 'function') return false;
+    if (el.querySelector('[data-testid="agent-loading"]')) return false;
+    if (el.querySelector('[data-testid="worked-for-collapsible"], fieldset[aria-label="Response actions"]')) {
+      return true;
+    }
+    const resp = el.querySelector('[data-testid="agent-response"]');
+    return Boolean(resp && String(resp.textContent || '').trim().length > 0);
+  }
+
   function clearStalePostRewindMinHeight(av, isRunning) {
-    if (!av || isRunning) return false;
+    if (!av || typeof av.querySelectorAll !== 'function') return false;
+    const latestContent = av.querySelector('[data-turn-content="latest"]');
+    const latestWrap = latestContent ? latestContent.parentElement : null;
+    const latestSettled = Boolean(!isRunning && latestContent && hasSettledTurnContent(latestContent));
+    let changed = false;
+
+    // Remove our override whenever a turn becomes active again or no longer carries a cqh/vh min-height.
+    av.querySelectorAll('[data-ag-cs-collapse-minh]').forEach((el) => {
+      const mh = String(el?.style?.minHeight || '');
+      const isActiveLatest = el === latestWrap && !latestSettled;
+      if (isActiveLatest || !mh || !/cqh|vh/i.test(mh)) {
+        el.removeAttribute('data-ag-cs-collapse-minh');
+      }
+    });
+
+    if (isRunning) return false;
+
+    // Antigravity unconditionally sets inline `min-height: calc(75cqh - 50px)` on the latest turn
+    // wrapper even after execution finishes and stage-collapse folds intermediate steps. Override
+    // via attribute + CSS (`min-height: 0 !important`) so React re-renders cannot re-introduce the blank void.
+    const candidates = new Set();
+    if (latestWrap) candidates.add(latestWrap);
+    av.querySelectorAll('[style*="min-height"]').forEach((el) => candidates.add(el));
     const col = av.querySelector('.relative.flex.flex-col');
-    if (!col) return false;
-    let cleared = false;
-    for (const child of Array.from(col.children)) {
-      const mh = String(child?.style?.minHeight || '');
-      if (mh && /cqh|vh/i.test(mh)) {
-        child.style.minHeight = '';
-        cleared = true;
+    if (col) Array.from(col.children).forEach((el) => candidates.add(el));
+
+    for (const el of candidates) {
+      const mh = String(el?.style?.minHeight || '');
+      if (!mh || !/cqh|vh/i.test(mh)) continue;
+      if (el === latestWrap && !latestSettled) continue;
+      if (el.getAttribute('data-ag-cs-collapse-minh') !== '1') {
+        el.setAttribute('data-ag-cs-collapse-minh', '1');
+        changed = true;
       }
     }
-    return cleared;
+    return changed;
+  }
+
+  function shrinkViewportAfterCollapse() {
+    if (destroyed) return;
+    const cv = document.querySelector('[data-testid="conversation-view"]');
+    const av = cv ? cv.querySelector('[data-testid="autoscroll-viewport"]') : null;
+    if (!av) return;
+    const isRunning = Boolean(cv.querySelector('[data-testid="input-cancel-button"]'));
+    const prevMax = Math.max(0, (av.scrollHeight || 0) - (av.clientHeight || 0));
+    const wasNearBottom = (av.scrollTop || 0) >= prevMax - 140;
+    clearStalePostRewindMinHeight(av, isRunning);
+    const clamp = () => {
+      if (destroyed || !av.isConnected) return;
+      const stillRunning = Boolean(cv.querySelector('[data-testid="input-cancel-button"]'));
+      clearStalePostRewindMinHeight(av, stillRunning);
+      const freshMax = Math.max(0, (av.scrollHeight || 0) - (av.clientHeight || 0));
+      if ((av.scrollTop || 0) > freshMax + 1 || (wasNearBottom && !stillRunning)) {
+        nudgeAutoscrollViewport(av, freshMax);
+      }
+    };
+    clamp();
+    if (typeof requestAnimationFrame === 'function') {
+      requestAnimationFrame(clamp);
+    }
   }
 
   function measureLastVisibleContentBottom(av) {
@@ -5803,6 +5863,7 @@
       rewindViewportState.lastTurnCount = 0;
       rewindViewportState.lastScrollHeight = 0;
       rewindViewportState.lastStepCount = 0;
+      rewindViewportState.lastIsRunning = false;
       cancelRewindRecoveryTimers();
       return;
     }
@@ -5813,13 +5874,16 @@
     const msgs = av.querySelectorAll('[data-testid="user-input-step"], [data-testid="agent-response"]');
     const msgCount = msgs.length;
     const turnCount = col ? col.children.length : msgCount;
+    const prevMaxBeforeCollapse = Math.max(0, (av.scrollHeight || 0) - (av.clientHeight || 0));
+    const wasNearBottomBeforeCollapse = (av.scrollTop || 0) >= prevMaxBeforeCollapse - 140;
+    const isRunning = Boolean(cv.querySelector('[data-testid="input-cancel-button"]'));
+    const collapsedMinHeight = clearStalePostRewindMinHeight(av, isRunning);
     const scrollH = av.scrollHeight || 0;
     const cachedStepCount = Number(activeTrajCache.get(cid)?.data?.totalSteps || 0);
     const loadOlderBtn = av.querySelector('button[data-testid="load-older-messages-button"]');
     const canLoadOlder = Boolean(
       loadOlderBtn && !loadOlderBtn.disabled && loadOlderBtn.getAttribute('aria-disabled') !== 'true'
     );
-    const isRunning = Boolean(cv.querySelector('[data-testid="input-cancel-button"]'));
 
     if (rewindViewportState.cascadeId !== cid) {
       cancelRewindRecoveryTimers();
@@ -5828,9 +5892,15 @@
       rewindViewportState.lastTurnCount = turnCount;
       rewindViewportState.lastScrollHeight = scrollH;
       rewindViewportState.lastStepCount = cachedStepCount;
+      rewindViewportState.lastIsRunning = isRunning;
       rewindViewportState.recoverTries = 0;
       if (msgCount === 0 && canLoadOlder) {
         runRewindViewportRecovery(cid, scrollH);
+      } else if (collapsedMinHeight && !isRunning) {
+        const freshMax = Math.max(0, scrollH - (av.clientHeight || 0));
+        if ((av.scrollTop || 0) > freshMax + 1 || wasNearBottomBeforeCollapse) {
+          nudgeAutoscrollViewport(av, freshMax);
+        }
       }
       return;
     }
@@ -5839,6 +5909,7 @@
     const prevTurnCount = rewindViewportState.lastTurnCount;
     const prevScrollH = rewindViewportState.lastScrollHeight;
     const prevStepCount = rewindViewportState.lastStepCount;
+    const justFinishedRunning = rewindViewportState.lastIsRunning && !isRunning;
 
     const msgDropped = msgCount < prevMsgCount;
     const turnDropped = turnCount < prevTurnCount;
@@ -5854,6 +5925,8 @@
       msgDropped ||
       turnDropped ||
       stepsDropped ||
+      justFinishedRunning ||
+      collapsedMinHeight ||
       Date.now() < rewindViewportState.pendingRewindUntil ||
       scrollH < prevScrollH - 40;
     if (!isRunning && mayHaveRewindBlankGap && (av.scrollTop || 0) > 0 && typeof av.getBoundingClientRect === 'function') {
@@ -5870,11 +5943,17 @@
     rewindViewportState.lastMsgCount = msgCount;
     rewindViewportState.lastTurnCount = turnCount;
     rewindViewportState.lastScrollHeight = scrollH;
+    rewindViewportState.lastIsRunning = isRunning;
     if (cachedStepCount > 0) rewindViewportState.lastStepCount = cachedStepCount;
 
     if (msgDropped || turnDropped || stepsDropped || starvedEmptySlice || recentRewindClick || giantIdleBlankGap) {
       rewindViewportState.recoverTries = 0;
       runRewindViewportRecovery(cid, prevScrollH);
+    } else if ((collapsedMinHeight || justFinishedRunning) && !isRunning) {
+      const freshMax = Math.max(0, scrollH - (av.clientHeight || 0));
+      if ((av.scrollTop || 0) > freshMax + 1 || wasNearBottomBeforeCollapse) {
+        nudgeAutoscrollViewport(av, freshMax);
+      }
     }
   }
 
@@ -6473,6 +6552,7 @@
         } catch {}
       }
       document.querySelectorAll('[data-ag-cs-placeholder]').forEach((el) => el.removeAttribute('data-ag-cs-placeholder'));
+      document.querySelectorAll('[data-ag-cs-collapse-minh]').forEach((el) => el.removeAttribute('data-ag-cs-collapse-minh'));
       document.querySelectorAll('[data-ag-cs-effort]').forEach((el) => {
         el.removeAttribute('data-ag-cs-effort');
         el.classList.remove('ag-cs-effort-badge');
