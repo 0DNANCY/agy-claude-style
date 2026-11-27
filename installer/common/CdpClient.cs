@@ -1105,9 +1105,59 @@ namespace AgyClaudeStyle
             return activated;
         }
 
+        private static readonly char[] UnsafeLaunchCmdChars = new char[] { '"', '\'', '`', '$', '|', '&', '<', '>', '^', '%', '\r', '\n', '\t', '\0' };
+
+        public static string ResolveCustomLaunchCommand()
+        {
+            string raw = Environment.GetEnvironmentVariable("AGY_CLAUDE_STYLE_LAUNCH_CMD");
+            if (string.IsNullOrWhiteSpace(raw))
+            {
+                raw = Environment.GetEnvironmentVariable("AGY_CLAUDE_STUDIO_LAUNCH_CMD");
+            }
+            if (string.IsNullOrWhiteSpace(raw)) return null;
+            string cleaned = raw.Trim();
+            if (cleaned.Length >= 2 &&
+                ((cleaned[0] == '"' && cleaned[cleaned.Length - 1] == '"') ||
+                 (cleaned[0] == '\'' && cleaned[cleaned.Length - 1] == '\'')))
+            {
+                cleaned = cleaned.Substring(1, cleaned.Length - 2).Trim();
+            }
+            if (string.IsNullOrEmpty(cleaned) || cleaned.Length > 512) return null;
+            if (cleaned.IndexOfAny(UnsafeLaunchCmdChars) >= 0) return null;
+            for (int i = 0; i < cleaned.Length; i++)
+            {
+                if (cleaned[i] < 0x20 || cleaned[i] == 0x7f) return null;
+            }
+            string ext = Path.GetExtension(cleaned);
+            if (!string.Equals(ext, ".exe", StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(ext, ".cmd", StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(ext, ".bat", StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(ext, ".ps1", StringComparison.OrdinalIgnoreCase))
+            {
+                return null;
+            }
+            return File.Exists(cleaned) ? cleaned : null;
+        }
+
+        private static void EnsureNodeUseEnvProxyIfProxySet()
+        {
+            string existing = Environment.GetEnvironmentVariable("NODE_USE_ENV_PROXY");
+            if (!string.IsNullOrWhiteSpace(existing)) return;
+            string[] keys = new string[] { "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy" };
+            for (int i = 0; i < keys.Length; i++)
+            {
+                string val = Environment.GetEnvironmentVariable(keys[i]);
+                if (!string.IsNullOrWhiteSpace(val))
+                {
+                    try { Environment.SetEnvironmentVariable("NODE_USE_ENV_PROXY", "1"); } catch { }
+                    return;
+                }
+            }
+        }
+
         public static bool LaunchAntigravityWithCdp(string exePath, int port)
         {
-            string target = !string.IsNullOrEmpty(exePath) ? exePath : FindAntigravityExePath();
+            string target = !string.IsNullOrEmpty(exePath) ? exePath : (ResolveCustomLaunchCommand() ?? FindAntigravityExePath());
             if (string.IsNullOrEmpty(target) || !File.Exists(target)) return false;
             try
             {
@@ -1115,11 +1165,33 @@ namespace AgyClaudeStyle
                 {
                     RemoveStalePortFile();
                 }
+                EnsureNodeUseEnvProxyIfProxySet();
+                string portArg = "--remote-debugging-port=" + Math.Max(0, port);
+                string ext = Path.GetExtension(target);
                 ProcessStartInfo psi = new ProcessStartInfo();
-                psi.FileName = target;
-                psi.Arguments = "--remote-debugging-port=" + Math.Max(0, port);
                 psi.WorkingDirectory = Path.GetDirectoryName(target);
-                psi.UseShellExecute = true;
+                if (string.Equals(ext, ".cmd", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(ext, ".bat", StringComparison.OrdinalIgnoreCase))
+                {
+                    string comspec = Environment.GetEnvironmentVariable("ComSpec");
+                    psi.FileName = !string.IsNullOrWhiteSpace(comspec) ? comspec : "cmd.exe";
+                    psi.Arguments = "/d /c \"\"" + target + "\" " + portArg + "\"";
+                    psi.UseShellExecute = false;
+                    psi.CreateNoWindow = true;
+                }
+                else if (string.Equals(ext, ".ps1", StringComparison.OrdinalIgnoreCase))
+                {
+                    psi.FileName = "powershell.exe";
+                    psi.Arguments = "-NoProfile -ExecutionPolicy Bypass -File \"" + target + "\" " + portArg;
+                    psi.UseShellExecute = false;
+                    psi.CreateNoWindow = true;
+                }
+                else
+                {
+                    psi.FileName = target;
+                    psi.Arguments = portArg;
+                    psi.UseShellExecute = true;
+                }
                 Process.Start(psi);
                 return true;
             }
@@ -1131,7 +1203,7 @@ namespace AgyClaudeStyle
 
         public static bool RelaunchAntigravityWithCdp(string exePath, int port, int waitMs)
         {
-            string target = !string.IsNullOrEmpty(exePath) ? exePath : FindAntigravityExePath();
+            string target = !string.IsNullOrEmpty(exePath) ? exePath : (ResolveCustomLaunchCommand() ?? FindAntigravityExePath());
             if (string.IsNullOrEmpty(target) || !File.Exists(target)) return false;
 
             try

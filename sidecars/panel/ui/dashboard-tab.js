@@ -262,13 +262,11 @@
         return;
       }
       const pools = wq.pools;
-      const hasCarry = pools.some((p) => p.carriedFromPrior);
+      const acctSuffix = wq.accountLabel ? ` · ${wq.accountLabel}` : '';
       const resetNote = pools.find((p) => p.resetIn)?.resetIn;
       subEl.textContent = resetNote
-        ? `重置 ${resetNote}${hasCarry ? '' : ' · 当日采样起统计'}`
-        : hasCarry
-        ? '跨日连续统计'
-        : '当日采样起统计';
+        ? `重置 ${resetNote} · 仅统计本机${acctSuffix}`
+        : `仅统计本机消耗${acctSuffix}`;
       poolsEl.innerHTML = pools
         .map((p) => {
           const burned = Number(p.consumedTodayPct || 0);

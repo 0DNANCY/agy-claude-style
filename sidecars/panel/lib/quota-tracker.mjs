@@ -1,8 +1,11 @@
 // Daily Weekly-Quota Consumption Tracker for AGY Claude Style Aux Pane Dashboard.
-// Polls Antigravity Language Server RetrieveUserQuotaSummary (loopback HTTP, bypassing proxy/bad-ports),
-// persists compact daily snapshots in ~/.gemini/antigravity/plugin_data/agy-claude-style/quota-daily.json,
-// and computes exact per-pool daily weekly-quota burn (resilient to mid-day weekly resets).
-import { existsSync, readFileSync } from 'node:fs';
+// Polls Antigravity Language Server RetrieveUserQuotaSummary & GetUserStatus (loopback HTTP),
+// persists account-isolated daily snapshots in ~/.gemini/antigravity/plugin_data/agy-claude-style/quota-daily.json,
+// and tracks ONLY local-machine active consumption (ignoring offline/other-host drops while preserving mid-day 100% resets).
+import { createHash } from 'node:crypto';
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import { atomicWriteFileSync } from './sidecar-owner.mjs';
 import { callLsRpcWithRecovery } from './ls-discovery.mjs';
 
@@ -10,6 +13,9 @@ const MAX_STORED_DAYS = 90;
 const MIN_DROP_PCT = 0.05;
 const FULL_RESET_MIN_PREV_PCT = 90.0;
 const FULL_RESET_TARGET_PCT = 99.5;
+const MAX_LIVE_GAP_MS = 10 * 60_000;
+const MAX_RESTART_GAP_MS = 3 * 60_000;
+const ACTIVITY_CLOCK_SLACK_MS = 15_000;
 
 function round1(n) {
   return Math.round((Number(n) || 0) * 10) / 10;
@@ -44,6 +50,65 @@ export function formatResetCountdown(resetSec, nowMs = Date.now()) {
   if (days > 0) return `${days}天${hours > 0 ? `${hours}小时` : ''}`;
   if (hours > 0) return `${hours}小时${mins > 0 ? `${mins}分` : ''}`;
   return `${Math.max(1, mins)}分钟`;
+}
+
+function maskAccountLabel(raw = '') {
+  const s = String(raw || '').trim();
+  if (!s) return '';
+  const at = s.indexOf('@');
+  if (at > 0) {
+    const local = s.slice(0, at);
+    const domain = s.slice(at + 1);
+    const prefix = local.length <= 2 ? local[0] : local.slice(0, 2);
+    return `${prefix}***@${domain}`;
+  }
+  if (s.length <= 3) return `${s[0]}***`;
+  return `${s.slice(0, 2)}***${s.slice(-1)}`;
+}
+
+export function extractAccountInfo(userStatusRes) {
+  const us = userStatusRes?.userStatus && typeof userStatusRes.userStatus === 'object'
+    ? userStatusRes.userStatus
+    : userStatusRes;
+  if (!us || typeof us !== 'object') return { accountKey: 'default', accountLabel: '' };
+  const email = String(us.email || us.userEmail || '').trim();
+  const userId = String(us.userId || us.id || '').trim();
+  const name = String(us.name || '').trim();
+  const canonical = (email ? email.toLowerCase() : '') || userId || (name ? name.toLowerCase() : '');
+  if (!canonical) return { accountKey: 'default', accountLabel: '' };
+  const accountKey = `acct_${createHash('sha256').update(canonical).digest('hex').slice(0, 12)}`;
+  const accountLabel = maskAccountLabel(email || name || userId);
+  return { accountKey, accountLabel };
+}
+
+export function getLatestLocalActivityMs({
+  brainDir = join(homedir(), '.gemini', 'antigravity', 'brain'),
+  conversationsDir = join(homedir(), '.gemini', 'antigravity', 'conversations'),
+} = {}) {
+  let maxMs = 0;
+  if (conversationsDir && existsSync(conversationsDir)) {
+    try {
+      for (const entry of readdirSync(conversationsDir, { withFileTypes: true })) {
+        if (!entry.isFile() || !entry.name.endsWith('.pb')) continue;
+        try {
+          const st = statSync(join(conversationsDir, entry.name));
+          if (st.mtimeMs > maxMs) maxMs = st.mtimeMs;
+        } catch {}
+      }
+    } catch {}
+  }
+  if (brainDir && existsSync(brainDir)) {
+    try {
+      for (const entry of readdirSync(brainDir, { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue;
+        try {
+          const st = statSync(join(brainDir, entry.name, '.system_generated', 'logs', 'transcript.jsonl'));
+          if (st.mtimeMs > maxMs) maxMs = st.mtimeMs;
+        } catch {}
+      }
+    } catch {}
+  }
+  return maxMs;
 }
 
 function extractRemainingFraction(bucket) {
@@ -142,25 +207,74 @@ export function extractWeeklyPools(quotaJson) {
 }
 
 export function createEmptyStore() {
-  return { version: 1, days: {} };
+  return { version: 2, days: {} };
 }
 
-function findLatestPriorPool(store, todayKey, poolName) {
-  const dates = Object.keys(store.days || {}).filter((d) => d < todayKey).sort();
-  for (let i = dates.length - 1; i >= 0; i--) {
-    const rec = store.days[dates[i]]?.[poolName];
-    if (rec && typeof rec.lastPct === 'number') return rec;
+function normalizeDayNode(dayRaw) {
+  if (!dayRaw || typeof dayRaw !== 'object') return { accounts: {} };
+  if (dayRaw.accounts && typeof dayRaw.accounts === 'object') {
+    return dayRaw;
   }
-  return null;
+  // Legacy v1 flat day node: migrate pools under 'default' account bucket
+  const legacyPools = {};
+  for (const [k, v] of Object.entries(dayRaw)) {
+    if (v && typeof v === 'object' && typeof v.lastPct === 'number') {
+      legacyPools[k] = v;
+    }
+  }
+  return {
+    accounts: Object.keys(legacyPools).length > 0 ? { default: { label: '', pools: legacyPools } } : {},
+  };
 }
 
-export function recordQuotaSample(store, pools = [], nowMs = Date.now()) {
+function getAccountPoolsForDay(store, dateKey, accountKey = 'default', { create = false, accountLabel = '' } = {}) {
+  const days = store.days || {};
+  let dayNode = days[dateKey];
+  if (!dayNode) {
+    if (!create) return null;
+    dayNode = { accounts: {} };
+    days[dateKey] = dayNode;
+  } else if (!dayNode.accounts || typeof dayNode.accounts !== 'object') {
+    dayNode = normalizeDayNode(dayNode);
+    if (create) days[dateKey] = dayNode;
+  }
+  const key = String(accountKey || 'default').trim() || 'default';
+  let acct = dayNode.accounts[key];
+  if (!acct) {
+    if (!create) return null;
+    acct = { label: accountLabel || '', pools: {} };
+    dayNode.accounts[key] = acct;
+  } else if (accountLabel && !acct.label) {
+    acct.label = accountLabel;
+  }
+  if (!acct.pools || typeof acct.pools !== 'object') {
+    acct.pools = {};
+  }
+  return acct.pools;
+}
+
+function resolveLocalActivityCredit(existing, nowMs, opts = {}) {
+  if (typeof opts.hasLocalActivity === 'boolean') {
+    return opts.hasLocalActivity;
+  }
+  if (typeof opts.localActivityMs === 'number') {
+    const gapMs = Math.max(0, nowMs - Number(existing.lastAtMs || 0));
+    const maxGap = opts.inSession === false ? MAX_RESTART_GAP_MS : MAX_LIVE_GAP_MS;
+    if (gapMs > maxGap) return false;
+    return opts.localActivityMs > Number(existing.lastAtMs || 0) - ACTIVITY_CLOCK_SLACK_MS;
+  }
+  return opts.inSession !== false;
+}
+
+export function recordQuotaSample(store, pools = [], nowMs = Date.now(), opts = {}) {
   const target = store && typeof store === 'object' && store.days ? store : createEmptyStore();
+  target.version = 2;
   if (!Array.isArray(pools) || pools.length === 0) return { store: target, changed: false };
 
   const todayKey = formatLocalDate(nowMs);
-  if (!target.days[todayKey]) target.days[todayKey] = {};
-  const dayRec = target.days[todayKey];
+  const accountKey = String(opts.accountKey || 'default').trim() || 'default';
+  const accountLabel = String(opts.accountLabel || '').trim();
+  const dayRec = getAccountPoolsForDay(target, todayKey, accountKey, { create: true, accountLabel });
   let changed = false;
 
   for (const pool of pools) {
@@ -170,27 +284,17 @@ export function recordQuotaSample(store, pools = [], nowMs = Date.now()) {
     const existing = dayRec[pool.name];
 
     if (!existing) {
-      const prior = findLatestPriorPool(target, todayKey, pool.name);
-      const sameCycle =
-        prior &&
-        prior.resetSec > 0 &&
-        curResetSec > 0 &&
-        Math.abs(prior.resetSec - curResetSec) <= 3600;
-      const canCarryOver = Boolean(sameCycle && prior.lastPct >= curPct);
-      const initialConsumed = canCarryOver && prior.lastPct - curPct >= MIN_DROP_PCT
-        ? round1(prior.lastPct - curPct)
-        : 0;
+      // Never carry over drops across midnight or offline windows: start local baseline at curPct with 0 burn.
       dayRec[pool.name] = {
-        firstPct: canCarryOver ? prior.lastPct : curPct,
-        cycleStartPct: canCarryOver ? prior.lastPct : curPct,
-        priorCyclesBurnPct: 0,
+        firstPct: curPct,
+        segmentLowPct: curPct,
         lastPct: curPct,
-        consumedPct: initialConsumed,
+        consumedPct: 0,
         resetSec: curResetSec,
         firstAtMs: nowMs,
         lastAtMs: nowMs,
         sampleCount: 1,
-        carriedFromPrior: canCarryOver,
+        carriedFromPrior: false,
       };
       changed = true;
       continue;
@@ -198,46 +302,61 @@ export function recordQuotaSample(store, pools = [], nowMs = Date.now()) {
 
     const prevPct = Number(existing.lastPct);
     const prevResetSec = Number(existing.resetSec || 0);
-    // Backfill cycle fields for legacy records written before cycleStartPct existed
-    if (typeof existing.cycleStartPct !== 'number') {
-      existing.cycleStartPct = typeof existing.firstPct === 'number' ? existing.firstPct : prevPct;
+    if (typeof existing.segmentLowPct !== 'number') {
+      existing.segmentLowPct = prevPct;
     }
-    if (typeof existing.priorCyclesBurnPct !== 'number') {
-      existing.priorCyclesBurnPct = 0;
+    if (typeof existing.consumedPct !== 'number') {
+      existing.consumedPct = 0;
     }
 
+    const resetRegressed = prevResetSec > 0 && curResetSec > 0 && curResetSec < prevResetSec - 3600;
     const resetAdvanced = prevResetSec > 0 && curResetSec > prevResetSec + 3600;
     const jumpedToFull = prevPct <= FULL_RESET_MIN_PREV_PCT && curPct >= FULL_RESET_TARGET_PCT;
+    const creditLocal = resolveLocalActivityCredit(existing, nowMs, opts);
 
-    if (resetAdvanced || jumpedToFull) {
-      // True mid-day weekly quota reset: lock previous cycle's net burn and start new cycle at 100%.
-      const prevCycleBurn = Math.max(0, round1(existing.cycleStartPct - prevPct));
-      existing.priorCyclesBurnPct = round1(existing.priorCyclesBurnPct + prevCycleBurn);
-      existing.cycleStartPct = 100;
-      const postResetBurn = curPct < 100 - MIN_DROP_PCT ? round1(100 - curPct) : 0;
-      existing.consumedPct = round1(existing.priorCyclesBurnPct + postResetBurn);
+    if (resetRegressed) {
+      // Fallback account-switch / cycle-regression guard: re-baseline without counting cross-account delta.
+      existing.segmentLowPct = curPct;
+      existing.lastPct = curPct;
+      existing.resetSec = curResetSec;
+      existing.lastAtMs = nowMs;
+      existing.sampleCount = (existing.sampleCount || 0) + 1;
+      changed = true;
+    } else if (resetAdvanced || jumpedToFull) {
+      // Mid-day weekly quota reset (e.g. reset back to 100%): preserve already-accumulated local burn today.
+      if (creditLocal && curPct < 100 - MIN_DROP_PCT) {
+        const postResetBurn = round1(100 - curPct);
+        existing.consumedPct = round1(existing.consumedPct + postResetBurn);
+      }
+      existing.segmentLowPct = curPct;
       existing.lastPct = curPct;
       if (curResetSec > 0) existing.resetSec = curResetSec;
       else if (jumpedToFull) existing.resetSec = 0;
       existing.lastAtMs = nowMs;
       existing.sampleCount = (existing.sampleCount || 0) + 1;
       changed = true;
-    } else {
-      // Same weekly cycle: use true net burn (cycleStartPct - curPct) so reservation dips & refunds
-      // or slight upward jitter never double-count consumption.
-      if (curPct > existing.cycleStartPct) {
-        // Quota recovered slightly above initial baseline in the same cycle (e.g. rolling expiry or initial dip)
-        existing.cycleStartPct = curPct;
+    } else if (!creditLocal) {
+      // Offline gap or idle machine while another host consumed quota: re-baseline without adding local burn.
+      const pctChanged = Math.abs(curPct - prevPct) >= MIN_DROP_PCT || Math.abs(curPct - existing.segmentLowPct) >= MIN_DROP_PCT;
+      const resetChanged = curResetSec > 0 && curResetSec !== prevResetSec;
+      if (pctChanged || resetChanged) {
+        existing.segmentLowPct = curPct;
+        existing.lastPct = curPct;
+        if (curResetSec > 0) existing.resetSec = curResetSec;
+        existing.lastAtMs = nowMs;
+        changed = true;
       }
-      const nextCycleBurn = existing.cycleStartPct - curPct >= MIN_DROP_PCT
-        ? round1(existing.cycleStartPct - curPct)
-        : 0;
-      const nextConsumed = round1(existing.priorCyclesBurnPct + nextCycleBurn);
+    } else {
+      // Active local session: credit incremental net drops below segmentLowPct (immune to reservation dip refunds).
+      let delta = 0;
+      if (existing.segmentLowPct - curPct >= MIN_DROP_PCT) {
+        delta = round1(existing.segmentLowPct - curPct);
+        existing.consumedPct = round1(existing.consumedPct + delta);
+        existing.segmentLowPct = curPct;
+      }
       const pctChanged = Math.abs(curPct - prevPct) >= MIN_DROP_PCT;
       const resetChanged = curResetSec > 0 && curResetSec !== prevResetSec;
-      const consumedChanged = Math.abs(nextConsumed - Number(existing.consumedPct || 0)) >= MIN_DROP_PCT;
-      if (pctChanged || resetChanged || consumedChanged) {
-        existing.consumedPct = nextConsumed;
+      if (delta > 0 || pctChanged || resetChanged) {
         existing.lastPct = curPct;
         if (curResetSec > 0) existing.resetSec = curResetSec;
         existing.lastAtMs = nowMs;
@@ -259,10 +378,30 @@ export function recordQuotaSample(store, pools = [], nowMs = Date.now()) {
   return { store: target, changed };
 }
 
-export function summarizeWeeklyQuota(store, livePools = [], nowMs = Date.now()) {
+function selectDayPoolsForSummary(dayRaw, accountKey = 'default') {
+  const norm = normalizeDayNode(dayRaw);
+  const accounts = norm.accounts || {};
+  const key = String(accountKey || 'default').trim() || 'default';
+  if (accounts[key]?.pools) {
+    return { pools: accounts[key].pools, label: accounts[key].label || '' };
+  }
+  if (key === 'default') {
+    const keys = Object.keys(accounts);
+    if (keys.length === 1 && accounts[keys[0]]?.pools) {
+      return { pools: accounts[keys[0]].pools, label: accounts[keys[0]].label || '' };
+    }
+  }
+  return { pools: {}, label: '' };
+}
+
+export function summarizeWeeklyQuota(store, livePools = [], nowMs = Date.now(), opts = {}) {
   const todayKey = formatLocalDate(nowMs);
+  const accountKey = String(opts.accountKey || 'default').trim() || 'default';
+  let accountLabel = String(opts.accountLabel || '').trim();
   const days = store?.days || {};
-  const todayRec = days[todayKey] || {};
+  const todaySelected = selectDayPoolsForSummary(days[todayKey], accountKey);
+  const todayRec = todaySelected.pools;
+  if (!accountLabel && todaySelected.label) accountLabel = todaySelected.label;
 
   const poolMap = new Map();
   for (const p of livePools || []) {
@@ -276,7 +415,7 @@ export function summarizeWeeklyQuota(store, livePools = [], nowMs = Date.now()) 
       resetSec: p.resetSec || rec?.resetSec || 0,
       resetIn: formatResetCountdown(p.resetSec || rec?.resetSec || 0, nowMs),
       sampleCount: rec?.sampleCount || 0,
-      carriedFromPrior: Boolean(rec?.carriedFromPrior),
+      carriedFromPrior: false,
     });
   }
   for (const [name, rec] of Object.entries(todayRec)) {
@@ -289,14 +428,15 @@ export function summarizeWeeklyQuota(store, livePools = [], nowMs = Date.now()) 
       resetSec: rec.resetSec || 0,
       resetIn: formatResetCountdown(rec.resetSec || 0, nowMs),
       sampleCount: rec.sampleCount || 0,
-      carriedFromPrior: Boolean(rec.carriedFromPrior),
+      carriedFromPrior: false,
     });
   }
 
   const pools = [...poolMap.values()];
   const byDate = {};
-  for (const [dateKey, perPool] of Object.entries(days)) {
-    const entries = Object.entries(perPool || {}).map(([name, rec]) => ({
+  for (const [dateKey, dayRaw] of Object.entries(days)) {
+    const selected = selectDayPoolsForSummary(dayRaw, accountKey);
+    const entries = Object.entries(selected.pools || {}).map(([name, rec]) => ({
       name,
       consumedPct: round1(rec?.consumedPct || 0),
       lastPct: typeof rec?.lastPct === 'number' ? round1(rec.lastPct) : null,
@@ -314,6 +454,9 @@ export function summarizeWeeklyQuota(store, livePools = [], nowMs = Date.now()) 
   return {
     available: pools.length > 0,
     date: todayKey,
+    accountKey,
+    accountLabel,
+    localOnly: true,
     pools,
     totalConsumedPct,
     maxConsumedPct,
@@ -346,6 +489,34 @@ export async function fetchLiveQuotaFromLs({
   return res?.ok ? res.data : null;
 }
 
+export async function fetchLiveUserAccountFromLs({
+  lsAddress = process.env.ANTIGRAVITY_LS_ADDRESS,
+  csrfToken = process.env.ANTIGRAVITY_CSRF_TOKEN,
+  timeoutMs = 2000,
+  allowRediscover = true,
+  discoverFn,
+  requestFn,
+} = {}) {
+  try {
+    const res = await callLsRpcWithRecovery(
+      'exa.language_server_pb.LanguageServerService',
+      'GetUserStatus',
+      {},
+      {
+        lsAddress,
+        csrfToken,
+        timeoutMs,
+        allowRediscover,
+        ...(discoverFn ? { discoverFn } : {}),
+        ...(requestFn ? { requestFn } : {}),
+      }
+    );
+    return res?.ok ? extractAccountInfo(res.data) : { accountKey: 'default', accountLabel: '' };
+  } catch {
+    return { accountKey: 'default', accountLabel: '' };
+  }
+}
+
 function loadStoreFromDisk(filePath) {
   try {
     if (!filePath || !existsSync(filePath)) return createEmptyStore();
@@ -372,44 +543,84 @@ export function createQuotaTracker({
   minIntervalMs = 15_000,
   ownsFn = null,
   allowRediscover = true,
+  getLocalActivityMsFn = null,
+  fetchQuotaFn = null,
+  fetchAccountFn = null,
 } = {}) {
   let store = loadStoreFromDisk(filePath);
   let lastLivePools = [];
+  let lastAccount = { accountKey: 'default', accountLabel: '' };
   let lastFetchMs = 0;
+  let hasSampledInSession = false;
   let inflight = null;
+
+  const isTestLs = String(lsAddress || '').trim() === 'test.invalid';
+  const readLocalActivity =
+    typeof getLocalActivityMsFn === 'function'
+      ? getLocalActivityMsFn
+      : isTestLs
+      ? () => 0
+      : () => getLatestLocalActivityMs();
 
   async function sampleNow({ force = false } = {}) {
     const now = Date.now();
     if (!force && now - lastFetchMs < minIntervalMs && lastLivePools.length > 0) {
-      return summarizeWeeklyQuota(store, lastLivePools, now);
+      return summarizeWeeklyQuota(store, lastLivePools, now, lastAccount);
     }
     if (inflight) return inflight;
     inflight = (async () => {
       try {
-        const raw = await fetchLiveQuotaFromLs({
-          lsAddress,
-          csrfToken,
-          forceRefresh: Boolean(force),
-          allowRediscover,
-        });
+        const quotaFetcher =
+          typeof fetchQuotaFn === 'function'
+            ? fetchQuotaFn
+            : () =>
+                fetchLiveQuotaFromLs({
+                  lsAddress,
+                  csrfToken,
+                  forceRefresh: Boolean(force),
+                  allowRediscover,
+                });
+        const accountFetcher =
+          typeof fetchAccountFn === 'function'
+            ? fetchAccountFn
+            : () =>
+                fetchLiveUserAccountFromLs({
+                  lsAddress,
+                  csrfToken,
+                  allowRediscover,
+                });
+
+        const [raw, acct] = await Promise.all([quotaFetcher(), accountFetcher()]);
         const pools = extractWeeklyPools(raw);
+        if (acct && acct.accountKey) {
+          lastAccount = acct;
+        }
         if (pools.length > 0) {
+          const sampleMs = Date.now();
+          const localActivityMs = Number(readLocalActivity() || 0);
+          const inSession = hasSampledInSession;
           lastLivePools = pools;
-          lastFetchMs = Date.now();
-          const res = recordQuotaSample(store, pools, lastFetchMs);
+          lastFetchMs = sampleMs;
+          hasSampledInSession = true;
+          const res = recordQuotaSample(store, pools, sampleMs, {
+            accountKey: lastAccount.accountKey,
+            accountLabel: lastAccount.accountLabel,
+            inSession,
+            localActivityMs,
+          });
           store = res.store;
           if (res.changed) saveStoreToDisk(filePath, store, { ownsFn });
         }
       } catch {} finally {
         inflight = null;
       }
-      return summarizeWeeklyQuota(store, lastLivePools, Date.now());
+      return summarizeWeeklyQuota(store, lastLivePools, Date.now(), lastAccount);
     })();
     return inflight;
   }
 
   function getSummary(nowMs = Date.now()) {
-    return summarizeWeeklyQuota(store, lastLivePools, nowMs);
+    return summarizeWeeklyQuota(store, lastLivePools, nowMs, lastAccount);
   }
 
   return { sampleNow, getSummary };

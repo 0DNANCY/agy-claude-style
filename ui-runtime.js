@@ -1609,12 +1609,33 @@
     return '';
   }
 
+  function readDraftText(node) {
+    if (!node || node.hidden || node.nodeType === 8) return '';
+    if (String(node.tagName || '').toUpperCase() === 'BR') return '\n';
+    const children =
+      node.childNodes && node.childNodes.length
+        ? node.childNodes
+        : node.children && node.children.length
+        ? node.children
+        : null;
+    if (!children) return node.textContent || '';
+
+    let text = '';
+    for (const child of children) {
+      const childText = readDraftText(child);
+      if (!childText) continue;
+      const isBlock = /^(BLOCKQUOTE|DIV|H[1-6]|LI|P|PRE)$/.test(String(child.tagName || '').toUpperCase());
+      text += isBlock ? `\n${childText}\n` : childText;
+    }
+    return text;
+  }
+
   function getDraftInfo(card) {
     const scope = card || document.querySelector('[data-testid="agent-input-box"]') || document;
     const ed = scope.querySelector ? scope.querySelector('[contenteditable="true"]') : null;
-    // Use textContent instead of innerText: reading innerText forces a synchronous
-    // Blink style-recalc + layout pass on every composer sync tick.
-    const raw = ed ? String(ed.textContent ?? '').trim() : '';
+    // Avoid innerText: reading innerText forces a synchronous Blink layout pass
+    // across the whole conversation on every composer sync tick.
+    const raw = ed ? readDraftText(ed).trim() : '';
     if (!raw || typeof usageCore.estimateTextTokens !== 'function') {
       return { tokens: 0, chars: 0, cjk: 0, words: 0, codeSymbols: 0 };
     }
@@ -6179,6 +6200,8 @@
       return true;
     }
     const targetEl = m.target && typeof m.target.closest === 'function' ? m.target : m.target?.parentElement;
+    // PDF.js can add thousands of text spans that do not affect composer state.
+    if (targetEl?.closest?.('[data-testid="pdf-text-layer"], .textLayer')) return true;
     if (m.type === 'characterData') {
       if (!targetEl || typeof targetEl.closest !== 'function') return true;
       return !targetEl.closest('[data-testid="conversation-view"], [data-testid="agent-input-box"]');

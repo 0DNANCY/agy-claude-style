@@ -1372,6 +1372,59 @@ function hideAntigravityWindow(opts = {}) {
   return false;
 }
 
+const PROXY_URL_ENV_KEYS = ['HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'http_proxy', 'https_proxy', 'all_proxy'];
+const CUSTOM_LAUNCH_CMD_UNSAFE_RE = /[\x00-\x1f\x7f"'`$|&<>^%]/;
+
+function hasProxyUrlEnv(envObj = process.env) {
+  if (!envObj || typeof envObj !== 'object') return false;
+  return PROXY_URL_ENV_KEYS.some((key) => String(envObj[key] || '').trim().length > 0);
+}
+
+function resolveCustomLaunchCommand({
+  env = process.env,
+  platform = process.platform,
+  existsFn = fs.existsSync,
+} = {}) {
+  if (platform !== 'win32') return null;
+  const raw = String(env?.AGY_CLAUDE_STYLE_LAUNCH_CMD || env?.AGY_CLAUDE_STUDIO_LAUNCH_CMD || '').trim();
+  if (!raw) return null;
+  const unquoted = raw.length >= 2 && ((raw.startsWith('"') && raw.endsWith('"')) || (raw.startsWith("'") && raw.endsWith("'")))
+    ? raw.slice(1, -1).trim()
+    : raw;
+  if (!unquoted || unquoted.length > 512 || CUSTOM_LAUNCH_CMD_UNSAFE_RE.test(unquoted)) return null;
+  if (!/\.(?:exe|cmd|bat|ps1)$/i.test(unquoted)) return null;
+  try {
+    return existsFn(unquoted) ? unquoted : null;
+  } catch {
+    return null;
+  }
+}
+
+function buildWinSpawnInvocation(targetPath, launchArgs = [], env = process.env) {
+  const args = Array.isArray(launchArgs) ? launchArgs : [];
+  const target = String(targetPath || '');
+  if (/\.(?:cmd|bat)$/i.test(target)) {
+    const comspec = String(env?.ComSpec || env?.COMSPEC || 'cmd.exe').trim() || 'cmd.exe';
+    return {
+      command: comspec,
+      args: ['/d', '/c', target, ...args],
+      isScript: true,
+    };
+  }
+  if (/\.ps1$/i.test(target)) {
+    return {
+      command: 'powershell.exe',
+      args: ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', target, ...args],
+      isScript: true,
+    };
+  }
+  return {
+    command: target,
+    args: [...args],
+    isScript: false,
+  };
+}
+
 function sanitizeAppLaunchEnv(baseEnv = process.env, extraEnv = {}) {
   const env = { ...(baseEnv || {}) };
   const stripExactUpper = new Set([
@@ -1405,6 +1458,9 @@ function sanitizeAppLaunchEnv(baseEnv = process.env, extraEnv = {}) {
       else env[k] = String(v);
     }
   }
+  if (hasProxyUrlEnv(env) && !String(env.NODE_USE_ENV_PROXY || env.node_use_env_proxy || '').trim()) {
+    env.NODE_USE_ENV_PROXY = '1';
+  }
   return env;
 }
 
@@ -1424,6 +1480,9 @@ function launchAntigravityWithCdp(opts = {}) {
   const removePortFileFn =
     typeof opts.removePortFile === 'function' ? opts.removePortFile : removeStalePortFile;
   const spawnFn = typeof opts.spawn === 'function' ? opts.spawn : spawn;
+  const targetPlatform = opts.platform || process.platform;
+  const baseEnv = opts.env || process.env;
+  const existsFn = typeof opts.exists === 'function' ? opts.exists : fs.existsSync;
   if (!opts.skipPortCleanup && !detectFn().running) {
     removePortFileFn();
   }
@@ -1431,8 +1490,9 @@ function launchAntigravityWithCdp(opts = {}) {
   const hasBindAddr = extraArgs.some((a) => /^--remote-debugging-address(?:=|$)/i.test(a));
   const cdpArgs = hasBindAddr ? [flag] : [flag, '--remote-debugging-address=127.0.0.1'];
   const hasExtraEnv = Boolean(opts.extraEnv && typeof opts.extraEnv === 'object' && Object.keys(opts.extraEnv).length > 0);
-  const spawnEnv = hasExtraEnv || process.env.ELECTRON_RUN_AS_NODE ? sanitizeAppLaunchEnv(process.env, opts.extraEnv) : undefined;
-  if (IS_MAC) {
+  const needsNodeProxy = hasProxyUrlEnv(baseEnv) && !String(baseEnv.NODE_USE_ENV_PROXY || baseEnv.node_use_env_proxy || '').trim();
+  const spawnEnv = hasExtraEnv || baseEnv.ELECTRON_RUN_AS_NODE || needsNodeProxy ? sanitizeAppLaunchEnv(baseEnv, opts.extraEnv) : undefined;
+  if (targetPlatform === 'darwin') {
     const appTarget = opts.appPath || findAntigravityExecutable() || 'Antigravity';
     const macBin = hasExtraEnv ? resolveMacAppBinary(appTarget) : null;
     // On macOS, `/usr/bin/open -a` delegates to LaunchServices and drops custom env vars
@@ -1451,8 +1511,22 @@ function launchAntigravityWithCdp(opts = {}) {
     if (child && typeof child.unref === 'function') child.unref();
     return true;
   }
-  const exePath = opts.appPath || findAntigravityExecutable();
+  const customLaunch = !opts.appPath
+    ? resolveCustomLaunchCommand({ env: baseEnv, platform: targetPlatform, existsFn })
+    : null;
+  const exePath = opts.appPath || customLaunch || findAntigravityExecutable();
   if (!exePath) return false;
+  if (targetPlatform === 'win32') {
+    const inv = buildWinSpawnInvocation(exePath, [...cdpArgs, ...extraArgs], baseEnv);
+    const child = spawnFn(inv.command, inv.args, {
+      detached: true,
+      stdio: 'ignore',
+      windowsHide: inv.isScript,
+      ...(spawnEnv ? { env: spawnEnv } : {}),
+    });
+    if (child && typeof child.unref === 'function') child.unref();
+    return true;
+  }
   const child = spawnFn(exePath, [...cdpArgs, ...extraArgs], {
     detached: true,
     stdio: 'ignore',
@@ -1540,6 +1614,7 @@ function scheduleDetachedRelaunch({
   delayMs = 300,
   extraArgs = [],
   extraEnv = {},
+  baseEnv = process.env,
   portFile = PORT_FILE,
   lockFile = '',
   spawnFn = spawn,
@@ -1698,6 +1773,12 @@ if (cfg.isWin && !process.env.AGY_RELAUNCH_STAGE2 && process.env.AGY_RELAUNCH_CO
       if (v === undefined || v === null) delete env[k];
       else env[k] = String(v);
     }
+    if (
+      ['HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'http_proxy', 'https_proxy', 'all_proxy'].some((k) => String(env[k] || '').trim()) &&
+      !String(env.NODE_USE_ENV_PROXY || env.node_use_env_proxy || '').trim()
+    ) {
+      env.NODE_USE_ENV_PROXY = '1';
+    }
     if (cfg.isMac) {
       const macBin = cfg.macBinary || (cfg.appPath && cfg.appPath.toLowerCase().endsWith('.app') ? path.join(cfg.appPath, 'Contents', 'MacOS', 'Antigravity') : '');
       if (macBin && fs.existsSync(macBin)) {
@@ -1735,8 +1816,20 @@ if (cfg.isWin && !process.env.AGY_RELAUNCH_STAGE2 && process.env.AGY_RELAUNCH_CO
         child.unref();
       }
     } else if (cfg.appPath) {
-      const child = spawn(cfg.appPath, cfg.launchArgs || [], {
-        detached: true, stdio: 'ignore', windowsHide: false, env
+      const winIsBatch = cfg.isWin && /\.(?:cmd|bat)$/i.test(cfg.appPath);
+      const winIsPs1 = cfg.isWin && /\.ps1$/i.test(cfg.appPath);
+      const spawnCmd = winIsBatch
+        ? (env.ComSpec || env.COMSPEC || 'cmd.exe')
+        : winIsPs1
+        ? 'powershell.exe'
+        : cfg.appPath;
+      const spawnArgs = winIsBatch
+        ? ['/d', '/c', cfg.appPath, ...(cfg.launchArgs || [])]
+        : winIsPs1
+        ? ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', cfg.appPath, ...(cfg.launchArgs || [])]
+        : (cfg.launchArgs || []);
+      const child = spawn(spawnCmd, spawnArgs, {
+        detached: true, stdio: 'ignore', windowsHide: winIsBatch || winIsPs1, env
       });
       const childPid = child && child.pid ? child.pid : 0;
       child.unref();
@@ -1769,7 +1862,7 @@ if (cfg.isWin && !process.env.AGY_RELAUNCH_STAGE2 && process.env.AGY_RELAUNCH_CO
     stdio: 'ignore',
     windowsHide: true,
     env: {
-      ...process.env,
+      ...baseEnv,
       AGY_RELAUNCH_SPEC: JSON.stringify(payload),
       AGY_RELAUNCH_CODE: helperScript,
     },
@@ -1818,9 +1911,17 @@ async function relaunchAntigravityWithCdp(opts = {}) {
 
   const initialProc = detectFn();
   const initialPids = Array.isArray(initialProc?.pids) ? initialProc.pids : [];
-  const resolvedPath = opts.appPath || resolveRunningFn(initialPids) || findExeFn();
+  const existsFn = typeof opts.exists === 'function' ? opts.exists : fs.existsSync;
+  const customLaunch = !opts.appPath
+    ? resolveCustomLaunchCommand({
+        env: opts.env || process.env,
+        platform: opts.platform || process.platform,
+        existsFn,
+      })
+    : null;
+  const resolvedPath = opts.appPath || customLaunch || resolveRunningFn(initialPids) || findExeFn();
   const hasValidTarget = Boolean(
-    resolvedPath && (typeof opts.launch === 'function' || fs.existsSync(resolvedPath))
+    resolvedPath && (typeof opts.launch === 'function' || existsFn(resolvedPath))
   );
   if (!hasValidTarget) {
     return { relaunched: false, reason: 'executable-not-found' };
@@ -1849,6 +1950,7 @@ async function relaunchAntigravityWithCdp(opts = {}) {
         delayMs: opts.delayMs ?? 300,
         extraArgs: opts.extraArgs,
         extraEnv: opts.extraEnv,
+        baseEnv: opts.env || process.env,
         lockFile: useLock ? lockPath : '',
         spawnFn: opts.spawn,
       });
@@ -2177,6 +2279,7 @@ function buildProxyLaunchOptionsFromConfig(cfg = {}) {
     https_proxy: normalized,
     all_proxy: normalized,
     no_proxy: noProxy,
+    NODE_USE_ENV_PROXY: '1',
   };
   if (cfg.proxyForceHttp1 !== false) env.GODEBUG = 'http2client=0';
   return { args, env };
@@ -2279,6 +2382,9 @@ module.exports = {
   activateAntigravityWindow,
   hideAntigravityWindow,
   sanitizeAppLaunchEnv,
+  hasProxyUrlEnv,
+  resolveCustomLaunchCommand,
+  buildWinSpawnInvocation,
   launchAntigravityWithCdp,
   scheduleDetachedRelaunch,
   relaunchAntigravityWithCdp,

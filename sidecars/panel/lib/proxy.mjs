@@ -97,6 +97,7 @@ export function buildProxyLaunchOptions({
     https_proxy: normalized,
     all_proxy: normalized,
     no_proxy: noProxy,
+    NODE_USE_ENV_PROXY: '1',
   };
   if (proxyForceHttp1) {
     env.GODEBUG = 'http2client=0';
@@ -250,9 +251,12 @@ export function detectHostProxyRuntime(
           break;
         }
       }
+      if (!configured && !activeProxyUrl && env) {
+        activeProxyUrl = normalizeProxyUrl(env.HTTPS_PROXY || env.https_proxy || env.HTTP_PROXY || env.http_proxy || env.ALL_PROXY || env.all_proxy || '') || '';
+      }
       if (!inspected && env) {
         inspected = true;
-        activeProxyUrl = normalizeProxyUrl(env.HTTPS_PROXY || env.HTTP_PROXY || env.ALL_PROXY || '') || '';
+        activeProxyUrl = normalizeProxyUrl(env.HTTPS_PROXY || env.https_proxy || env.HTTP_PROXY || env.http_proxy || env.ALL_PROXY || env.all_proxy || '') || '';
       }
     } else if (env) {
       inspected = true;

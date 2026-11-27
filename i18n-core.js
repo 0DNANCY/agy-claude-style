@@ -93,8 +93,8 @@
   const hasOwn = Object.prototype.hasOwnProperty;
   const CJK_LATIN = /([\u3400-\u9fff])([A-Za-z])|([A-Za-z])([\u3400-\u9fff])/g;
 
-  // Never descend into opt-out plugin roots or effort pills controlled by our runtime.
-  const OPT_OUT = '[data-ag-no-i18n], [data-ag-cs-effort]';
+  // Leave plugin-managed nodes and the PDF viewer's document text alone.
+  const OPT_OUT = '[data-ag-no-i18n], [data-ag-cs-effort], [data-testid="pdf-text-layer"], .textLayer';
   // Code / editing surfaces: text is untouched, but nested toolbar buttons (e.g. "Copy code") are UI.
   const HARD = [
     'script',

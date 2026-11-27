@@ -1390,6 +1390,14 @@ test('new conversation renders bottom-right ring and inline tokens info on home 
   const inputBox = makeEl('div', { id: 'antigravity.agentSidePanelInputBox', attrs: { 'data-testid': 'agent-input-box' } });
   const card = makeEl('div', { className: 'surface-composer-card' });
   const editorEl = makeEl('div', { attrs: { contenteditable: 'true', 'data-lexical-editor': 'true' } });
+  let renderedDraftReads = 0;
+  Object.defineProperty(editorEl, 'innerText', {
+    get() {
+      renderedDraftReads++;
+      return editorEl.textContent;
+    },
+  });
+  editorEl.childNodes = editorEl.children;
   const footer = makeEl('div', { className: 'agy-composer-footer' });
   const modelBtn = makeEl('button', { attrs: { 'data-testid': 'model-selector-trigger' } });
   modelBtn.appendChild(makeEl('span', { text: 'Gemini 4 Hydrogen' }));
@@ -1494,13 +1502,20 @@ test('new conversation renders bottom-right ring and inline tokens info on home 
     assert.equal(ringBtn.getAttribute('data-ring-mode'), 'quota');
     assert.equal(ringBtn.querySelector('span')?.textContent, '42%');
 
-    // Typing a draft in new conversation updates inline tokens estimate live
-    editorEl.textContent = '帮我修复新建对话下未显示圆环及tokens信息的问题';
+    // Preserve line and paragraph boundaries in draft telemetry without reading innerText layout.
+    const firstParagraph = makeEl('p');
+    firstParagraph.childNodes = firstParagraph.children;
+    firstParagraph.appendChild(makeEl('span', { text: 'foo' }));
+    firstParagraph.appendChild(makeEl('br'));
+    firstParagraph.appendChild(makeEl('span', { text: 'bar' }));
+    editorEl.appendChild(firstParagraph);
+    editorEl.appendChild(makeEl('p', { text: 'baz' }));
     for (const fn of [...(docListeners.get('input') || [])]) {
       fn({ type: 'input', target: editorEl });
     }
     await new Promise((r) => setTimeout(r, 40));
-    assert.match(statsBtn.textContent, /^0 轮 0 步 · ~\d+ tok · 0% 缓存$/);
+    assert.equal(renderedDraftReads, 0, 'draft telemetry should not read innerText');
+    assert.equal(statsBtn.textContent, '0 轮 0 步 · ~3 tok · 0% 缓存');
 
     // Part B: Transition into a newly started conversation while Turn 1 is still streaming (calls === 0)
     home.remove();
@@ -2627,6 +2642,8 @@ test('streaming Turn 2 response does not hijack #T1 badge, observer ignores exte
   // External code editor outside conversation-view
   const codeEditor = makeNode('div', { className: 'monaco-editor' });
   body.appendChild(codeEditor);
+  const pdfTextLayer = makeNode('div', { className: 'textLayer', attrs: { 'data-testid': 'pdf-text-layer' } });
+  body.appendChild(pdfTextLayer);
 
   // Trajectory: Turn 1 completed with generatorMetadata; Turn 2 is streaming with no generatorMetadata yet
   const traj = {
@@ -2738,6 +2755,10 @@ test('streaming Turn 2 response does not hijack #T1 badge, observer ignores exte
     const rafBefore = rafCalls;
     observerCb([{ type: 'characterData', target: { nodeType: 3, parentElement: codeEditor } }]);
     assert.equal(rafCalls, rafBefore, 'External editor characterData must not trigger scheduleSync');
+    const pdfSpan = makeNode('span', { text: 'Rendered PDF text' });
+    pdfTextLayer.appendChild(pdfSpan);
+    observerCb([{ type: 'childList', target: pdfTextLayer, addedNodes: [pdfSpan], removedNodes: [] }]);
+    assert.equal(rafCalls, rafBefore, 'PDF text layer additions must not trigger composer sync');
 
     vm.runInNewContext(cdp.REMOVE_EXPRESSION, sandbox);
   } finally {

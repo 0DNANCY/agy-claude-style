@@ -535,7 +535,7 @@ test('branch-edit: builds Antigravity forkConversation payload with sourceCascad
   assert.equal(branchEdit.isSubagentForkUnsupportedError(new Error('network timeout')), false);
 });
 
-test('quota-tracker: tracks daily weekly-quota burn, midnight carry-over, and mid-day resets', async () => {
+test('quota-tracker: tracks local-only weekly burn, ignores other-host/cross-day drops, handles 100% reset, and isolates accounts', async () => {
   const qt = await import('../sidecars/panel/lib/quota-tracker.mjs');
   const rawQuota = {
     groups: [
@@ -562,34 +562,37 @@ test('quota-tracker: tracks daily weekly-quota burn, midnight carry-over, and mi
   assert.equal(pools1[1].name, 'Claude');
   assert.equal(pools1[1].remainingPct, 65);
 
-  const day1Morning = new Date(2026, 10, 23, 22, 0, 0).getTime();
-  let store = qt.createEmptyStore();
-  ({ store } = qt.recordQuotaSample(store, pools1, day1Morning));
+  const acctA = { accountKey: 'acct_alpha', accountLabel: 'al***@gmail.com' };
+  const acctB = { accountKey: 'acct_beta', accountLabel: 'be***@gmail.com' };
 
-  // Next morning (same weekly reset cycle): Gemini dropped 80 -> 74 (6% burned), Claude stayed 65
+  const day1Night = new Date(2026, 10, 23, 22, 0, 0).getTime();
+  let store = qt.createEmptyStore();
+  ({ store } = qt.recordQuotaSample(store, pools1, day1Night, acctA));
+
+  // Next morning: overnight drop 80 -> 74 (e.g. burned on another host) must NOT carry over into today
   const day2Morning = new Date(2026, 10, 24, 9, 0, 0).getTime();
   const pools2 = [
     { name: 'Gemini Pro', remainingPct: 74, resetSec: pools1[0].resetSec },
     { name: 'Claude', remainingPct: 65, resetSec: pools1[1].resetSec },
   ];
-  ({ store } = qt.recordQuotaSample(store, pools2, day2Morning));
-  let sum = qt.summarizeWeeklyQuota(store, pools2, day2Morning);
-  assert.equal(sum.pools.find((p) => p.name === 'Gemini Pro').consumedTodayPct, 6);
-  assert.equal(sum.pools.find((p) => p.name === 'Gemini Pro').carriedFromPrior, true);
+  ({ store } = qt.recordQuotaSample(store, pools2, day2Morning, acctA));
+  let sum = qt.summarizeWeeklyQuota(store, pools2, day2Morning, acctA);
+  assert.equal(sum.pools.find((p) => p.name === 'Gemini Pro').consumedTodayPct, 0);
+  assert.equal(sum.pools.find((p) => p.name === 'Gemini Pro').carriedFromPrior, false);
 
-  // Mid-day additional usage: Gemini 74 -> 69 (+5% -> 11% total)
+  // Active local usage on this machine: Gemini 74 -> 69 (5%), Claude 65 -> 60.5 (4.5%)
   const day2Noon = new Date(2026, 10, 24, 12, 0, 0).getTime();
   const pools3 = [
     { name: 'Gemini Pro', remainingPct: 69, resetSec: pools1[0].resetSec },
     { name: 'Claude', remainingPct: 60.5, resetSec: pools1[1].resetSec },
   ];
-  ({ store } = qt.recordQuotaSample(store, pools3, day2Noon));
-  sum = qt.summarizeWeeklyQuota(store, pools3, day2Noon);
-  assert.equal(sum.pools.find((p) => p.name === 'Gemini Pro').consumedTodayPct, 11);
+  ({ store } = qt.recordQuotaSample(store, pools3, day2Noon, { ...acctA, hasLocalActivity: true }));
+  sum = qt.summarizeWeeklyQuota(store, pools3, day2Noon, acctA);
+  assert.equal(sum.pools.find((p) => p.name === 'Gemini Pro').consumedTodayPct, 5);
   assert.equal(sum.pools.find((p) => p.name === 'Claude').consumedTodayPct, 4.5);
 
   // Reservation dip + cache-hit refund bounce within same cycle must NOT double-count consumption:
-  // Gemini 69 -> 66.2 -> 68.5 -> 65.0 must equal exact net burn from 80 -> 65.0 = 15% (not 18.8%!)
+  // Gemini 69 -> 66.2 -> 68.5 -> 65.0 must add exact net drop (69 -> 65.0 = 4% -> 9% total)
   const day2Bounce1 = new Date(2026, 10, 24, 13, 0, 0).getTime();
   ({ store } = qt.recordQuotaSample(
     store,
@@ -597,7 +600,8 @@ test('quota-tracker: tracks daily weekly-quota burn, midnight carry-over, and mi
       { name: 'Gemini Pro', remainingPct: 66.2, resetSec: pools1[0].resetSec },
       { name: 'Claude', remainingPct: 60.5, resetSec: pools1[1].resetSec },
     ],
-    day2Bounce1
+    day2Bounce1,
+    { ...acctA, hasLocalActivity: true }
   ));
   ({ store } = qt.recordQuotaSample(
     store,
@@ -605,7 +609,8 @@ test('quota-tracker: tracks daily weekly-quota burn, midnight carry-over, and mi
       { name: 'Gemini Pro', remainingPct: 68.5, resetSec: pools1[0].resetSec },
       { name: 'Claude', remainingPct: 60.5, resetSec: pools1[1].resetSec },
     ],
-    day2Bounce1 + 60_000
+    day2Bounce1 + 60_000,
+    { ...acctA, hasLocalActivity: true }
   ));
   ({ store } = qt.recordQuotaSample(
     store,
@@ -613,29 +618,133 @@ test('quota-tracker: tracks daily weekly-quota burn, midnight carry-over, and mi
       { name: 'Gemini Pro', remainingPct: 65.0, resetSec: pools1[0].resetSec },
       { name: 'Claude', remainingPct: 60.5, resetSec: pools1[1].resetSec },
     ],
-    day2Bounce1 + 120_000
+    day2Bounce1 + 120_000,
+    { ...acctA, hasLocalActivity: true }
+  ));
+  sum = qt.summarizeWeeklyQuota(store, pools3, day2Bounce1 + 120_000, acctA);
+  assert.equal(sum.pools.find((p) => p.name === 'Gemini Pro').consumedTodayPct, 9);
+
+  // Another host burns 65 -> 45 while this machine had NO local activity -> re-baseline only, consumed stays 9%
+  const day2Afternoon = new Date(2026, 10, 24, 15, 0, 0).getTime();
+  ({ store } = qt.recordQuotaSample(
+    store,
+    [
+      { name: 'Gemini Pro', remainingPct: 45.0, resetSec: pools1[0].resetSec },
+      { name: 'Claude', remainingPct: 60.5, resetSec: pools1[1].resetSec },
+    ],
+    day2Afternoon,
+    { ...acctA, hasLocalActivity: false }
   ));
   sum = qt.summarizeWeeklyQuota(
     store,
     [
-      { name: 'Gemini Pro', remainingPct: 65.0, resetSec: pools1[0].resetSec },
+      { name: 'Gemini Pro', remainingPct: 45.0, resetSec: pools1[0].resetSec },
       { name: 'Claude', remainingPct: 60.5, resetSec: pools1[1].resetSec },
     ],
-    day2Bounce1 + 120_000
+    day2Afternoon,
+    acctA
   );
-  assert.equal(sum.pools.find((p) => p.name === 'Gemini Pro').consumedTodayPct, 15);
+  assert.equal(sum.pools.find((p) => p.name === 'Gemini Pro').consumedTodayPct, 9);
 
-  // Mid-day weekly reset on Gemini: resetSec advances and remaining jumps to 96% (4% burned post-reset -> 19% total)
-  const day2Eve = new Date(2026, 10, 24, 18, 0, 0).getTime();
-  const pools4 = [
-    { name: 'Gemini Pro', remainingPct: 96, resetSec: pools1[0].resetSec + 7 * 86400 },
-    { name: 'Claude', remainingPct: 60.5, resetSec: pools1[1].resetSec },
-  ];
-  ({ store } = qt.recordQuotaSample(store, pools4, day2Eve));
-  sum = qt.summarizeWeeklyQuota(store, pools4, day2Eve);
-  assert.equal(sum.pools.find((p) => p.name === 'Gemini Pro').consumedTodayPct, 19);
-  assert.ok(sum.byDate['2026-11-24']);
-  assert.equal(sum.byDate['2026-11-24'].maxConsumedPct, 19);
+  // Mid-day AGY reset back to 100% preserves today's 9% local burn, and subsequent local burn continues from 100%
+  const day2Reset = new Date(2026, 10, 24, 18, 0, 0).getTime();
+  const nextResetSec = pools1[0].resetSec + 7 * 86400;
+  ({ store } = qt.recordQuotaSample(
+    store,
+    [
+      { name: 'Gemini Pro', remainingPct: 100, resetSec: nextResetSec },
+      { name: 'Claude', remainingPct: 60.5, resetSec: pools1[1].resetSec },
+    ],
+    day2Reset,
+    { ...acctA, hasLocalActivity: false }
+  ));
+  ({ store } = qt.recordQuotaSample(
+    store,
+    [
+      { name: 'Gemini Pro', remainingPct: 96, resetSec: nextResetSec },
+      { name: 'Claude', remainingPct: 60.5, resetSec: pools1[1].resetSec },
+    ],
+    day2Reset + 60_000,
+    { ...acctA, hasLocalActivity: true }
+  ));
+  sum = qt.summarizeWeeklyQuota(
+    store,
+    [
+      { name: 'Gemini Pro', remainingPct: 96, resetSec: nextResetSec },
+      { name: 'Claude', remainingPct: 60.5, resetSec: pools1[1].resetSec },
+    ],
+    day2Reset + 60_000,
+    acctA
+  );
+  assert.equal(sum.pools.find((p) => p.name === 'Gemini Pro').consumedTodayPct, 13);
+  assert.equal(sum.pools.find((p) => p.name === 'Gemini Pro').remainingPct, 96);
+  assert.equal(sum.byDate['2026-11-24'].maxConsumedPct, 13);
+
+  // Switching to Account B isolates its quota and never triggers fake reset or corrupts Account A
+  ({ store } = qt.recordQuotaSample(
+    store,
+    [
+      { name: 'Gemini Pro', remainingPct: 100, resetSec: pools1[0].resetSec + 3 * 86400 },
+      { name: 'Claude', remainingPct: 100, resetSec: pools1[1].resetSec + 3 * 86400 },
+    ],
+    day2Reset + 120_000,
+    { ...acctB, hasLocalActivity: false }
+  ));
+  const sumB = qt.summarizeWeeklyQuota(
+    store,
+    [{ name: 'Gemini Pro', remainingPct: 100, resetSec: pools1[0].resetSec + 3 * 86400 }],
+    day2Reset + 120_000,
+    acctB
+  );
+  assert.equal(sumB.pools.find((p) => p.name === 'Gemini Pro').consumedTodayPct, 0);
+  const sumAAfter = qt.summarizeWeeklyQuota(store, [], day2Reset + 120_000, acctA);
+  assert.equal(sumAAfter.pools.find((p) => p.name === 'Gemini Pro').consumedTodayPct, 13);
+
+  // Fallback guard when accountKey is unknown ('default') and resetSec regresses across accounts
+  let fallbackStore = qt.createEmptyStore();
+  ({ store: fallbackStore } = qt.recordQuotaSample(fallbackStore, [{ name: 'Gemini Pro', remainingPct: 70, resetSec: 2_000_000_000 }], day2Reset));
+  ({ store: fallbackStore } = qt.recordQuotaSample(
+    fallbackStore,
+    [{ name: 'Gemini Pro', remainingPct: 30, resetSec: 1_999_000_000 }],
+    day2Reset + 60_000,
+    { hasLocalActivity: true }
+  ));
+  const sumFallback = qt.summarizeWeeklyQuota(fallbackStore, [{ name: 'Gemini Pro', remainingPct: 30, resetSec: 1_999_000_000 }], day2Reset + 60_000);
+  assert.equal(sumFallback.pools[0].consumedTodayPct, 0);
+
+  // createQuotaTracker integration: startup session re-baselines, idle polls ignore remote host drops, active polls credit
+  const tmpQuotaDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-cs-qt-'));
+  try {
+    const quotaFile = path.join(tmpQuotaDir, 'quota-daily.json');
+    let liveRem = 80;
+    let liveActivityMs = 0;
+    const tracker = qt.createQuotaTracker({
+      filePath: quotaFile,
+      minIntervalMs: 0,
+      getLocalActivityMsFn: () => liveActivityMs,
+      fetchAccountFn: async () => qt.extractAccountInfo({ userStatus: { email: 'alice@example.com' } }),
+      fetchQuotaFn: async () => ({
+        groups: [{ displayName: 'Gemini Pro', buckets: [{ window: 'weekly', remainingFraction: liveRem / 100, resetTime: '2026-12-01T00:00:00Z' }] }],
+      }),
+    });
+    const s1 = await tracker.sampleNow({ force: true });
+    assert.equal(s1.pools[0].consumedTodayPct, 0);
+    assert.equal(s1.accountLabel, 'al***@example.com');
+
+    // Remote host burns 80 -> 60 while local machine has no recent activity
+    liveRem = 60;
+    const s2 = await tracker.sampleNow({ force: true });
+    assert.equal(s2.pools[0].consumedTodayPct, 0);
+    assert.equal(s2.pools[0].remainingPct, 60);
+
+    // Local machine runs a turn (activity timestamp updates) and burns 60 -> 54
+    liveActivityMs = Date.now() + 1000;
+    liveRem = 54;
+    const s3 = await tracker.sampleNow({ force: true });
+    assert.equal(s3.pools[0].consumedTodayPct, 6);
+  } finally {
+    fs.rmSync(tmpQuotaDir, { recursive: true, force: true });
+  }
 });
 
 test('telemetry-db extracts ground-truth TTFT (field 11) from gen_metadata protobuf and computes avgTtftMs', () => {
@@ -1516,4 +1625,173 @@ test('cdp: cross-process relaunch lock blocks concurrent detached relaunches and
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
+});
+
+test('windows non-TUN proxy compatibility: NODE_USE_ENV_PROXY, custom launcher validation, and relaunch env preservation', async () => {
+  const cdp = require('../cdp.js');
+  const proxyLib = await import('../sidecars/panel/lib/proxy.mjs');
+
+  // 1. Built-in proxy builders include NODE_USE_ENV_PROXY=1
+  const pOpts = proxyLib.buildProxyLaunchOptions({ proxyEnabled: true, proxyUrl: 'http://127.0.0.1:7890' });
+  assert.equal(pOpts.env.NODE_USE_ENV_PROXY, '1');
+  const cdpOpts = cdp.buildProxyLaunchOptionsFromConfig({ proxyEnabled: true, proxyUrl: 'http://127.0.0.1:7890' });
+  assert.equal(cdpOpts.env.NODE_USE_ENV_PROXY, '1');
+
+  // 2. sanitizeAppLaunchEnv injects NODE_USE_ENV_PROXY=1 only when proxy env exists and respects explicit 0
+  const directEnv = cdp.sanitizeAppLaunchEnv({ PATH: 'C:\\Windows\\System32', ELECTRON_RUN_AS_NODE: '1' });
+  assert.equal(directEnv.NODE_USE_ENV_PROXY, undefined);
+  assert.equal(directEnv.ELECTRON_RUN_AS_NODE, undefined);
+
+  const procProxyEnv = cdp.sanitizeAppLaunchEnv({
+    PATH: 'C:\\Windows\\System32',
+    HTTPS_PROXY: 'http://127.0.0.1:7890',
+    NO_PROXY: 'localhost,127.0.0.1,::1',
+  });
+  assert.equal(procProxyEnv.HTTPS_PROXY, 'http://127.0.0.1:7890');
+  assert.equal(procProxyEnv.NO_PROXY, 'localhost,127.0.0.1,::1');
+  assert.equal(procProxyEnv.NODE_USE_ENV_PROXY, '1');
+
+  const explicitOffEnv = cdp.sanitizeAppLaunchEnv({
+    HTTPS_PROXY: 'http://127.0.0.1:7890',
+    NODE_USE_ENV_PROXY: '0',
+  });
+  assert.equal(explicitOffEnv.NODE_USE_ENV_PROXY, '0');
+
+  // 3. detectHostProxyRuntime detects external env proxy when proxyEnabled=false without breaking coldStartMismatch
+  const extRuntime = proxyLib.detectHostProxyRuntime(
+    { proxyEnabled: false },
+    {
+      platform: 'win32',
+      execFileSyncFn: () => JSON.stringify([{ ProcessId: 1001, CommandLine: '"C:\\Antigravity\\Antigravity.exe" --remote-debugging-port=9222' }]),
+      env: { HTTPS_PROXY: 'http://127.0.0.1:7890' },
+    }
+  );
+  assert.equal(extRuntime.active, true);
+  assert.equal(extRuntime.coldStartMismatch, false);
+
+  const cfgMismatch = proxyLib.detectHostProxyRuntime(
+    { proxyEnabled: true, proxyUrl: 'http://127.0.0.1:7890', proxyForceHttp1: true },
+    {
+      platform: 'win32',
+      execFileSyncFn: () => JSON.stringify([{ ProcessId: 1001, CommandLine: '"C:\\Antigravity\\Antigravity.exe" --remote-debugging-port=9222' }]),
+      env: { HTTPS_PROXY: 'http://127.0.0.1:7890' },
+    }
+  );
+  assert.equal(cfgMismatch.active, false);
+  assert.equal(cfgMismatch.coldStartMismatch, true);
+
+  // 4. resolveCustomLaunchCommand validates extension/unsafe chars and respects win32-only scope
+  assert.equal(
+    cdp.resolveCustomLaunchCommand({
+      platform: 'darwin',
+      env: { AGY_CLAUDE_STYLE_LAUNCH_CMD: '/tmp/Antigravity-Proxy.cmd' },
+      existsFn: () => true,
+    }),
+    null
+  );
+  assert.equal(
+    cdp.resolveCustomLaunchCommand({
+      platform: 'win32',
+      env: { AGY_CLAUDE_STYLE_LAUNCH_CMD: 'C:\\Tools\\Antigravity-Proxy.cmd&calc.exe' },
+      existsFn: () => true,
+    }),
+    null
+  );
+  assert.equal(
+    cdp.resolveCustomLaunchCommand({
+      platform: 'win32',
+      env: { AGY_CLAUDE_STYLE_LAUNCH_CMD: 'C:\\Tools\\readme.txt' },
+      existsFn: () => true,
+    }),
+    null
+  );
+  assert.equal(
+    cdp.resolveCustomLaunchCommand({
+      platform: 'win32',
+      env: { AGY_CLAUDE_STYLE_LAUNCH_CMD: '"C:\\Tools\\Antigravity-Proxy.cmd"' },
+      existsFn: (p) => p === 'C:\\Tools\\Antigravity-Proxy.cmd',
+    }),
+    'C:\\Tools\\Antigravity-Proxy.cmd'
+  );
+  assert.equal(
+    cdp.resolveCustomLaunchCommand({
+      platform: 'win32',
+      env: { AGY_CLAUDE_STUDIO_LAUNCH_CMD: 'C:\\Tools\\Antigravity-Proxy.bat' },
+      existsFn: (p) => p === 'C:\\Tools\\Antigravity-Proxy.bat',
+    }),
+    'C:\\Tools\\Antigravity-Proxy.bat'
+  );
+
+  // 5. win32 launchAntigravityWithCdp & relaunchAntigravityWithCdp support .cmd/.ps1 and preserve proxy env
+  let winLaunched = null;
+  const launchedCmd = cdp.launchAntigravityWithCdp({
+    platform: 'win32',
+    env: {
+      ComSpec: 'C:\\Windows\\System32\\cmd.exe',
+      AGY_CLAUDE_STYLE_LAUNCH_CMD: 'C:\\Tools\\Antigravity-Proxy.cmd',
+      HTTP_PROXY: 'http://127.0.0.1:7890',
+      HTTPS_PROXY: 'http://127.0.0.1:7890',
+      NO_PROXY: 'localhost,127.0.0.1,::1',
+    },
+    exists: (p) => p === 'C:\\Tools\\Antigravity-Proxy.cmd',
+    detectProcess: () => ({ running: true, pids: [] }),
+    spawn: (cmd, args, opts) => {
+      winLaunched = { cmd, args, opts };
+      return { unref() {} };
+    },
+  });
+  assert.equal(launchedCmd, true);
+  assert.equal(winLaunched.cmd, 'C:\\Windows\\System32\\cmd.exe');
+  assert.deepEqual(winLaunched.args, ['/d', '/c', 'C:\\Tools\\Antigravity-Proxy.cmd', '--remote-debugging-port=0', '--remote-debugging-address=127.0.0.1']);
+  assert.equal(winLaunched.opts.windowsHide, true);
+  assert.equal(winLaunched.opts.env.HTTPS_PROXY, 'http://127.0.0.1:7890');
+  assert.equal(winLaunched.opts.env.NODE_USE_ENV_PROXY, '1');
+
+  const psInv = cdp.buildWinSpawnInvocation('C:\\Tools\\Antigravity-Proxy.ps1', ['--remote-debugging-port=0']);
+  assert.equal(psInv.command, 'powershell.exe');
+  assert.deepEqual(psInv.args, ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', 'C:\\Tools\\Antigravity-Proxy.ps1', '--remote-debugging-port=0']);
+
+  // Direct/TUN user without proxy env or custom launcher keeps spawnEnv=undefined
+  let directLaunch = null;
+  cdp.launchAntigravityWithCdp({
+    platform: 'win32',
+    appPath: 'C:\\Program Files\\Antigravity\\Antigravity.exe',
+    env: { PATH: 'C:\\Windows\\System32' },
+    detectProcess: () => ({ running: true, pids: [] }),
+    spawn: (cmd, args, opts) => {
+      directLaunch = { cmd, args, opts };
+      return { unref() {} };
+    },
+  });
+  assert.equal(directLaunch.cmd, 'C:\\Program Files\\Antigravity\\Antigravity.exe');
+  assert.equal(directLaunch.opts.env, undefined);
+
+  // Detached relaunch passes baseEnv + custom launcher on win32 and helper sets NODE_USE_ENV_PROXY
+  let detachedWin = null;
+  const relaunchWinRes = await cdp.relaunchAntigravityWithCdp({
+    detached: true,
+    platform: 'win32',
+    env: {
+      AGY_CLAUDE_STYLE_LAUNCH_CMD: 'C:\\Tools\\Antigravity-Proxy.cmd',
+      HTTPS_PROXY: 'http://127.0.0.1:7890',
+    },
+    exists: (p) => p === 'C:\\Tools\\Antigravity-Proxy.cmd',
+    detectProcess: () => ({ running: true, pids: [4242] }),
+    spawn: (cmd, args, opts) => {
+      detachedWin = { cmd, args, opts };
+      return { unref() {} };
+    },
+  });
+  assert.equal(relaunchWinRes.relaunched, true);
+  assert.equal(relaunchWinRes.reason, 'detached');
+  const winSpec = JSON.parse(detachedWin.opts.env.AGY_RELAUNCH_SPEC);
+  assert.equal(winSpec.appPath, 'C:\\Tools\\Antigravity-Proxy.cmd');
+  assert.equal(detachedWin.opts.env.HTTPS_PROXY, 'http://127.0.0.1:7890');
+  assert.match(cdp.scheduleDetachedRelaunch.toString(), /NODE_USE_ENV_PROXY/);
+
+  // 6. C# CdpClient.cs includes custom launcher & NODE_USE_ENV_PROXY helpers
+  const csSource = fs.readFileSync(require.resolve('../installer/common/CdpClient.cs'), 'utf8');
+  assert.match(csSource, /ResolveCustomLaunchCommand/);
+  assert.match(csSource, /EnsureNodeUseEnvProxyIfProxySet/);
+  assert.match(csSource, /AGY_CLAUDE_STYLE_LAUNCH_CMD/);
 });

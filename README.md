@@ -128,6 +128,14 @@ Clawd 是由 [crab-assets.js](crab-assets.js) 与 [mascot-core.js](mascot-core.j
 > - **macOS**：推荐使用安装器生成的 `Antigravity (AGY Claude Style).app`、`launch-antigravity.command`，或在脚本模式运行 `npm run managed` / `./launch.sh --relaunch`（自动附加 `--remote-debugging-port=0` 启动或温和重启，并拉起随宿主退出 watcher）。也可手动 `open -a Antigravity --args --remote-debugging-port=0`。
 > - **Windows**：推荐使用安装器创建的桌面 / 开始菜单「`Antigravity (AGY Claude Style)`」快捷方式（`Antigravity (AGY Claude Style).lnk`），或在脚本模式运行 `npm run managed` / `launch.bat --relaunch`（自动附加 `--remote-debugging-port=0` 启动或温和重启，并拉起随宿主退出 watcher）。
 > - **默认自动接管**：默认启用 `"autoRelaunchWithCdp": true`，在**托管一键启动**（原生快捷方式 / `.app` / `.command` / `npm run managed`）与**常驻守护**模式下，检测到 Antigravity 已运行但未开启 CDP（且未携带 `--remote-debugging-port` 启动参数）时都会自动温和重启一次并附加调试参数；如需关闭可在 `config.json` 中设为 `false`。
+
+> [!TIP]
+> **Windows 非 TUN / 进程级代理环境使用提示**（对 TUN 或直连用户零影响）：
+> - **方式 A（推荐 · 控制室内置独立代理）**：直接在右侧 `Claude Studio / Claude Style` 控制室面板开启「独立代理」，插件重启时会自动注入 `--proxy-server`、`HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY`、`GODEBUG=http2client=0` 与 `NODE_USE_ENV_PROXY=1`。
+> - **方式 B（外部进程级代理启动器，如 `antigravity-proxy-fix` / `Antigravity-Proxy.cmd`）**：
+>   - 建议在启动脚本中添加 `set NODE_USE_ENV_PROXY=1` 与 `set NO_PROXY=localhost,127.0.0.1,::1`（让 Node 原生 `fetch()` 同样走代理且本地 CDP 直连），并在启动 `Antigravity.exe` 时附带 `%*` 以透传 `--remote-debugging-port=0`；
+>   - 插件执行带调试端口重启时会自动保留现有进程上的 `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` / `NODE_USE_ENV_PROXY` 等变量；
+>   - 如希望「带调试端口重启」或托管启动器始终通过你的自定义代理脚本拉起，可设置环境变量 `AGY_CLAUDE_STYLE_LAUNCH_CMD` 指向该脚本路径（支持 `.exe` / `.cmd` / `.bat` / `.ps1`）。
 - **Node.js >= 22**（仅脚本模式、测试与从源码构建安装器需要）：项目零第三方 npm 依赖，直接使用 Node.js 内置的 `fetch`、`WebSocket` 与 `node:test`。
 - **.NET Framework 4.x (`csc.exe`)**（仅在 Windows 上从源码构建独立安装包时需要，Windows 10/11 系统默认自带）。
 - **Xcode Command Line Tools (`swiftc`)**（仅在 macOS 上从源码构建 `.app` / `.dmg` 时需要，macOS 安装命令行工具后自带）。
