@@ -1,12 +1,13 @@
 // Opt-in TUN-free standalone proxy validator, connectivity tester, runtime detector, and launch builder.
 // Never touches system proxy settings or signed Antigravity app bundles.
 import { execFileSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import net from 'node:net';
 
 export const DEFAULT_PROXY_BYPASS = 'localhost,127.0.0.1,::1';
 const ALLOWED_PROTOCOLS = new Set(['http:', 'https:', 'socks5:', 'socks5h:']);
 const UNSAFE_CHARS = /[\x00-\x1f\x7f\s'"`\\;$|&<>]/;
-const UNSAFE_BYPASS_CHARS = /[\x00-\x1f\x7f'"`\\$|&<>]/;
+const UNSAFE_BYPASS_CHARS = /[\x00-\x1f\x7f'"`\\$|&<>%^!]/;
 const REQUIRED_LOOPBACK = ['localhost', '127.0.0.1', '::1'];
 
 export function normalizeProxyUrl(raw = '') {
@@ -56,12 +57,13 @@ export function normalizeBypassList(raw = DEFAULT_PROXY_BYPASS) {
 }
 
 export function maskProxyUrl(raw = '') {
-  const normalized = normalizeProxyUrl(raw);
-  if (!normalized) return String(raw || '').trim();
+  const rawStr = String(raw || '').trim();
+  const normalized = normalizeProxyUrl(rawStr);
+  if (!normalized) return rawStr.replace(/:\/\/[^/@\s]+@/g, '://***@');
   try {
     const parsed = new URL(normalized);
     if (!parsed.username && !parsed.password) return normalized;
-    const host = parsed.hostname.includes(':') ? `[${parsed.hostname}]` : parsed.hostname;
+    const host = parsed.hostname.includes(':') && !parsed.hostname.startsWith('[') ? `[${parsed.hostname}]` : parsed.hostname;
     const port = parsed.port ? `:${parsed.port}` : '';
     return `${parsed.protocol}//***@${host}${port}`;
   } catch {
@@ -164,6 +166,7 @@ export function detectHostProxyRuntime(
     platform = process.platform,
     execFileSyncFn = execFileSync,
     env = process.env,
+    readProcEnvFn = null,
   } = {}
 ) {
   const configuredUrl = proxyEnabled ? normalizeProxyUrl(proxyUrl) || '' : '';
@@ -177,7 +180,7 @@ export function detectHostProxyRuntime(
   try {
     if (platform === 'darwin' || platform === 'linux') {
       const psOut = String(
-        execFileSyncFn('ps', ['-axo', 'pid=,ppid=,command='], {
+        execFileSyncFn('ps', ['-ww', '-axo', 'pid=,ppid=,command='], {
           encoding: 'utf8',
           timeout: 1500,
           stdio: ['ignore', 'pipe', 'ignore'],
@@ -189,12 +192,14 @@ export function detectHostProxyRuntime(
           : /(?:^|\/)antigravity(?:\s|$)/i;
       const lines = psOut.split('\n');
       for (const line of lines) {
-        if (!mainRegex.test(line) || /--type=/.test(line)) continue;
         const m = line.trim().match(/^(\d+)\s+\d+\s+(.+)$/);
         if (!m) continue;
+        const cmd = m[2];
+        if (!mainRegex.test(cmd) || /--type=|sidecar_sdk|\s-e\s|\s--eval\b/i.test(cmd)) continue;
+        if (platform === 'linux' && !/^\S*(?:^|\/)antigravity(?:\s|$)/i.test(cmd)) continue;
         hostPid = Number(m[1]);
         inspected = true;
-        const parsed = parseHostProxyFromCommandLine(m[2]);
+        const parsed = parseHostProxyFromCommandLine(cmd);
         activeProxyUrl = parsed.activeProxyUrl;
         activeBypass = parsed.activeBypass;
         if (parsed.hasHttp2Disabled) forceHttp1Active = true;
@@ -210,6 +215,15 @@ export function detectHostProxyRuntime(
             }) || ''
           );
           if (/GODEBUG=[^\s]*http2client=0/i.test(envOut)) forceHttp1Active = true;
+        } catch {}
+      } else if (platform === 'linux' && hostPid && proxyForceHttp1 && !forceHttp1Active) {
+        try {
+          const procEnvRaw = typeof readProcEnvFn === 'function'
+            ? readProcEnvFn(hostPid)
+            : readFileSync(`/proc/${hostPid}/environ`, 'utf8');
+          if (/GODEBUG=[^\x00]*http2client=0/i.test(String(procEnvRaw || ''))) {
+            forceHttp1Active = true;
+          }
         } catch {}
       }
       if (!inspected && env) {

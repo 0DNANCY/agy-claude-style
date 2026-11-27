@@ -25,22 +25,22 @@
     const hasMeta = Boolean(ev.metaKey);
     const hasCtrl = Boolean(ev.ctrlKey);
     const hasAlt = Boolean(ev.altKey);
-    const hasShift = Boolean(ev.shiftKey);
 
     // Explicit Quit or Reload shortcuts must always pass through unobstructed
     if (isMac && hasMeta && !hasCtrl && !hasAlt && (key === 'q' || code === 'keyq')) return 'allow-unload';
+    if (!isMac && hasCtrl && !hasMeta && !hasAlt && (key === 'q' || code === 'keyq')) return 'allow-unload';
     if (!isMac && hasAlt && !hasCtrl && !hasMeta && (key === 'f4' || code === 'f4')) return 'allow-unload';
     if (isMac && hasMeta && !hasCtrl && !hasAlt && (key === 'r' || code === 'keyr')) return 'allow-unload';
     if (!isMac && hasCtrl && !hasMeta && !hasAlt && (key === 'r' || code === 'keyr')) return 'allow-unload';
     if (key === 'f5' || code === 'f5') return 'allow-unload';
 
     // Never intercept Cmd+W / Ctrl+W: let Antigravity close active editor/extension tabs natively.
-    // Only actual BrowserWindow close events (beforeunload / electronNative.close) are intercepted.
     return 'none';
   }
 
-  function shouldInterceptBeforeUnload({ enabled, nowMs, allowRealUnloadUntil, isHidden }) {
+  function shouldInterceptBeforeUnload({ enabled, nowMs, allowRealUnloadUntil, isHidden, canHide = true, wrappedNativeClose = false }) {
     if (enabled === false) return false;
+    if (!canHide || wrappedNativeClose) return false;
     if (nowMs < allowRealUnloadUntil) return false;
     // When window is already hidden (e.g. user clicked Quit from Dock icon), allow clean quit
     if (isHidden) return false;
@@ -53,6 +53,7 @@
     let lastHideAt = 0;
     let origNativeClose = null;
     let wrappedNativeClose = false;
+    let fallbackTimer = null;
 
     function isEnabled() {
       const cfg = ctx.getCfg ? ctx.getCfg() : {};
@@ -67,7 +68,16 @@
       }
     }
 
+    function canHideCurrentHost() {
+      const cfg = ctx.getCfg ? ctx.getCfg() : {};
+      const bindingName = cfg.binding || '__agClaudeStyleSetting';
+      const hasBinding = typeof window !== 'undefined' && typeof window[bindingName] === 'function';
+      const hasMinimize = typeof window !== 'undefined' && typeof window.electronNative?.minimize === 'function';
+      return isMac ? hasBinding || hasMinimize : hasMinimize;
+    }
+
     function hideToBackground() {
+      if (ctx.isDestroyed && ctx.isDestroyed()) return false;
       const now = Date.now();
       if (now - lastHideAt < 350) return true;
       lastHideAt = now;
@@ -78,8 +88,10 @@
       if (isMac && typeof send === 'function') {
         try {
           send(JSON.stringify({ key: '__windowAction', value: 'hide' }));
-          // Self-healing fallback: if an older watcher without __windowAction is attached, minimize after 220ms
-          setTimeout(() => {
+          if (fallbackTimer) clearTimeout(fallbackTimer);
+          fallbackTimer = setTimeout(() => {
+            fallbackTimer = null;
+            if (ctx.isDestroyed && ctx.isDestroyed()) return;
             try {
               if (typeof document !== 'undefined' && !document.hidden && typeof window.electronNative?.minimize === 'function') {
                 window.electronNative.minimize();
@@ -122,12 +134,12 @@
           nowMs: Date.now(),
           allowRealUnloadUntil,
           isHidden: Boolean(typeof document !== 'undefined' && document.hidden),
+          canHide: canHideCurrentHost(),
+          wrappedNativeClose,
         })
       ) {
         return;
       }
-      // In Electron BrowserWindow, preventing default + setting returnValue=false
-      // cancels window destruction so we can hide to background instead of reloading later.
       try {
         ev.preventDefault();
       } catch {}
@@ -147,13 +159,22 @@
         if (!nativeObj || typeof nativeObj.close !== 'function') return;
         const desc = Object.getOwnPropertyDescriptor(nativeObj, 'close');
         if (desc && desc.writable === false && desc.configurable === false) return;
-        origNativeClose = nativeObj.close;
-        nativeObj.close = function agCsHideOnCloseWrapper(...args) {
-          if (isEnabled() && Date.now() >= allowRealUnloadUntil && !(typeof document !== 'undefined' && document.hidden)) {
-            return hideToBackground();
+        const curClose = nativeObj.close;
+        origNativeClose = typeof curClose.__agCsHideOrig === 'function' ? curClose.__agCsHideOrig : curClose;
+        const wrapped = function agCsHideOnCloseWrapper(...args) {
+          if (
+            (!ctx.isDestroyed || !ctx.isDestroyed()) &&
+            isEnabled() &&
+            Date.now() >= allowRealUnloadUntil &&
+            !(typeof document !== 'undefined' && document.hidden)
+          ) {
+            hideToBackground();
+            return Promise.resolve();
           }
           return origNativeClose.apply(this, args);
         };
+        wrapped.__agCsHideOrig = origNativeClose;
+        nativeObj.close = wrapped;
         wrappedNativeClose = true;
       } catch {}
     }
@@ -165,12 +186,17 @@
     }
 
     function destroy() {
+      if (fallbackTimer) {
+        clearTimeout(fallbackTimer);
+        fallbackTimer = null;
+      }
       if (typeof window !== 'undefined') {
         window.removeEventListener('keydown', handleKeyDown, true);
         window.removeEventListener('beforeunload', handleBeforeUnload, true);
-        if (wrappedNativeClose && origNativeClose && window.electronNative) {
+        if (window.electronNative && typeof window.electronNative.close === 'function') {
           try {
-            window.electronNative.close = origNativeClose;
+            const orig = origNativeClose || window.electronNative.close.__agCsHideOrig;
+            if (orig) window.electronNative.close = orig;
           } catch {}
         }
       }
@@ -179,7 +205,9 @@
     }
 
     return {
-      sync() {},
+      sync() {
+        maybeWrapNativeClose();
+      },
       destroy,
     };
   }

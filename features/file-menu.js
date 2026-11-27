@@ -20,9 +20,11 @@
   function decodeFileUri(rawUri) {
     const s = String(rawUri || '').trim();
     if (!s) return '';
-    if (!/^file:\/\//i.test(s)) return s.split('#')[0];
-    const clean = s.split('#')[0].split('?')[0];
+    const LINE_COL_ANCHOR_RE = /#L\d+(?:[-–]L?\d+)?(?::C?\d+)?$/i;
+    if (!/^file:\/\//i.test(s)) return s.replace(LINE_COL_ANCHOR_RE, '').split('?')[0];
+    const clean = s.replace(LINE_COL_ANCHOR_RE, '').split('?')[0];
     let p = clean.replace(/^file:\/\//i, '');
+    if (/^localhost\//i.test(p)) p = p.slice('localhost'.length);
     try {
       p = decodeURIComponent(p);
     } catch {}
@@ -249,20 +251,23 @@
   async function extractImagePayload(img) {
     const src = String(img?.currentSrc || img?.getAttribute?.('src') || img?.src || '').trim();
     if (!src) throw new Error('未找到图片来源');
-    const dataMatch = /^data:([^;,]+)?(;base64)?,([\s\S]*)$/i.exec(src);
+    const dataMatch = /^data:([^;,]+)?((?:;[^,;]+)*),([\s\S]*)$/i.exec(src);
     if (dataMatch) {
-      const declared = dataMatch[1] || 'image/png';
-      let bytes;
-      if (dataMatch[2]) {
-        const raw = atob(dataMatch[3].replace(/\s+/g, ''));
-        bytes = new Uint8Array(raw.length);
-        for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
-      } else {
-        bytes = new TextEncoder().encode(decodeURIComponent(dataMatch[3]));
-      }
-      const mimeType = detectImageMime(bytes, declared);
-      const blob = typeof Blob === 'function' ? new Blob([bytes], { type: mimeType }) : null;
-      return { bytes, blob, mimeType, name: imageFilename(img, mimeType) };
+      try {
+        const declared = dataMatch[1] || 'image/png';
+        const isBase64 = /;base64(?:$|;)/i.test(dataMatch[2] || '');
+        let bytes;
+        if (isBase64) {
+          const raw = atob(dataMatch[3].replace(/\s+/g, ''));
+          bytes = new Uint8Array(raw.length);
+          for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+        } else {
+          bytes = new TextEncoder().encode(decodeURIComponent(dataMatch[3]));
+        }
+        const mimeType = detectImageMime(bytes, declared);
+        const blob = typeof Blob === 'function' ? new Blob([bytes], { type: mimeType }) : null;
+        return { bytes, blob, mimeType, name: imageFilename(img, mimeType) };
+      } catch {}
     }
     try {
       const resp = await fetch(src);
@@ -334,18 +339,41 @@
     return `<svg ${s}><path d="M8.5 7L3.5 12l5 5M15.5 7l5 5-5 5M13.5 5l-3 14" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
   }
 
+  function findMainComposerEditor() {
+    const boxes = Array.from(document.querySelectorAll('[data-testid="agent-input-box"]'));
+    const mainBox = boxes.find((b) => !b.closest('[data-testid="subagent-tab-conversation"]')) || boxes[0] || null;
+    const scoped = mainBox ? mainBox.querySelector('[contenteditable="true"]') : null;
+    if (scoped) return scoped;
+    const eds = Array.from(document.querySelectorAll(COMPOSER_EDITOR_SEL));
+    return eds.find((ed) => !ed.closest('[data-testid="subagent-tab-conversation"]')) || eds[0] || null;
+  }
+
+  function isLexicalEditor(ed) {
+    if (!ed) return false;
+    if (ed.getAttribute?.('data-lexical-editor') === 'true') return true;
+    try {
+      return Object.keys(ed).some((k) => k.startsWith('__lexical'));
+    } catch {
+      return false;
+    }
+  }
+
   function insertRefIntoComposer(localPath) {
-    const editor = document.querySelector(COMPOSER_EDITOR_SEL);
+    const editor = findMainComposerEditor();
     if (!editor) return false;
     const refText = /\s/.test(localPath) ? `"${localPath}" ` : `${localPath} `;
     try {
       editor.focus?.();
+      let inserted = false;
       if (typeof document.execCommand === 'function') {
-        document.execCommand('insertText', false, refText);
-      } else {
+        inserted = Boolean(document.execCommand('insertText', false, refText));
+      }
+      if (!inserted) {
         editor.textContent = (editor.textContent || '') + refText;
       }
-      editor.dispatchEvent(new Event('input', { bubbles: true }));
+      if (!inserted || !isLexicalEditor(editor)) {
+        editor.dispatchEvent(new Event('input', { bubbles: true }));
+      }
       return true;
     } catch {
       return false;
@@ -353,7 +381,7 @@
   }
 
   function attachMediaFileToComposer(file) {
-    const editor = document.querySelector(COMPOSER_EDITOR_SEL);
+    const editor = findMainComposerEditor();
     if (!editor || !file || typeof DataTransfer !== 'function') return false;
     try {
       editor.focus?.();
@@ -379,6 +407,8 @@
       toast.setAttribute('data-ag-no-i18n', '');
       document.body?.appendChild(toast);
     }
+    toast.onmouseenter = null;
+    toast.onmouseleave = null;
     toast.textContent = msg;
     toast.classList.toggle('is-err', Boolean(isErr));
     toast.classList.add('is-show');
@@ -394,6 +424,7 @@
     let subCloseTimer = null;
     let openWithAppsCache = null;
     let reqSeq = 0;
+    let menuEpoch = 0;
     const pendingReqs = new Map();
 
     if (typeof window !== 'undefined') {
@@ -423,6 +454,7 @@
     }
 
     function closeMenu() {
+      menuEpoch++;
       closeSubmenu();
       if (menuEl) {
         menuEl.remove();
@@ -469,6 +501,13 @@
     }
 
     function localizeAppLabel(app) {
+      const lang = String(ctx.getCfg ? ctx.getCfg().language : 'zh-CN');
+      const isZh = lang.startsWith('zh') || lang === 'yue';
+      const ui = ctx.getUi ? ctx.getUi() : {};
+      if (!isZh) {
+        if (app.id === 'default') return ui.fileMenuDefaultApp || 'Default app';
+        return app.label;
+      }
       if (app.id === 'default') return '默认应用';
       if (app.id === 'explorer') {
         return app.label === 'Finder' ? '访达' : app.label === 'File Explorer' ? '文件资源管理器' : '文件管理器';
@@ -479,6 +518,7 @@
 
     function openMenu({ x, y, uri }) {
       closeMenu();
+      const epoch = menuEpoch;
       const ui = ctx.getUi ? ctx.getUi() : {};
       const localPath = decodeFileUri(uri);
       const menu = document.createElement('div');
@@ -573,6 +613,7 @@
           if (res?.ok !== false && list.length > 0) {
             openWithAppsCache = list;
           }
+          if (epoch !== menuEpoch || !menu.isConnected) return;
           appsState = list.length > 0 ? list : [{ id: 'default', label: 'Default app', kind: 'system', icon: 'default' }];
           if (subMenuEl) renderSubmenuContent(subMenuEl);
         });
@@ -622,10 +663,18 @@
           label: ui.fileMenuCopyPath || '复制路径',
           run: async () => {
             try {
-              await navigator.clipboard.writeText(localPath);
+              if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+                await navigator.clipboard.writeText(localPath);
+              } else if (!execCopy(localPath)) {
+                throw new Error('copy failed');
+              }
               showToast(ui.fileMenuCopiedPath || '已复制路径');
             } catch {
-              showToast(ui.fileMenuCopyFailed || '复制路径失败', true);
+              if (execCopy(localPath)) {
+                showToast(ui.fileMenuCopiedPath || '已复制路径');
+              } else {
+                showToast(ui.fileMenuCopyFailed || '复制路径失败', true);
+              }
             }
           },
         },
@@ -636,10 +685,19 @@
         btn.type = 'button';
         btn.className = 'ag-cs-file-menu-item';
         btn.setAttribute('data-file-action', item.id);
-        btn.innerHTML = item.hasSubmenu
-          ? `<span class="ag-cs-file-menu-ic">${item.icon}</span><span class="ag-cs-file-menu-label">${item.label}</span><span class="ag-cs-file-menu-chev">▸</span>`
-          : `<span class="ag-cs-file-menu-ic">${item.icon}</span><span class="ag-cs-file-menu-label">${item.label}</span>`;
+        const icEl = document.createElement('span');
+        icEl.className = 'ag-cs-file-menu-ic';
+        icEl.textContent = item.icon;
+        const lblEl = document.createElement('span');
+        lblEl.className = 'ag-cs-file-menu-label';
+        lblEl.textContent = item.label;
+        btn.appendChild(icEl);
+        btn.appendChild(lblEl);
         if (item.hasSubmenu) {
+          const chevEl = document.createElement('span');
+          chevEl.className = 'ag-cs-file-menu-chev';
+          chevEl.textContent = '▸';
+          btn.appendChild(chevEl);
           openWithRowBtn = btn;
           btn.addEventListener('mouseenter', () => showSubmenu());
           btn.addEventListener('mouseleave', () => scheduleCloseSubmenu());
@@ -752,7 +810,14 @@
         btn.type = 'button';
         btn.className = 'ag-cs-file-menu-item';
         btn.setAttribute('data-file-action', item.id);
-        btn.innerHTML = `<span class="ag-cs-file-menu-ic">${item.icon}</span><span class="ag-cs-file-menu-label">${item.label}</span>`;
+        const icEl = document.createElement('span');
+        icEl.className = 'ag-cs-file-menu-ic';
+        icEl.textContent = item.icon;
+        const lblEl = document.createElement('span');
+        lblEl.className = 'ag-cs-file-menu-label';
+        lblEl.textContent = item.label;
+        btn.appendChild(icEl);
+        btn.appendChild(lblEl);
         btn.addEventListener('click', (ev) => {
           ev.stopPropagation();
           closeMenu();
@@ -775,6 +840,7 @@
     }
 
     function attachOpenWithSubmenu(openWithBtn, uri) {
+      const epoch = menuEpoch;
       const ui = ctx.getUi ? ctx.getUi() : {};
       let appsState = openWithAppsCache;
 
@@ -824,6 +890,7 @@
       }
 
       function showSubmenu() {
+        if (epoch !== menuEpoch || !openWithBtn.isConnected) return;
         clearTimeout(subCloseTimer);
         const rect = openWithBtn.getBoundingClientRect?.();
         if (!subMenuEl) {
@@ -860,6 +927,7 @@
           if (res?.ok !== false && list.length > 0) {
             openWithAppsCache = list;
           }
+          if (epoch !== menuEpoch || !openWithBtn.isConnected) return;
           appsState = list.length > 0 ? list : [{ id: 'default', label: 'Default app', kind: 'system', icon: 'default' }];
           if (subMenuEl) renderSubmenuContent(subMenuEl);
         });
@@ -931,10 +999,18 @@
           label: ui.fileMenuCopyPath || '复制路径',
           run: async () => {
             try {
-              await navigator.clipboard.writeText(info.localPath);
+              if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+                await navigator.clipboard.writeText(info.localPath);
+              } else if (!execCopy(info.localPath)) {
+                throw new Error('copy failed');
+              }
               showToast(ui.fileMenuCopiedPath || '已复制路径');
             } catch {
-              showToast(ui.fileMenuCopyFailed || '复制路径失败', true);
+              if (execCopy(info.localPath)) {
+                showToast(ui.fileMenuCopiedPath || '已复制路径');
+              } else {
+                showToast(ui.fileMenuCopyFailed || '复制路径失败', true);
+              }
             }
           },
         });
@@ -966,10 +1042,19 @@
         btn.className = 'ag-cs-file-menu-item' + (item.danger ? ' is-danger' : '');
         btn.setAttribute('data-file-action', item.id);
         if (item.disabled) btn.disabled = true;
-        btn.innerHTML = item.hasSubmenu
-          ? `<span class="ag-cs-file-menu-ic">${item.icon}</span><span class="ag-cs-file-menu-label">${item.label}</span><span class="ag-cs-file-menu-chev">▸</span>`
-          : `<span class="ag-cs-file-menu-ic">${item.icon}</span><span class="ag-cs-file-menu-label">${item.label}</span>`;
+        const icEl = document.createElement('span');
+        icEl.className = 'ag-cs-file-menu-ic';
+        icEl.textContent = item.icon;
+        const lblEl = document.createElement('span');
+        lblEl.className = 'ag-cs-file-menu-label';
+        lblEl.textContent = item.label;
+        btn.appendChild(icEl);
+        btn.appendChild(lblEl);
         if (item.hasSubmenu) {
+          const chevEl = document.createElement('span');
+          chevEl.className = 'ag-cs-file-menu-chev';
+          chevEl.textContent = '▸';
+          btn.appendChild(chevEl);
           attachOpenWithSubmenu(btn, info.uri);
         } else {
           btn.addEventListener('mouseenter', () => closeSubmenu());
@@ -1033,8 +1118,22 @@
       destroy() {
         closeMenu();
         document.removeEventListener('contextmenu', onContextMenu, true);
-        for (const entry of pendingReqs.values()) clearTimeout(entry.timer);
+        for (const entry of pendingReqs.values()) {
+          clearTimeout(entry.timer);
+          try { entry.resolve({ ok: false, error: 'destroyed' }); } catch {}
+        }
         pendingReqs.clear();
+        if (typeof window !== 'undefined' && '__agCsFileActionReply' in window) {
+          try { delete window.__agCsFileActionReply; } catch { window.__agCsFileActionReply = undefined; }
+        }
+        if (typeof document !== 'undefined') {
+          try {
+            document.querySelectorAll('.ag-cs-action-toast, .ag-cs-file-submenu').forEach((el) => {
+              if (el._t) clearTimeout(el._t);
+              el.remove();
+            });
+          } catch {}
+        }
       },
     };
   }

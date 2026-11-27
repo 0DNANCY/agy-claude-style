@@ -1151,9 +1151,12 @@
       for (let idx = 0; idx < steps.length; idx++) {
         const st = steps[idx];
         if (!st) continue;
+        const canUpdateCtx = !appliedCompactionEstimate || (compactionLastStepArrIdx >= 0 && idx > compactionLastStepArrIdx);
         if (st.step?.case === 'checkpoint') {
-          activeContextUsed = 0;
-          lastContextStepIdx = idx;
+          if (canUpdateCtx) {
+            activeContextUsed = 0;
+            lastContextStepIdx = idx;
+          }
           continue;
         }
         const md = st.metadata || st.step?.value?.metadata || {};
@@ -1216,10 +1219,15 @@
 
         const callCacheHitPct = callPromptTokens > 0 ? (cr / callPromptTokens) * 100 : 0;
         const callCtxUsed = callPromptTokens > 0 ? callPromptTokens + resp : 0;
-        if (callCtxUsed > 0) {
+        if (callCtxUsed > 0 && canUpdateCtx) {
           activeContextUsed = callCtxUsed;
           lastContextStepIdx = idx;
         }
+
+        const sVal = st?.step?.value;
+        const hasVisibleResp = st?.step?.case === 'plannerResponse' && typeof sVal?.response === 'string' && sVal.response.trim().length > 0;
+        const hasToolCalls = st?.step?.case === 'plannerResponse' && Array.isArray(sVal?.toolCalls) && sVal.toolCalls.length > 0;
+        const toolOnlyCall = Boolean(hasToolCalls && !hasVisibleResp);
 
         const realIdx = stepRealIndices[idx];
         const gmEntry = gmByStepIdx.get(realIdx);
@@ -1243,6 +1251,8 @@
           ttft,
           stream,
           speed,
+          speedMode: speedCalc.mode,
+          toolOnly: toolOnlyCall,
           retries: Array.isArray(md.retryInfos) ? md.retryInfos.length : 0,
         };
         callList.push(callObj);
@@ -2334,7 +2344,7 @@
 
     if (preferred && preferred.buckets.length > 0) {
       const b5h = preferred.buckets.find((b) => b.window === '5h') || null;
-      const bWeek = preferred.buckets.find((b) => b.window === 'weekly') || preferred.buckets[0] || null;
+      const bWeek = preferred.buckets.find((b) => b.window === 'weekly') || preferred.buckets.find((b) => b !== b5h) || null;
       const enabledPcts = preferred.buckets
         .filter((b) => !b.disabled && typeof b.remainingPct === 'number')
         .map((b) => b.remainingPct);
@@ -2393,7 +2403,7 @@
   function classifyCallRates(calls = []) {
     const profiles = new Map();
     for (const c of calls) {
-      if (!c) continue;
+      if (!c || c.speedMode === 'buffered') continue;
       const dur = Number(c.stream) || 0;
       const out = Number(c.outputTokens) || 0;
       const spd = Number(c.speed) || 0;
@@ -2445,7 +2455,10 @@
       }
 
       let status = 'missing';
-      if (reasons.length === 0) {
+      if (c.speedMode === 'buffered') {
+        if (!reasons.includes('buffered')) reasons.push('buffered');
+        status = 'buffered';
+      } else if (reasons.length === 0) {
         status = out > 0 && dur > 0 && spd > 0 ? 'ok' : 'missing';
       } else if (reasons.includes('nonfinite-rate')) {
         status = 'unreliable';
@@ -2465,7 +2478,7 @@
         qualifiedStreamSec += dur;
         latestQualifiedSpeed = spd;
         if (spd > peakSpeed) peakSpeed = spd;
-        if (ttft >= 0) {
+        if (ttft > 0) {
           e2eOutputTokens += out;
           e2eDurationSec += ttft + dur;
         }
@@ -2522,7 +2535,7 @@
     const b5h = quotaInfo.b5h && !quotaInfo.b5h.disabled && typeof quotaInfo.b5h.remainingPct === 'number'
       ? quotaInfo.b5h
       : null;
-    const bWeek = quotaInfo.bWeek && typeof quotaInfo.bWeek.remainingPct === 'number'
+    const bWeek = quotaInfo.bWeek && !quotaInfo.bWeek.disabled && typeof quotaInfo.bWeek.remainingPct === 'number'
       ? quotaInfo.bWeek
       : null;
     const fallback = typeof quotaInfo.effectiveRemainingPct === 'number' ? quotaInfo.effectiveRemainingPct : null;

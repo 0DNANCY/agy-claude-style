@@ -128,10 +128,19 @@ export class SidecarOwner {
     const gen = this.generation;
     const checking = (async () => {
       let owned = false;
-      try {
-        const cur = await this.read();
-        owned = Boolean(isValidRecord(cur) && cur.pid === this.pid && cur.token === this.token);
-      } catch {}
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          const cur = await this.read();
+          owned = Boolean(isValidRecord(cur) && cur.pid === this.pid && cur.token === this.token);
+          break;
+        } catch (err) {
+          const code = String(err?.code || '');
+          const retryable = err instanceof SyntaxError || code === 'EBUSY' || code === 'EACCES' || code === 'EPERM' || code === 'ENOENT';
+          if (!retryable || attempt === 2) break;
+          await new Promise((r) => setTimeout(r, 25));
+          if (!this.running || gen !== this.generation) return false;
+        }
+      }
       if (!this.running || gen !== this.generation) return false;
       this.owned = owned;
       return owned;

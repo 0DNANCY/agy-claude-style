@@ -64,7 +64,8 @@
         hudCompact: ['HUD 紧凑显示模式', '缩小环绕 HUD 与底栏胶囊内边距，节省垂直空间'],
         // 4. 效率增强与扩展 (PR #19 additions)
         taskProgressCard: ['任务进度浮窗', '实时阶段环、等待计时、工具时间轴与子智能体展开'],
-        stageCollapse: ['阶段汇报与自动折叠', '在原生对话中开启简短阶段汇报，整轮结束后自动折叠进原生用时栏并内联展示步骤计数'],
+        stageCollapse: ['阶段汇报与自动折叠', '在原生对话中开启阶段自动折叠，整轮结束后自动收拢进原生用时栏并内联展示步骤计数'],
+        stagePromptInjection: ['阶段汇报提示词注入', '向模型追加英文阶段汇报指令（仅当开启「阶段自动折叠」时生效，默认关闭，开启会微幅增加系统提示词上下文）'],
         windowUnreadTitle: ['窗口标题未读数提醒', '后台会话完成回复或等待权限审批时在窗口标题显示未读角标'],
         branchSession: ['原生分支会话', '在 AI 回复操作栏添加分支按钮，保留上下文分叉'],
         messageEdit: ['原位消息编辑', '在已发消息操作栏添加编辑按钮，原位修改重发'],
@@ -146,7 +147,8 @@
         hudFooterChip: ['Footer Remaining Chip', 'Show remaining context/quota chip in composer footer'],
         hudCompact: ['Compact HUD Mode', 'Use compact padding and condensed typography for Token HUD'],
         taskProgressCard: ['Task Progress Panel', 'Live phase ring, wait timer, tool timeline & subagents'],
-        stageCollapse: ['Stage Updates & Auto-Collapse', 'Enable concise native stage updates and auto-fold completed steps into the native duration header'],
+        stageCollapse: ['Stage Updates & Auto-Collapse', 'Auto-fold completed execution steps into the native duration header with inline step counts'],
+        stagePromptInjection: ['Stage Update Prompt Injection', 'Append concise agy_cs_stage_updates prompt instructions when Stage Collapse is enabled (default OFF)'],
         windowUnreadTitle: ['Window Title Unread Badge', 'Show unread count in window title when background chats finish or await approval'],
         branchSession: ['Session Branching', 'Add Branch icon in native action bar to fork conversation'],
         messageEdit: ['In-Place Message Edit', 'Add Edit icon on sent prompts to edit inline & resend'],
@@ -203,7 +205,7 @@
       icon: '⚡',
       titleKey: 'grpPowertools',
       defaultOpen: true,
-      keys: ['taskProgressCard', 'stageCollapse', 'windowUnreadTitle', 'branchSession', 'messageEdit', 'fileContextMenu', 'rewindPanel', 'undoConfirmMode', 'headerExtensionsBar', 'sidebarExtensionsSection', 'hideOnClose', 'autoRelaunchWithCdp'],
+      keys: ['taskProgressCard', 'stageCollapse', 'stagePromptInjection', 'windowUnreadTitle', 'branchSession', 'messageEdit', 'fileContextMenu', 'rewindPanel', 'undoConfirmMode', 'headerExtensionsBar', 'sidebarExtensionsSection', 'hideOnClose', 'autoRelaunchWithCdp'],
     },
   ];
 
@@ -212,6 +214,7 @@
     placeholderStyle: { dim: (cfg) => !cfg.composerRestyle },
     effortAccent: { badgeKey: 'badgeClaude', dim: (cfg) => (cfg.effortSliderStyle || 'claude') !== 'claude' },
     performanceBackdrop: { badgeKey: 'badgeLwf', dim: (cfg) => cfg.effortSliderStyle !== 'liangwufeng' },
+    stagePromptInjection: { dim: (cfg) => cfg.stageCollapse === false },
     undoConfirmMode: { dim: (cfg) => cfg.rewindPanel === false },
     quotaCycleMode: { dim: (cfg) => (cfg.ringMode || 'context') === 'context' && !(cfg.hudRimProgress === true && cfg.hudRimSource === 'quota') },
     hudRimSource: { dim: (cfg) => !cfg.hudRimProgress },
@@ -330,7 +333,7 @@
           : cdp.port
           ? t.waitingPort
           : t.disconnected;
-        document.getElementById('meta-line').textContent = t.metaLine(lastStatus.version || '2.1.0', Boolean(lastStatus.watcher?.alive));
+        document.getElementById('meta-line').textContent = t.metaLine(lastStatus.version || '2.2.0', Boolean(lastStatus.watcher?.alive));
         document.getElementById('cdp-banner').classList.toggle('show', !isConnected);
         if (!isConnected) {
           const guard = lastStatus.relaunchGuard || null;
@@ -474,9 +477,10 @@
           details.addEventListener('toggle', () => {
             if (!q) hudDetailsOpen = details.open;
           });
-          const enabledHud = visibleHudKeys.filter((k) => isSwitchChecked(k, cfg)).length;
+          const toggleHudKeys = visibleHudKeys.filter((k) => !t.options[k]);
+          const enabledHud = toggleHudKeys.filter((k) => isSwitchChecked(k, cfg)).length;
           const summary = document.createElement('summary');
-          summary.innerHTML = `<span>${t.hudDetailsLabel}</span><span class="section-badge">${enabledHud}/${visibleHudKeys.length}</span>`;
+          summary.innerHTML = `<span>${t.hudDetailsLabel}</span><span class="section-badge">${enabledHud}/${toggleHudKeys.length}</span>`;
           details.appendChild(summary);
           const subList = document.createElement('div');
           subList.className = 'ctrl-subdetails-body';

@@ -129,11 +129,19 @@
   const DETENT = 0.8;
   const DRAG_THRESHOLD_PX = 3;
 
+  const CTX_WINDOW_SUFFIX_RE =
+    /\s*[·•]\s*(\d+(?:\.\d+)?\s*[kKmM](?:\s*(?:ctx|context|tokens?))?|standard|extended)\s*$/i;
+
   function stripContextWindowSuffix(label) {
     return String(label || '')
       .trim()
-      .replace(/\s*[·•]\s*(?:\d+(?:\.\d+)?\s*[kKmM](?:\s*(?:ctx|context|tokens?))?|standard|extended)\s*$/i, '')
+      .replace(CTX_WINDOW_SUFFIX_RE, '')
       .trim();
+  }
+
+  function extractContextWindowSuffix(label) {
+    const m = String(label || '').trim().match(CTX_WINDOW_SUFFIX_RE);
+    return m ? m[1].replace(/\s+/g, '').toLowerCase() : '';
   }
 
   function parseModelLabelEffort(label) {
@@ -166,14 +174,26 @@
     const normBadge = preferExtra ? 'xhigh' : rawBadge;
     const currentEffort = (EFFORT_BY_ID[normBadge] ? normBadge : '') || parsed.effort || 'high';
     const baseName = parsed.base || 'Model';
+    const targetCtx = extractContextWindowSuffix(selectedLabel);
 
     const optionByEffort = new Map();
     if (Array.isArray(modelOptions)) {
+      const matching = [];
       for (const opt of modelOptions) {
         if (!opt || opt.disabled) continue;
         const p = parseModelLabelEffort(opt.label);
-        if (p.effort && p.base.toLowerCase() === baseName.toLowerCase() && !optionByEffort.has(p.effort)) {
-          optionByEffort.set(p.effort, opt);
+        if (p.effort && p.base.toLowerCase() === baseName.toLowerCase()) {
+          matching.push({ effort: p.effort, opt, ctx: extractContextWindowSuffix(opt.label) });
+        }
+      }
+      for (const m of matching) {
+        if (m.ctx === targetCtx && !optionByEffort.has(m.effort)) {
+          optionByEffort.set(m.effort, m.opt);
+        }
+      }
+      for (const m of matching) {
+        if (!optionByEffort.has(m.effort)) {
+          optionByEffort.set(m.effort, m.opt);
         }
       }
     }

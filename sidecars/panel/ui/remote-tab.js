@@ -1,15 +1,34 @@
 // Tab 3: SSH Remote Telemetry & TUN-Free Proxy module for AGY Claude Style Aux Pane.
 (function (root) {
   root.AGYPanelRemote = function initRemoteTab(app) {
-    function syncForm(cfg) {
+    let lastSynced = { sshHost: '', proxyUrl: '', proxyBypass: 'localhost,127.0.0.1,::1' };
+    function syncForm(cfg, { force = false, preserveDirty = false } = {}) {
+      const paneEl = document.getElementById('pane-remote');
+      const hasFocus = Boolean(paneEl && document.activeElement && paneEl.contains(document.activeElement));
+      const inpSsh = document.getElementById('inp-ssh-host');
+      const inpProxy = document.getElementById('inp-proxy-url');
+      const inpBypass = document.getElementById('inp-proxy-bypass');
+
+      const nextSsh = cfg.sshHost || '';
+      const nextProxy = cfg.proxyUrl || '';
+      const nextBypass = cfg.proxyBypass || 'localhost,127.0.0.1,::1';
+
       document.getElementById('sw-ssh-enabled').checked = Boolean(cfg.sshRemoteStats);
-      document.getElementById('inp-ssh-host').value = cfg.sshHost || '';
+      if (force || !preserveDirty || (!hasFocus && inpSsh.value === lastSynced.sshHost)) {
+        inpSsh.value = nextSsh;
+        lastSynced.sshHost = nextSsh;
+      }
       document.getElementById('ssh-badge').textContent = cfg.sshRemoteStats ? '已开启' : '关闭';
 
       document.getElementById('sw-proxy-enabled').checked = Boolean(cfg.proxyEnabled);
-      document.getElementById('inp-proxy-url').value = cfg.proxyUrl || '';
-      const bypassEl = document.getElementById('inp-proxy-bypass');
-      if (bypassEl) bypassEl.value = cfg.proxyBypass || 'localhost,127.0.0.1,::1';
+      if (force || !preserveDirty || (!hasFocus && inpProxy.value === lastSynced.proxyUrl)) {
+        inpProxy.value = nextProxy;
+        lastSynced.proxyUrl = nextProxy;
+      }
+      if (inpBypass && (force || !preserveDirty || (!hasFocus && inpBypass.value === lastSynced.proxyBypass))) {
+        inpBypass.value = nextBypass;
+        lastSynced.proxyBypass = nextBypass;
+      }
       const h1El = document.getElementById('sw-proxy-h1');
       if (h1El) h1El.checked = cfg.proxyForceHttp1 !== false;
       document.getElementById('proxy-badge').textContent = cfg.proxyEnabled ? '已开启' : '关闭';
@@ -51,8 +70,12 @@
     document.getElementById('btn-ssh-save').addEventListener('click', () => app.saveOne('sshHost', document.getElementById('inp-ssh-host').value.trim()));
     document.getElementById('btn-ssh-sync').addEventListener('click', async () => {
       const host = document.getElementById('inp-ssh-host').value.trim();
-      await app.saveUpdates({ sshHost: host, sshRemoteStats: true });
+      const saved = await app.saveUpdates({ sshHost: host, sshRemoteStats: true });
       const note = document.getElementById('ssh-note');
+      if (!saved) {
+        note.textContent = '同步失败：SSH 主机格式无效';
+        return;
+      }
       note.textContent = '正在通过 SSH 拉取远端统计…';
       try {
         const res = await app.apiFetch('/api/ssh/sync', { method: 'POST', body: JSON.stringify({ host }) });
@@ -63,18 +86,22 @@
       }
     });
 
-    const saveProxyFields = () =>
-      app.saveUpdates({
+    const saveProxyFields = async () => {
+      const ok = await app.saveUpdates({
         proxyUrl: document.getElementById('inp-proxy-url').value.trim(),
         proxyBypass: document.getElementById('inp-proxy-bypass')?.value.trim() || 'localhost,127.0.0.1,::1',
       });
+      if (ok && typeof app.refreshStatus === 'function') await app.refreshStatus();
+      return ok;
+    };
 
-    document.getElementById('sw-proxy-enabled').addEventListener('change', (ev) =>
-      app.saveUpdates({
+    document.getElementById('sw-proxy-enabled').addEventListener('change', async (ev) => {
+      const ok = await app.saveUpdates({
         proxyEnabled: ev.target.checked,
         proxyUrl: document.getElementById('inp-proxy-url').value.trim(),
-      })
-    );
+      });
+      if (ok && typeof app.refreshStatus === 'function') await app.refreshStatus();
+    });
     const inpProxyUrl = document.getElementById('inp-proxy-url');
     inpProxyUrl.addEventListener('change', saveProxyFields);
     inpProxyUrl.addEventListener('keydown', (ev) => {
@@ -84,7 +111,10 @@
     if (inpProxyBypass) inpProxyBypass.addEventListener('change', saveProxyFields);
     const swProxyH1 = document.getElementById('sw-proxy-h1');
     if (swProxyH1) {
-      swProxyH1.addEventListener('change', (ev) => app.saveOne('proxyForceHttp1', ev.target.checked));
+      swProxyH1.addEventListener('change', async (ev) => {
+        const ok = await app.saveOne('proxyForceHttp1', ev.target.checked);
+        if (ok && typeof app.refreshStatus === 'function') await app.refreshStatus();
+      });
     }
     document.getElementById('btn-proxy-test').addEventListener('click', async () => {
       const note = document.getElementById('proxy-note');
@@ -102,15 +132,25 @@
     const btnProxyRelaunch = document.getElementById('btn-proxy-relaunch');
     btnProxyRelaunch.addEventListener('click', async () => {
       if (proxyRelaunchBusy) return;
+      const note = document.getElementById('proxy-note');
+      const proxyUrl = document.getElementById('inp-proxy-url').value.trim();
+      if (!proxyUrl || !/^(?:https?|socks5h?):\/\/.+/i.test(proxyUrl)) {
+        if (note) note.textContent = '✕ 请填写合法的代理地址（例如 http://127.0.0.1:7890）后再重启';
+        return;
+      }
       proxyRelaunchBusy = true;
       btnProxyRelaunch.disabled = true;
       try {
-        await app.saveUpdates({
+        const saved = await app.saveUpdates({
           proxyEnabled: true,
-          proxyUrl: document.getElementById('inp-proxy-url').value.trim(),
+          proxyUrl,
           proxyBypass: document.getElementById('inp-proxy-bypass')?.value.trim() || 'localhost,127.0.0.1,::1',
           proxyForceHttp1: swProxyH1 ? swProxyH1.checked : true,
         });
+        if (!saved) {
+          if (note) note.textContent = '✕ 代理配置校验未通过，未触发重启';
+          return;
+        }
         await app.postAction('/api/relaunch', 'btnRelaunch');
       } finally {
         setTimeout(() => {

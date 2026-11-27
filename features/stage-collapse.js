@@ -231,7 +231,8 @@
         }
       } else if (!bindings.schemas && rawVal && typeof rawVal === 'object') {
         try {
-          if (Object.getOwnPropertyDescriptor(rawVal, 'CascadeConfigSchema')?.value) {
+          const desc = Object.getOwnPropertyDescriptor(rawVal, 'CascadeConfigSchema');
+          if (desc && (desc.value || typeof desc.get === 'function')) {
             bindings.schemas = rawVal;
           }
         } catch {}
@@ -510,24 +511,39 @@
       return cfg.stageCollapse !== false;
     }
 
+    function isPromptInjectionEnabled() {
+      const cfg = ctx.getCfg ? ctx.getCfg() : {};
+      return cfg.stageCollapse !== false && cfg.stagePromptInjection === true;
+    }
+
     function isZhLang() {
       const cfg = ctx.getCfg ? ctx.getCfg() : {};
-      return (cfg.language || 'zh-CN') !== 'en';
+      const lang = String(cfg.language || 'zh-CN');
+      return lang.startsWith('zh') || lang === 'yue';
     }
 
     function getOrInitState(el) {
       let st = turnState.get(el);
       if (!st) {
-        st = { seenRunning: false, autoCollapsed: false, userToggled: false, lastStats: null };
+        st = { seenRunning: false, autoCollapsed: false, userToggled: false, lastStats: null, recoveryClicks: 0 };
         turnState.set(el, st);
       }
       return st;
     }
 
+    let lastDiscoverAt = 0;
     function ensureNativeHooks(enabled) {
       try {
-        if (!nativeBindings || (!nativeBindings.segmentName && !nativeBindings.resolveName)) {
-          nativeBindings = discoverNativeStageBindings(typeof globalThis !== 'undefined' ? globalThis : null);
+        const promptInjectEnabled = Boolean(enabled && isPromptInjectionEnabled());
+        const hasHooksToRestore = Boolean(!enabled && (origSegment || origResolve || hookedSvc));
+        if (!enabled && !hasHooksToRestore) return;
+
+        if ((enabled || hasHooksToRestore) && (!nativeBindings || (!nativeBindings.segmentName && !nativeBindings.resolveName))) {
+          const now = Date.now();
+          if (enabled && now - lastDiscoverAt >= 8000) {
+            lastDiscoverAt = now;
+            nativeBindings = discoverNativeStageBindings(typeof globalThis !== 'undefined' ? globalThis : null);
+          }
         }
 
         // 1. Hook native segment renderer (running -> inline chronological stream; done -> native collapsible)
@@ -560,7 +576,7 @@
           }
         }
 
-        // 2. Hook native CascadeConfig resolver (when present)
+        // 2. Hook native CascadeConfig resolver (only injects stage prompt sections when stagePromptInjection is enabled)
         if (nativeBindings?.resolveName && typeof globalThis !== 'undefined') {
           const resName = nativeBindings.resolveName;
           const curRes = globalThis[resName];
@@ -568,11 +584,11 @@
             if (!origResolve) {
               origResolve = typeof curRes.__agCsStageOrig === 'function' ? curRes.__agCsStageOrig : curRes;
             }
-            if (enabled) {
+            if (promptInjectEnabled) {
               if (!wrappedResolve) {
                 wrappedResolve = function agCsStageResolveConfig(...args) {
                   const baseCfg = origResolve.apply(this, args);
-                  if (ctx.isDestroyed?.() || !isEnabled()) return baseCfg;
+                  if (ctx.isDestroyed?.() || !isPromptInjectionEnabled()) return baseCfg;
                   try {
                     return applyStageUpdateConfig(baseCfg, true, nativeBindings);
                   } catch {
@@ -590,14 +606,18 @@
           }
         }
 
-        // 3. Hook conversation service sendUserCascadeMessage
-        if (!enabled) {
-          if (hookedSvc && origSend && (hookedSvc.sendUserCascadeMessage === wrappedSend || hookedSvc.sendUserCascadeMessage?.__agCsStageOrig === origSend)) {
-            hookedSvc.sendUserCascadeMessage = origSend;
+        // 3. Hook conversation service sendUserCascadeMessage (only when stagePromptInjection is explicitly enabled)
+        const liveSvc = findConversationService();
+        if (!promptInjectEnabled) {
+          for (const candidate of [hookedSvc, liveSvc]) {
+            if (candidate && origSend && (candidate.sendUserCascadeMessage === wrappedSend || candidate.sendUserCascadeMessage?.__agCsStageOrig === origSend)) {
+              candidate.sendUserCascadeMessage = origSend;
+            }
           }
+          hookedSvc = null;
           return;
         }
-        const svc = hookedSvc || findConversationService();
+        const svc = liveSvc || hookedSvc;
         if (!svc || typeof svc.sendUserCascadeMessage !== 'function') return;
         if (svc !== hookedSvc) {
           if (hookedSvc && origSend && hookedSvc.sendUserCascadeMessage === wrappedSend) {
@@ -607,7 +627,7 @@
           const curSend = svc.sendUserCascadeMessage;
           origSend = typeof curSend.__agCsStageOrig === 'function' ? curSend.__agCsStageOrig : curSend;
           wrappedSend = async function agCsStageWrappedSend(payload, ...args) {
-            if (!ctx.isDestroyed?.() && isEnabled() && payload && typeof payload === 'object') {
+            if (!ctx.isDestroyed?.() && isPromptInjectionEnabled() && payload && typeof payload === 'object') {
               const hasNativeProto = Boolean(nativeBindings?.schemas?.CascadeConfigSchema && nativeBindings?.createProto && nativeBindings?.cloneProto);
               if (hasNativeProto || payload.cascadeConfig?.plannerConfig) {
                 try {
@@ -712,7 +732,10 @@
       }
 
       const zh = isZhLang();
-      const responses = Array.from(document.querySelectorAll('[data-testid="agent-response"]'));
+      const mainView = document.querySelector('[data-testid="conversation-view"]');
+      const responses = Array.from((mainView || document).querySelectorAll('[data-testid="agent-response"]')).filter(
+        (el) => !el.closest('[data-testid="subagent-tab-conversation"]')
+      );
       if (!responses.length) return;
       const { convoRunning, turnStats: fiberTurnStats } = readFiberTurnState();
       const hasCancelBtn = Boolean(document.querySelector('[data-testid="input-cancel-button"]'));
@@ -730,12 +753,12 @@
         const fStats = fOffset + i >= 0 && fOffset + i < fiberTurnStats.length ? fiberTurnStats[fOffset + i] : null;
         const expanded = workedBtn ? workedBtn.getAttribute('aria-expanded') === 'true' : false;
 
-        // Fast-path skip for settled historical turns whose button & stats are unchanged,
+        // Fast-path skip for settled turns whose button & stats are unchanged,
         // avoiding repeated getComputedStyle/getBoundingClientRect layout flushes during streaming.
-        const settleSig =
-          !turnIsRunning && !isLast
-            ? `${zh ? 1 : 0}|${expanded ? 1 : 0}|${workedBtn?.className || ''}|${workedBtn?.style?.cssText || ''}|${fStats?.updateCount || 0}|${fStats?.toolCount || 0}|${fStats?.thinkCount || 0}|${resp.childElementCount || 0}`
-            : '';
+        const canCacheSettled = !turnIsRunning && (!isLast || st.autoCollapsed || !expanded);
+        const settleSig = canCacheSettled
+          ? `${zh ? 1 : 0}|${expanded ? 1 : 0}|${workedBtn?.className || ''}|${workedBtn?.style?.cssText || ''}|${fStats?.updateCount || 0}|${fStats?.toolCount || 0}|${fStats?.thinkCount || 0}|${resp.childElementCount || 0}`
+          : '';
         if (settleSig && st.lastSettledSig === settleSig && st.lastWorkedBtn === workedBtn) {
           continue;
         }
@@ -760,7 +783,8 @@
 
           // Recovery guard: if an earlier state left a running turn's hidden worked-for-collapsible
           // stuck in aria-expanded="false" (which hides all steps with no visible toggle), restore it.
-          if (workedBtn && !workedVisible && !expanded && !st.userToggled) {
+          if (workedBtn && !workedVisible && !expanded && !st.userToggled && (st.recoveryClicks || 0) < 3) {
+            st.recoveryClicks = (st.recoveryClicks || 0) + 1;
             try {
               workedBtn.click();
             } catch {}
@@ -814,7 +838,7 @@
 
     document.addEventListener('click', onCaptureClick, true);
     syncTimer = setInterval(() => {
-      if (!document.hidden) sync();
+      if (!document.hidden && isEnabled()) sync();
     }, 1500);
 
     return {

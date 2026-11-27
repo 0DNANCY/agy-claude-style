@@ -258,10 +258,14 @@ function resolveLocalActivityCredit(existing, nowMs, opts = {}) {
     return opts.hasLocalActivity;
   }
   if (typeof opts.localActivityMs === 'number') {
-    const gapMs = Math.max(0, nowMs - Number(existing.lastAtMs || 0));
+    const lastSeenMs = Math.max(Number(existing.lastAtMs || 0), Number(opts.lastPolledAtMs || 0));
+    const gapMs = Math.max(0, nowMs - lastSeenMs);
     const maxGap = opts.inSession === false ? MAX_RESTART_GAP_MS : MAX_LIVE_GAP_MS;
     if (gapMs > maxGap) return false;
-    return opts.localActivityMs > Number(existing.lastAtMs || 0) - ACTIVITY_CLOCK_SLACK_MS;
+    const refMs = Number(opts.lastPolledAtMs || 0) > 0 && nowMs - Number(opts.lastPolledAtMs) <= maxGap
+      ? Math.max(Number(existing.lastAtMs || 0) - ACTIVITY_CLOCK_SLACK_MS, Number(opts.lastPolledAtMs) - MAX_LIVE_GAP_MS)
+      : Number(existing.lastAtMs || 0) - ACTIVITY_CLOCK_SLACK_MS;
+    return opts.localActivityMs > refMs;
   }
   return opts.inSession !== false;
 }
@@ -592,13 +596,14 @@ export function createQuotaTracker({
 
         const [raw, acct] = await Promise.all([quotaFetcher(), accountFetcher()]);
         const pools = extractWeeklyPools(raw);
-        if (acct && acct.accountKey) {
+        if (acct && acct.accountKey && (acct.accountKey !== 'default' || lastAccount.accountKey === 'default')) {
           lastAccount = acct;
         }
         if (pools.length > 0) {
           const sampleMs = Date.now();
           const localActivityMs = Number(readLocalActivity() || 0);
           const inSession = hasSampledInSession;
+          const prevPollMs = lastFetchMs;
           lastLivePools = pools;
           lastFetchMs = sampleMs;
           hasSampledInSession = true;
@@ -607,6 +612,7 @@ export function createQuotaTracker({
             accountLabel: lastAccount.accountLabel,
             inSession,
             localActivityMs,
+            lastPolledAtMs: prevPollMs,
           });
           store = res.store;
           if (res.changed) saveStoreToDisk(filePath, store, { ownsFn });

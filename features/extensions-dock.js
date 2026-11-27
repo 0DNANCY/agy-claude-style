@@ -318,9 +318,17 @@
     }
     seedBundledLogos();
 
+    let cachedStore = null;
+    function getFiberStore() {
+      if (cachedStore && typeof cachedStore.getState === 'function') return cachedStore;
+      const { store } = findFiberProviders();
+      if (store) cachedStore = store;
+      return cachedStore;
+    }
+
     function isZh() {
       const lang = String(ctx.getCfg?.().language || 'zh-CN');
-      return lang !== 'en';
+      return lang.startsWith('zh') || lang === 'yue';
     }
 
     function t(zh, en) {
@@ -717,7 +725,13 @@
 
       const head = document.createElement('div');
       head.className = 'ag-cs-ext-pop-head';
-      head.innerHTML = `<span>${t('扩展', 'Extensions')}</span><span class="ag-cs-ext-pop-hint">${t('★ 收藏固定至顶栏', '★ Pin to header')}</span>`;
+      const headTitle = document.createElement('span');
+      headTitle.textContent = t('扩展', 'Extensions');
+      const headHint = document.createElement('span');
+      headHint.className = 'ag-cs-ext-pop-hint';
+      headHint.textContent = t('★ 收藏固定至顶栏', '★ Pin to header');
+      head.appendChild(headTitle);
+      head.appendChild(headHint);
       popoverEl.appendChild(head);
 
       for (const ext of exts) {
@@ -732,7 +746,14 @@
         const mainBtn = document.createElement('button');
         mainBtn.type = 'button';
         mainBtn.className = 'ag-cs-ext-pop-main';
-        mainBtn.innerHTML = `<span class="ag-cs-ext-ic">${renderIconHtml(ext.sidecarId, 15)}</span><span class="ag-cs-ext-pop-lbl">${shortLabel(ext.title)}</span>`;
+        const icWrap = document.createElement('span');
+        icWrap.className = 'ag-cs-ext-ic';
+        appendExtensionIcon(icWrap, ext.sidecarId, 15);
+        const lblWrap = document.createElement('span');
+        lblWrap.className = 'ag-cs-ext-pop-lbl';
+        lblWrap.textContent = shortLabel(ext.title);
+        mainBtn.appendChild(icWrap);
+        mainBtn.appendChild(lblWrap);
         mainBtn.title = t(`${ext.title} — 点击在右侧栏打开/切换`, `${ext.title} — Open in side pane`);
         mainBtn.addEventListener('click', (ev) => {
           ev.stopPropagation();
@@ -796,12 +817,21 @@
       anchorBtn.setAttribute('aria-expanded', 'true');
     }
 
-    function renderIconHtml(sidecarId, size = 15) {
+    function appendExtensionIcon(container, sidecarId, size = 15) {
       const logoSrc = logoBySidecarId.get(sidecarId);
       if (logoSrc) {
-        return `<img class="ag-cs-ext-logo-img" src="${logoSrc}" alt="" width="${size}" height="${size}" style="width:${size}px;height:${size}px" />`;
+        const img = document.createElement('img');
+        img.className = 'ag-cs-ext-logo-img';
+        img.src = logoSrc;
+        img.alt = '';
+        img.width = size;
+        img.height = size;
+        img.style.width = `${size}px`;
+        img.style.height = `${size}px`;
+        container.appendChild(img);
+        return;
       }
-      return iconSvgForExtension(sidecarId, size);
+      container.innerHTML = iconSvgForExtension(sidecarId, size);
     }
 
     function harvestImageToDataUri(sidecarId, src) {
@@ -1025,7 +1055,15 @@
           : t(`打开 ${ext.title}`, `Open ${ext.title}`);
         const hdrTipSub = t('左键右侧栏 · Shift / 右键主面板', 'Click: side pane · Shift/Right-click: main panel');
         bindTooltip(btn, { title: hdrTipTitle, sub: hdrTipSub });
-        btn.innerHTML = `<span class="ag-cs-ext-ic">${renderIconHtml(ext.sidecarId, 16)}</span>${isAuxActive || isMainActive ? '<span class="ag-cs-ext-dot"></span>' : ''}`;
+        const hdrIc = document.createElement('span');
+        hdrIc.className = 'ag-cs-ext-ic';
+        appendExtensionIcon(hdrIc, ext.sidecarId, 16);
+        btn.appendChild(hdrIc);
+        if (isAuxActive || isMainActive) {
+          const dot = document.createElement('span');
+          dot.className = 'ag-cs-ext-dot';
+          btn.appendChild(dot);
+        }
         btn.addEventListener('click', (ev) => {
           ev.stopPropagation();
           closePopover();
@@ -1089,7 +1127,28 @@
       head.title = expanded
         ? t('收起扩展列表（仍保留已收藏项）', 'Collapse extensions (keeps ★ pinned items visible)')
         : t('展开全部扩展（点击 ★ 可收藏常驻）', 'Expand all extensions (★ pin items to keep visible)');
-      head.innerHTML = `<span class="ag-cs-ext-sb-head-left"><span class="ag-cs-ext-ic">${puzzleSvg(16)}</span><span class="ag-cs-ext-sb-title">${t('扩展', 'Extensions')}</span></span><span class="ag-cs-ext-sb-right"><span class="ag-cs-ext-sb-count">${exts.length}</span><span class="ag-cs-ext-sb-chev">${chevronSvg(14)}</span></span>`;
+      const sbHeadLeft = document.createElement('span');
+      sbHeadLeft.className = 'ag-cs-ext-sb-head-left';
+      const sbHeadIc = document.createElement('span');
+      sbHeadIc.className = 'ag-cs-ext-ic';
+      sbHeadIc.innerHTML = puzzleSvg(16);
+      const sbHeadTitle = document.createElement('span');
+      sbHeadTitle.className = 'ag-cs-ext-sb-title';
+      sbHeadTitle.textContent = t('扩展', 'Extensions');
+      sbHeadLeft.appendChild(sbHeadIc);
+      sbHeadLeft.appendChild(sbHeadTitle);
+      const sbHeadRight = document.createElement('span');
+      sbHeadRight.className = 'ag-cs-ext-sb-right';
+      const sbCount = document.createElement('span');
+      sbCount.className = 'ag-cs-ext-sb-count';
+      sbCount.textContent = String(exts.length);
+      const sbChev = document.createElement('span');
+      sbChev.className = 'ag-cs-ext-sb-chev';
+      sbChev.innerHTML = chevronSvg(14);
+      sbHeadRight.appendChild(sbCount);
+      sbHeadRight.appendChild(sbChev);
+      head.appendChild(sbHeadLeft);
+      head.appendChild(sbHeadRight);
       head.addEventListener('click', (ev) => {
         ev.stopPropagation();
         setSidebarExpanded(!isSidebarExpanded());
@@ -1121,7 +1180,14 @@
               : t(`打开 ${ext.title}（主面板）`, `Open ${ext.title} (Main Panel)`),
             sub: t('右键在右侧栏切换', 'Right-click to open in side pane'),
           });
-          mainBtn.innerHTML = `<span class="ag-cs-ext-ic">${renderIconHtml(ext.sidecarId, 16)}</span><span class="ag-cs-ext-sb-lbl">${shortLabel(ext.title)}</span>`;
+          const sbIc = document.createElement('span');
+          sbIc.className = 'ag-cs-ext-ic';
+          appendExtensionIcon(sbIc, ext.sidecarId, 16);
+          const sbLbl = document.createElement('span');
+          sbLbl.className = 'ag-cs-ext-sb-lbl';
+          sbLbl.textContent = shortLabel(ext.title);
+          mainBtn.appendChild(sbIc);
+          mainBtn.appendChild(sbLbl);
           mainBtn.addEventListener('click', (ev) => {
             ev.stopPropagation();
             hideTooltip();

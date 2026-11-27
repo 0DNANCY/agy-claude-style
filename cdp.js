@@ -6,7 +6,7 @@ const path = require('path');
 const { execFileSync, spawn } = require('child_process');
 
 const STYLE_ID = 'ag-claude-style-css';
-const PLUGIN_VERSION = '2.1.0';
+const PLUGIN_VERSION = '2.2.0';
 const SETTING_BINDING = '__agClaudeStyleSetting';
 const STARTUP_GRACE_SECONDS = 90;
 const IS_MAC = process.platform === 'darwin';
@@ -83,6 +83,7 @@ const DEFAULT_CONFIG = {
   sidebarCompact: false,
   compactChatLayout: false,
   stageCollapse: true,
+  stagePromptInjection: false,
   windowUnreadTitle: true,
   placeholderStyle: 'studio',
   rewindPanel: true,
@@ -109,7 +110,7 @@ const DEFAULT_CONFIG = {
   pollIntervalMs: 2500,
 };
 
-// Shared declarative schema consumed by inject.js and installer build manifests.
+// Shared declarative schema consumed by inject.js and installer build manifests (Node, C#, Swift).
 const CONFIG_VALIDATORS = {
   language: ['zh-CN', 'zh-TW', 'yue', 'en', 'ja'],
   palette: ['obsidian', 'claude', 'host'],
@@ -137,6 +138,7 @@ const CONFIG_VALIDATORS = {
   sidebarCompact: 'boolean',
   compactChatLayout: 'boolean',
   stageCollapse: 'boolean',
+  stagePromptInjection: 'boolean',
   windowUnreadTitle: 'boolean',
   placeholderStyle: ['studio', 'host'],
   rewindPanel: 'boolean',
@@ -147,34 +149,101 @@ const CONFIG_VALIDATORS = {
   taskProgressCard: 'boolean',
   headerExtensionsBar: 'boolean',
   sidebarExtensionsSection: 'boolean',
+  pinnedHeaderExtensions: { type: 'string[]', maxItems: 32, minItemLength: 1, maxItemLength: 128 },
+  pinnedSidebarExtensions: { type: 'string[]', maxItems: 32, minItemLength: 1, maxItemLength: 128 },
   sidebarExtensionsExpanded: 'boolean',
   hideOnClose: 'boolean',
   sshRemoteStats: 'boolean',
+  sshHost: { type: 'string', maxLength: 512, kind: 'sshHost' },
   proxyEnabled: 'boolean',
+  proxyUrl: { type: 'string', maxLength: 512, kind: 'proxyUrl' },
+  proxyBypass: { type: 'string', maxLength: 512, kind: 'proxyBypass' },
   proxyForceHttp1: 'boolean',
   proxyColdStartAlert: 'boolean',
   autoRelaunchWithCdp: 'boolean',
   exitOnHostClose: 'boolean',
+  pollIntervalMs: { type: 'integer', min: 250, max: 60000 },
 };
 
+const SSH_HOST_VALID_RE = /^[A-Za-z0-9][A-Za-z0-9._:@-]{0,127}$/;
+
+function isValidProxyUrlSetting(raw) {
+  const s = String(raw || '').trim();
+  if (!s) return true;
+  if (s.length > 256 || /[\x00-\x1f\x7f\s'"`\\;$|&<>]/.test(s)) return false;
+  try {
+    const parsed = new URL(s);
+    if (!['http:', 'https:', 'socks5:', 'socks5h:'].includes(parsed.protocol) || !parsed.hostname) return false;
+    if ((parsed.pathname && parsed.pathname !== '/') || parsed.search || parsed.hash) return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function redactProxyUrlString(raw) {
+  const s = String(raw || '').trim();
+  if (!s) return '';
+  try {
+    const parsed = new URL(s);
+    if (!parsed.username && !parsed.password) return s;
+    const host = parsed.hostname.includes(':') && !parsed.hostname.startsWith('[') ? `[${parsed.hostname}]` : parsed.hostname;
+    const port = parsed.port ? `:${parsed.port}` : '';
+    return `${parsed.protocol}//***@${host}${port}`;
+  } catch {
+    return s.replace(/:\/\/[^/@\s]+@/g, '://***@');
+  }
+}
+
+function sanitizeConfigForPage(config) {
+  if (!config || typeof config !== 'object') return config;
+  const out = { ...config };
+  if (typeof out.proxyUrl === 'string' && out.proxyUrl) {
+    out.proxyUrl = redactProxyUrlString(out.proxyUrl);
+  }
+  return out;
+}
+
 function validateConfigSetting(key, value) {
-  if (key === 'pollIntervalMs') {
-    return Number.isInteger(value) && value >= 250 && value <= 60000;
-  }
-  if (key === 'sshHost' || key === 'proxyUrl' || key === 'proxyBypass') {
-    return typeof value === 'string' && value.length <= 512 && !/[\x00-\x1f\x7f]/.test(value);
-  }
-  if (key === 'pinnedHeaderExtensions' || key === 'pinnedSidebarExtensions') {
-    return (
-      Array.isArray(value) &&
-      value.length <= 32 &&
-      value.every((it) => typeof it === 'string' && it.length > 0 && it.length <= 128 && !/[\x00-\x1f\x7f]/.test(it))
-    );
-  }
   if (!Object.prototype.hasOwnProperty.call(CONFIG_VALIDATORS, key)) return false;
   const rule = CONFIG_VALIDATORS[key];
   if (rule === 'boolean') return typeof value === 'boolean';
   if (Array.isArray(rule)) return typeof value === 'string' && rule.includes(value);
+  if (rule && typeof rule === 'object') {
+    if (rule.type === 'integer') {
+      return Number.isInteger(value) && value >= rule.min && value <= rule.max;
+    }
+    if (rule.type === 'string') {
+      if (typeof value !== 'string' || value.length > rule.maxLength || /[\x00-\x1f\x7f]/.test(value)) {
+        return false;
+      }
+      const trimmed = value.trim();
+      if (rule.kind === 'sshHost') {
+        if (!trimmed) return true;
+        return !trimmed.startsWith('-') && SSH_HOST_VALID_RE.test(trimmed);
+      }
+      if (rule.kind === 'proxyUrl') {
+        return isValidProxyUrlSetting(trimmed);
+      }
+      if (rule.kind === 'proxyBypass') {
+        return !/[\x00-\x1f\x7f'"`\\$|&<>%^!]/.test(value);
+      }
+      return true;
+    }
+    if (rule.type === 'string[]') {
+      return (
+        Array.isArray(value) &&
+        value.length <= rule.maxItems &&
+        value.every(
+          (it) =>
+            typeof it === 'string' &&
+            it.length >= rule.minItemLength &&
+            it.length <= rule.maxItemLength &&
+            !/[\x00-\x1f\x7f]/.test(it)
+        )
+      );
+    }
+  }
   return false;
 }
 
@@ -486,7 +555,7 @@ function buildInjectExpression(customConfig) {
         globalThis.__agCsSidecarLogos = ${JSON.stringify(sidecarLogos)};
         ${bundle}
         if (typeof globalThis.__agCsUiMain === 'function') {
-          const baseCfg = ${JSON.stringify({ ...config, binding: SETTING_BINDING, codeHash })};
+          const baseCfg = ${JSON.stringify({ ...sanitizeConfigForPage(config), binding: SETTING_BINDING, codeHash })};
           const ov = globalThis.__agCsOverrideConfig;
           const nextCfg =
             ov && typeof ov === 'object' && ov.codeHash === baseCfg.codeHash
@@ -528,7 +597,7 @@ function buildInjectExpression(customConfig) {
 function buildConfigScriptExpression(customConfig, expectedCodeHash) {
   const config = customConfig || readConfig();
   const expectedHash = expectedCodeHash || '';
-  const payload = { ...config, binding: SETTING_BINDING, codeHash: expectedHash };
+  const payload = { ...sanitizeConfigForPage(config), binding: SETTING_BINDING, codeHash: expectedHash };
   return `(() => {
     const nextCfg = ${JSON.stringify(payload)};
     globalThis.__agCsOverrideConfig = nextCfg;
@@ -563,6 +632,9 @@ const REMOVE_EXPRESSION = `(() => {
   }
   delete globalThis.__agCsCleanups;
   delete globalThis.__agCsOverrideConfig;
+  delete globalThis.__agCsEnsureStyle;
+  delete globalThis.__agCsSidecarLogos;
+  delete window.__agCsFileActionReply;
   try {
     if (window.__agClaudeStyle && typeof window.__agClaudeStyle.destroy === 'function') {
       window.__agClaudeStyle.destroy();
@@ -591,10 +663,13 @@ const REMOVE_EXPRESSION = `(() => {
     root.removeAttribute('data-ag-cs-perf-backdrop');
     root.removeAttribute('data-ag-cs-lang');
     root.removeAttribute('data-ag-cs-cjk');
+    root.removeAttribute('data-ag-cs-crab');
+    root.removeAttribute('data-ag-cs-theme');
+    root.removeAttribute('data-ag-cs-compact-chat');
     if (root.getAttribute('data-ag-cjk') === '1') root.removeAttribute('data-ag-cjk');
   }
   const nodes = document.querySelectorAll(
-    'style#${STYLE_ID}, style#ag-token-hud-style, .ag-cs-home-panel-seat, .ag-cs-ripple-host, .ag-cs-ripple-canvas, .ag-cs-crab, .ag-cs-inline-stats, .ag-cs-quota-ring, .ag-cs-context-ring, .ag-cs-ctx-popover, .ag-cs-effort-popover, .ag-cs-perf-backdrop, .ag-cs-smooth-caret, .ag-cs-turn-bar, .ag-cs-hud-top-bar, .ag-cs-hud-bottom-bar, .ag-cs-hud-rim-progress, .ag-cs-hud-footer-chip, .ag-cs-rewind-bar, .ag-cs-rewind-notice, .ag-cs-rewind-backdrop, .ag-cs-branch-btn, .ag-cs-edit-btn, .ag-cs-inline-edit, .ag-cs-file-menu, .ag-cs-progress-card, .ag-cs-action-toast, #ag-cs-settings-sec, .ag-th-top-bar, .ag-th-bottom-bar, .ag-th-rim-progress, .ag-th-footer-chip, .ag-th-popover, .ag-th-turn-bar, .ag-th-reopen-pill'
+    'style#${STYLE_ID}, style#ag-token-hud-style, .ag-cs-home-panel-seat, .ag-cs-ripple-host, .ag-cs-ripple-canvas, .ag-cs-crab, .ag-cs-inline-stats, .ag-cs-quota-ring, .ag-cs-context-ring, .ag-cs-ctx-popover, .ag-cs-effort-popover, .ag-cs-perf-backdrop, .ag-cs-smooth-caret, .ag-cs-turn-bar, .ag-cs-hud-top-bar, .ag-cs-hud-bottom-bar, .ag-cs-hud-rim-progress, .ag-cs-hud-footer-chip, .ag-cs-rewind-bar, .ag-cs-rewind-notice, .ag-cs-rewind-backdrop, .ag-cs-branch-btn, .ag-cs-edit-btn, .ag-cs-inline-edit, .ag-cs-file-menu, .ag-cs-file-submenu, .ag-cs-progress-card, .ag-cs-action-toast, .ag-cs-ext-header-bar, .ag-cs-ext-menu-btn, .ag-cs-ext-sidebar-sec, .ag-cs-ext-popover, .ag-cs-native-pin-btn, .ag-cs-ext-tooltip, .ag-cs-stage-bar, .ag-cs-stage-badge, .ag-cs-stage-meta-inline, #ag-cs-settings-sec, .ag-th-top-bar, .ag-th-bottom-bar, .ag-th-rim-progress, .ag-th-footer-chip, .ag-th-popover, .ag-th-turn-bar, .ag-th-reopen-pill'
   );
   nodes.forEach((n) => n.remove());
   return { removed: nodes.length };
@@ -1779,13 +1854,14 @@ if (cfg.isWin && !process.env.AGY_RELAUNCH_STAGE2 && process.env.AGY_RELAUNCH_CO
     ) {
       env.NODE_USE_ENV_PROXY = '1';
     }
-    if (cfg.isMac) {
+  const maskArgs = (args) => (args || []).map((a) => String(a || '').replace(/^(--proxy-server=[^/]+\\/\\/)[^/@\\s]+@/i, '$1***@'));
+  if (cfg.isMac) {
       const macBin = cfg.macBinary || (cfg.appPath && cfg.appPath.toLowerCase().endsWith('.app') ? path.join(cfg.appPath, 'Contents', 'MacOS', 'Antigravity') : '');
       if (macBin && fs.existsSync(macBin)) {
         const child = spawn(macBin, cfg.launchArgs || [], { detached: true, stdio: 'ignore', env });
         const childPid = child && child.pid ? child.pid : 0;
         child.unref();
-        log('spawning macBin=' + macBin + ' spawnPid=' + childPid + ' args=' + JSON.stringify(cfg.launchArgs || []) + ' proxy=' + Boolean(env.HTTPS_PROXY) + ' electronRunAsNode=' + String(env.ELECTRON_RUN_AS_NODE));
+        log('spawning macBin=' + macBin + ' spawnPid=' + childPid + ' args=' + JSON.stringify(maskArgs(cfg.launchArgs)) + ' proxy=' + Boolean(env.HTTPS_PROXY) + ' electronRunAsNode=' + String(env.ELECTRON_RUN_AS_NODE));
         const readyDeadline = Date.now() + 6000;
         let portReady = false;
         while (Date.now() < readyDeadline) {
@@ -1818,22 +1894,27 @@ if (cfg.isWin && !process.env.AGY_RELAUNCH_STAGE2 && process.env.AGY_RELAUNCH_CO
     } else if (cfg.appPath) {
       const winIsBatch = cfg.isWin && /\.(?:cmd|bat)$/i.test(cfg.appPath);
       const winIsPs1 = cfg.isWin && /\.ps1$/i.test(cfg.appPath);
+      const safeLaunchArgs = (cfg.launchArgs || []).map((a) => String(a || ''));
+      const needsWinVerbatim = winIsBatch && (/\s/.test(cfg.appPath) || safeLaunchArgs.some((a) => /[;\s"&|<>^%!]/.test(a)));
+      const qWin = (s) => '"' + String(s || '').replace(/"/g, '') + '"';
       const spawnCmd = winIsBatch
         ? (env.ComSpec || env.COMSPEC || 'cmd.exe')
         : winIsPs1
         ? 'powershell.exe'
         : cfg.appPath;
       const spawnArgs = winIsBatch
-        ? ['/d', '/c', cfg.appPath, ...(cfg.launchArgs || [])]
+        ? (needsWinVerbatim
+          ? ['/d', '/s', '/c', '"' + [qWin(cfg.appPath), ...safeLaunchArgs.map(qWin)].join(' ') + '"']
+          : ['/d', '/c', cfg.appPath, ...safeLaunchArgs])
         : winIsPs1
-        ? ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', cfg.appPath, ...(cfg.launchArgs || [])]
-        : (cfg.launchArgs || []);
+        ? ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', cfg.appPath, ...safeLaunchArgs]
+        : safeLaunchArgs;
       const child = spawn(spawnCmd, spawnArgs, {
-        detached: true, stdio: 'ignore', windowsHide: winIsBatch || winIsPs1, env
+        detached: true, stdio: 'ignore', windowsHide: winIsBatch || winIsPs1, ...(needsWinVerbatim ? { windowsVerbatimArguments: true } : {}), env
       });
       const childPid = child && child.pid ? child.pid : 0;
       child.unref();
-      log('spawning appPath=' + cfg.appPath + ' spawnPid=' + childPid + ' args=' + JSON.stringify(cfg.launchArgs || []) + ' proxy=' + Boolean(env.HTTPS_PROXY));
+      log('spawning appPath=' + cfg.appPath + ' spawnPid=' + childPid + ' args=' + JSON.stringify(maskArgs(cfg.launchArgs)) + ' proxy=' + Boolean(env.HTTPS_PROXY));
       const readyDeadline = Date.now() + 6000;
       let portReady = false;
       while (Date.now() < readyDeadline) {
@@ -2257,7 +2338,7 @@ function buildProxyLaunchOptionsFromConfig(cfg = {}) {
   const normalized = `${parsed.protocol}//${auth}${host}${port}`;
 
   const rawBypass = String(cfg.proxyBypass || 'localhost,127.0.0.1,::1').trim();
-  const safeBypass = /[\x00-\x1f\x7f'"`\\$|&<>]/.test(rawBypass) ? 'localhost,127.0.0.1,::1' : rawBypass;
+  const safeBypass = /[\x00-\x1f\x7f'"`\\$|&<>%^!]/.test(rawBypass) ? 'localhost,127.0.0.1,::1' : rawBypass;
   const parts = safeBypass.split(/[;,\s]+/).map((s) => s.trim()).filter(Boolean);
   const seen = new Set(parts.map((p) => p.toLowerCase()));
   for (const req of ['localhost', '127.0.0.1', '::1']) {

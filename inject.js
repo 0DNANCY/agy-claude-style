@@ -266,6 +266,7 @@ function acquireLock(opts = {}) {
   // Only reached when action is 'write', 'clear' (dead/foreign/invalid), or 'owned' resolved via --replace / prior exit.
   cdpApi.writeFileAtomic(pidFile, String(opts.selfPid || process.pid));
   if (!opts.skipExitHook) {
+    process.removeListener('exit', releasePidFile);
     process.on('exit', releasePidFile);
   }
   return { acquired: true, replaced: decision.action === 'owned', priorStatus: decision.status };
@@ -420,6 +421,7 @@ async function createWatchController({
     }
     closeAllSessions();
     releasePidFile();
+    process.removeListener('exit', releasePidFile);
     if (manageProcessExit) {
       process.exit(code);
     }
@@ -464,6 +466,11 @@ async function createWatchController({
     attached.set(page.id, null);
     try {
       const session = await cdpApi.CdpSession.connect(page.webSocketDebuggerUrl);
+      if (shuttingDown) {
+        try { session.close(); } catch {}
+        attached.delete(page.id);
+        return;
+      }
       const entry = { session, bootstrapScriptId: null, configScriptId: null };
       attached.set(page.id, entry);
       session.onClose = () => {
@@ -471,6 +478,11 @@ async function createWatchController({
         log(`[-] 窗口已关闭: ${shortTitle(page)}`);
       };
       await session.send('Page.enable');
+      if (shuttingDown) {
+        attached.delete(page.id);
+        try { session.onClose = null; session.close(); } catch {}
+        return;
+      }
       session.on('Runtime.bindingCalled', ({ name, payload }) => {
         if (name !== SETTING_BINDING) return;
         try {
@@ -509,12 +521,19 @@ async function createWatchController({
           }
           if (cdpApi.updateConfigSetting(key, value)) {
             currentConfig = cdpApi.readConfig();
+            proxyMismatchCheckedSig = '';
+            proxyMismatchLastCheckAt = 0;
             log(`[⚙] 设置已保存: ${key} = ${JSON.stringify(value)}`);
           }
         } catch {}
       });
       await session.send('Runtime.enable');
       await session.send('Runtime.addBinding', { name: SETTING_BINDING });
+      if (shuttingDown) {
+        attached.delete(page.id);
+        try { session.onClose = null; session.close(); } catch {}
+        return;
+      }
       const res = await apply(entry);
       hadAttachedWindow = true;
       log(`[✓] 已注入 agy-claude-style: ${shortTitle(page)} (${res.status})`);
@@ -535,6 +554,8 @@ async function createWatchController({
   let warnedGuardSig = '';
   let cdpFlagCache = { pidSig: '', hasFlag: false };
   let proxyMismatchCheckedSig = '';
+  let proxyMismatchLastCheckAt = 0;
+  const PROXY_MISMATCH_RECHECK_MS = 30000;
 
   async function tick() {
     if (busy || shuttingDown) return;
@@ -562,19 +583,31 @@ async function createWatchController({
         cdpFlagCache = { pidSig: '', hasFlag: false };
 
         let proxyMismatchRelaunched = false;
-        if (
+        const expectedProxyKey = `${port}|${currentConfig.proxyUrl || ''}`;
+        const nowMs = Date.now();
+        const shouldCheckProxyMismatch =
           allowAutoRelaunch &&
           currentConfig.proxyEnabled === true &&
           !process.env.AG_CDP_PORT &&
-          typeof cdpApi.hasConfiguredProxyFlag === 'function'
-        ) {
+          typeof cdpApi.hasConfiguredProxyFlag === 'function' &&
+          (proxyMismatchCheckedSig !== expectedProxyKey || nowMs - proxyMismatchLastCheckAt >= PROXY_MISMATCH_RECHECK_MS);
+        if (shouldCheckProxyMismatch) {
+          proxyMismatchLastCheckAt = nowMs;
           const proc = cdpApi.detectAntigravityProcess();
           const pids = Array.isArray(proc?.pids) ? proc.pids : [];
           const pidSig = pids.slice().sort((a, b) => a - b).join(',');
-          const checkKey = `${pidSig}|${currentConfig.proxyUrl || ''}`;
+          const checkKey = `${port}|${pidSig}|${currentConfig.proxyUrl || ''}`;
           if (proc?.running && pidSig && proxyMismatchCheckedSig !== checkKey) {
             const pCheck = cdpApi.hasConfiguredProxyFlag(pids, currentConfig);
-            if (pCheck.required && pCheck.inspected && !pCheck.matched) {
+            if (!pCheck.required || !pCheck.inspected || pCheck.matched) {
+              proxyMismatchCheckedSig = checkKey;
+              if (pCheck.inspected && pCheck.matched) {
+                warnedGuardSig = '';
+                if (typeof cdpApi.resetRelaunchGuard === 'function') {
+                  cdpApi.resetRelaunchGuard({ markSuccess: true });
+                }
+              }
+            } else {
               const guard = typeof cdpApi.readRelaunchGuard === 'function' ? cdpApi.readRelaunchGuard() : null;
               const guardPidSig = `proxy:${pidSig}`;
               const evalRes =
@@ -611,12 +644,6 @@ async function createWatchController({
                     log('[✓] 已调度后台重启 Antigravity（CDP + 独立代理模式），等待新窗口就绪...');
                   }
                 }
-              }
-            } else if (pCheck.inspected && pCheck.matched) {
-              proxyMismatchCheckedSig = checkKey;
-              warnedGuardSig = '';
-              if (typeof cdpApi.resetRelaunchGuard === 'function') {
-                cdpApi.resetRelaunchGuard({ markSuccess: true });
               }
             }
           }

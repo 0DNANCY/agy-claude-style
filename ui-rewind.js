@@ -271,7 +271,9 @@
         pendingRewindAction = null;
         return revert;
       }
-      const mode = getCfg().undoConfirmMode;
+      const cfg = getCfg();
+      if (cfg.rewindPanel === false) return null;
+      const mode = cfg.undoConfirmMode;
       if (mode === 'auto_both') return true;
       if (mode === 'auto_chat') return false;
       return null;
@@ -370,31 +372,64 @@
       }));
     }
 
+    function stripRelativeTime(s) {
+      return String(s || '')
+        .replace(/\s*(?:just\s+now|\d+\s*(?:s|sec|secs|m|min|mins|h|hr|hrs|d|day|days)\s+ago|刚刚|剛剛|\d+\s*(?:秒|分钟|分鐘|小时|小時|天)前)\s*$/i, '')
+        .trim();
+    }
+
     function buildTurnsFromTrajectory(traj, cascadeId) {
-      const steps = traj?.trajectory?.steps || [];
+      const steps = traj?.trajectory?.steps || traj?.response?.trajectory?.steps || [];
       const domTurns = collectRewindTurnsDom();
-      const turns = [];
+      const rawTurns = [];
       for (let i = 0; i < steps.length; i++) {
         const s = steps[i];
         if (s?.step?.case === 'userInput') {
           const fullText = extractUserStepText(s);
-          const text = normTxt(fullText).slice(0, 140) || `#${turns.length + 1}`;
+          const text = normTxt(fullText).slice(0, 140) || `#${rawTurns.length + 1}`;
           const tsMs = extractStepTimestampMs(s);
-          const matchedDom = domTurns.find((d) => d.text.slice(0, 32) === text.slice(0, 32));
-          turns.push({
-            index: turns.length + 1,
+          rawTurns.push({
+            index: rawTurns.length + 1,
             stepIndex: i,
             cascadeId,
             text,
+            cleanText: stripRelativeTime(text),
             fullText: fullText || text,
             tsMs,
-            undoBtn: matchedDom?.undoBtn || null,
+            undoBtn: null,
             isCurrent: false,
             diffMeta: null,
           });
         }
       }
-      return turns;
+      const domClean = domTurns.map((d) => stripRelativeTime(d.text));
+      const usedDom = new Set();
+      for (let ti = rawTurns.length - 1; ti >= 0; ti--) {
+        const t = rawTurns[ti];
+        let matchedIdx = -1;
+        for (let di = domTurns.length - 1; di >= 0; di--) {
+          if (usedDom.has(di)) continue;
+          if (domClean[di] && t.cleanText && domClean[di] === t.cleanText) {
+            matchedIdx = di;
+            break;
+          }
+        }
+        if (matchedIdx < 0 && t.cleanText.length >= 16) {
+          const needle = t.cleanText.slice(0, 32);
+          for (let di = domTurns.length - 1; di >= 0; di--) {
+            if (usedDom.has(di)) continue;
+            if (domClean[di].slice(0, 32) === needle) {
+              matchedIdx = di;
+              break;
+            }
+          }
+        }
+        if (matchedIdx >= 0) {
+          usedDom.add(matchedIdx);
+          t.undoBtn = domTurns[matchedIdx]?.undoBtn || null;
+        }
+      }
+      return rawTurns.map(({ cleanText: _clean, ...rest }) => rest);
     }
 
     function findTurnForUndoButton(btn) {
@@ -693,7 +728,10 @@
               `${ui.rewindCodeSkipDelete || '部分新建文件需通过「回退代码和对话」才能自动删除，其余修改已恢复。'} (${res.skippedCreated.join(', ')})`
             );
           }
-        } catch {}
+        } catch (err) {
+          const ui = getUi();
+          showNotice(`${ui.rewindCodeRevertFailed || '仅回退代码失败'}: ${err?.message || err}`);
+        }
         return;
       }
 
@@ -836,9 +874,11 @@
         (stepHandler && typeof stepHandler.getRevertPreviews === 'function') ||
         (svc && typeof svc.getRevertPreview === 'function');
       if (!hasPreviewApi || !cascadeId) return;
+      const modalEl = openRewindBar;
+      if (!modalEl) return;
       const ui = getUi();
       for (let i = turns.length - 1; i >= 0; i--) {
-        if (isDestroyed() || !openRewindBar || !rewindState) return;
+        if (isDestroyed() || openRewindBar !== modalEl || !openRewindBar || !rewindState) return;
         const t = turns[i];
         if (t.isCurrent || typeof t.stepIndex !== 'number' || t.previewLoaded) continue;
         const revertIdx = t.stepIndex - 1;
@@ -849,13 +889,16 @@
               : await svc.getRevertPreview(cascadeId, revertIdx, undefined);
           t.diffMeta = parseRevertPreviewsMeta(previews, ui);
           t.previewLoaded = true;
-        } catch {}
-        if (openRewindBar && rewindState) {
+        } catch {
+          t.previewLoaded = true;
+        }
+        if (openRewindBar === modalEl && openRewindBar && rewindState) {
           if (rewindState.step === 'select') {
+            const turnIdx = Array.isArray(rewindState.turns) ? rewindState.turns.indexOf(t) : i;
             const itemMetas = openRewindBar.querySelectorAll('.ag-cs-rewind-item-meta');
-            if (itemMetas[i] && t.diffMeta) {
-              itemMetas[i].innerHTML = '';
-              appendDiffStatSpans(itemMetas[i], t.diffMeta, ui);
+            if (turnIdx >= 0 && itemMetas[turnIdx]) {
+              itemMetas[turnIdx].innerHTML = '';
+              if (t.diffMeta) appendDiffStatSpans(itemMetas[turnIdx], t.diffMeta, ui);
             }
           } else if (rewindState.selectedTurn === t) {
             const impactEl = openRewindBar.querySelector('.ag-cs-rewind-impact');
@@ -1143,39 +1186,72 @@
       const { svc } = findFiberApis();
       const slot = findComposerMountSlot();
       const cid = resolveCascadeId(slot?.box);
+      const modalEl = openRewindBar;
       if (cid && svc && typeof svc.getCascadeTrajectory === 'function') {
         svc
           .getCascadeTrajectory({ cascadeId: cid })
           .then((traj) => {
-            if (isDestroyed() || !openRewindBar || !rewindState || rewindState.step !== 'select') return;
+            if (isDestroyed() || openRewindBar !== modalEl || !openRewindBar || !rewindState) return;
             const fullTurns = buildTurnsFromTrajectory(traj, cid);
-            if (fullTurns.length) {
-              const withCurrent = [...fullTurns, { isCurrent: true, text: '(current)' }];
-              const prevSelected = rewindState.turns[rewindState.turnIdx];
-              const sameCount = rewindState.turns.length === withCurrent.length;
-              let nextIdx = Math.max(0, fullTurns.length - 1);
-              if (prevSelected && !prevSelected.isCurrent && (rewindState.userHovered || rewindState.turnIdx !== Math.max(0, domTurns.length - 1))) {
-                const hit = matchDomTurnInTrajectory(fullTurns, domTurns, prevSelected);
-                if (hit) nextIdx = hit.index;
-              }
-              if (sameCount) {
-                for (let k = 0; k < fullTurns.length; k++) {
-                  Object.assign(rewindState.turns[k], fullTurns[k]);
+            if (!fullTurns.length) return;
+            const withCurrent = [...fullTurns, { isCurrent: true, text: '(current)' }];
+            if (rewindState.step === 'action' && rewindState.selectedTurn) {
+              const hit =
+                matchDomTurnInTrajectory(fullTurns, domTurns, rewindState.selectedTurn) ||
+                fullTurns[Math.min(Math.max(0, rewindState.turnIdx || 0), fullTurns.length - 1)];
+              if (hit) {
+                const prevUndoBtn = rewindState.selectedTurn.undoBtn || null;
+                Object.assign(rewindState.selectedTurn, hit);
+                if (!rewindState.selectedTurn.undoBtn && prevUndoBtn) {
+                  rewindState.selectedTurn.undoBtn = prevUndoBtn;
                 }
-                const msgs = openRewindBar.querySelectorAll('.ag-cs-rewind-item-msg');
-                fullTurns.forEach((ft, k) => {
-                  if (msgs[k]) msgs[k].textContent = ft.text;
-                });
-                rewindState.turnIdx = nextIdx;
-                rewindState.selectedTurn = rewindState.turns[nextIdx];
-                hydrateRewindDiffs(rewindState.turns, cid);
-              } else {
                 rewindState.turns = withCurrent;
-                rewindState.turnIdx = nextIdx;
-                rewindState.selectedTurn = withCurrent[nextIdx];
-                renderRewindBarBody();
-                hydrateRewindDiffs(withCurrent, cid);
+                const foundIdx = fullTurns.indexOf(hit);
+                if (foundIdx >= 0) rewindState.turnIdx = foundIdx;
+                hydrateRewindDiffs([rewindState.selectedTurn], cid);
               }
+              return;
+            }
+            if (rewindState.step !== 'select') return;
+            const prevSelected = rewindState.turns[rewindState.turnIdx];
+            const sameCount = rewindState.turns.length === withCurrent.length;
+            let nextIdx = Math.max(0, fullTurns.length - 1);
+            if (prevSelected && !prevSelected.isCurrent && (rewindState.userHovered || rewindState.turnIdx !== Math.max(0, domTurns.length - 1))) {
+              const hit = matchDomTurnInTrajectory(fullTurns, domTurns, prevSelected);
+              if (hit) nextIdx = hit.index;
+            }
+            if (sameCount) {
+              for (let k = 0; k < fullTurns.length; k++) {
+                const prevUndoBtn = rewindState.turns[k]?.undoBtn || null;
+                Object.assign(rewindState.turns[k], fullTurns[k]);
+                if (!rewindState.turns[k].undoBtn && prevUndoBtn) {
+                  rewindState.turns[k].undoBtn = prevUndoBtn;
+                }
+              }
+              const msgs = openRewindBar.querySelectorAll('.ag-cs-rewind-item-msg');
+              fullTurns.forEach((ft, k) => {
+                if (msgs[k]) msgs[k].textContent = ft.text;
+              });
+              rewindState.turnIdx = nextIdx;
+              rewindState.selectedTurn = rewindState.turns[nextIdx];
+              const itemEls = openRewindBar.querySelectorAll('.ag-cs-rewind-item');
+              itemEls.forEach((el, k) => {
+                const caret = el.querySelector('.ag-cs-rewind-caret');
+                if (k === nextIdx) {
+                  el.setAttribute('data-selected', '1');
+                  if (caret) caret.textContent = '❯';
+                } else {
+                  el.removeAttribute('data-selected');
+                  if (caret) caret.textContent = '';
+                }
+              });
+              hydrateRewindDiffs(rewindState.turns, cid);
+            } else {
+              rewindState.turns = withCurrent;
+              rewindState.turnIdx = nextIdx;
+              rewindState.selectedTurn = withCurrent[nextIdx];
+              renderRewindBarBody();
+              hydrateRewindDiffs(withCurrent, cid);
             }
           })
           .catch(() => {});
@@ -1347,14 +1423,29 @@
       return false;
     }
 
+    function hasOpenPopoverOrMenu() {
+      if (typeof document === 'undefined' || typeof document.querySelector !== 'function') return false;
+      return Boolean(
+        document.querySelector(
+          '.ag-cs-ctx-popover, .ag-cs-effort-popover, .ag-cs-file-menu, .ag-cs-file-submenu, .ag-cs-ext-popover, [role="menu"], [role="listbox"]'
+        )
+      );
+    }
+
     function onEscape(ev, info) {
       if (handledEscEvents && ev && typeof ev === 'object') {
         if (handledEscEvents.has(ev)) return;
         handledEscEvents.add(ev);
       }
-      if (info && info.hadPopover) return;
+      if (info && info.hadPopover) {
+        lastEmptyEscAt = 0;
+        return;
+      }
       if (openRewindBar && openRewindBar.isConnected) return;
-      if (getCfg().rewindPanel === false || document.querySelector('[role="dialog"]')) return;
+      if (getCfg().rewindPanel === false || document.querySelector('[role="dialog"]') || hasOpenPopoverOrMenu()) {
+        lastEmptyEscAt = 0;
+        return;
+      }
       if (!isComposerEmptyForRewind()) return;
       const now = Date.now();
       if (now - lastEmptyEscAt <= DOUBLE_ESC_WINDOW_MS) {
@@ -1371,6 +1462,7 @@
     function onWinKeyDown(ev) {
       if (onKeyDown(ev)) return;
       if (ev.key === 'Escape') {
+        if (hasOpenPopoverOrMenu()) return;
         onEscape(ev, { hadPopover: false });
       }
     }
@@ -1396,7 +1488,12 @@
 
     return {
       ownSelector: '.ag-cs-rewind-bar, .ag-cs-rewind-notice, .ag-cs-rewind-backdrop',
-      sync: processUndoConfirmDialogs,
+      sync() {
+        if (getCfg().rewindPanel === false && openRewindBar) {
+          closeRewindModal();
+        }
+        processUndoConfirmDialogs();
+      },
       onKeyDown,
       onEscape,
       open: openRewindModal,

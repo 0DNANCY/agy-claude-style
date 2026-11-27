@@ -42,7 +42,7 @@ function readPluginVersion() {
   const parsed = readPluginManifest();
   return typeof parsed?.version === 'string' && parsed.version.trim()
     ? parsed.version.trim()
-    : cdpApi.PLUGIN_VERSION || '2.1.0';
+    : cdpApi.PLUGIN_VERSION || '2.2.0';
 }
 
 function readPluginName() {
@@ -59,7 +59,7 @@ function resolveHostPluginConfigPath({ env = process.env, homeDir = os.homedir()
   return path.join(homeDir, '.gemini', 'config', 'config.json');
 }
 
-function handleMcpJsonRpcMessage(msg, serverVersion = '2.1.0') {
+function handleMcpJsonRpcMessage(msg, serverVersion = '2.2.0') {
   if (!msg || typeof msg !== 'object') return null;
   const hasId = Object.prototype.hasOwnProperty.call(msg, 'id') && msg.id !== undefined;
   if (!hasId) return null;
@@ -227,12 +227,6 @@ function startMcpPluginHost() {
   if (!passiveMcpOnly) {
     try {
       fs.mkdirSync(stateDir, { recursive: true });
-    } catch {}
-    try {
-      const cleaned = cdpApi.cleanupLegacyMacLauncher?.();
-      if (cleaned?.removed) {
-        appendSafeLog(`[cleanup] removed legacy macOS launcher: ${cleaned.path}`);
-      }
     } catch {}
     hostLease = registerMcpHost({
       stateDir,

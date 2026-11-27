@@ -15,7 +15,7 @@ const lifecycle = require('../plugin/host-lifecycle.js');
 test('zero-tool MCP host returns empty tools/resources/prompts and supports initialize/ping', () => {
   const init = mcpHost.handleMcpJsonRpcMessage(
     { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-11-25' } },
-    '2.1.0'
+    '2.2.0'
   );
   assert.equal(init.result.protocolVersion, '2025-11-25');
   assert.equal(init.result.serverInfo.name, 'agy-claude-style-host');

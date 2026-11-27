@@ -157,6 +157,11 @@ async function fetchSubagentTreeUncached({ env = process.env, fetchFn = null } =
       summaries = sumRes.data.trajectorySummaries;
     }
 
+    for (const item of recent) {
+      const sc = Number(summaries?.[item.id]?.stepCount || 0);
+      if (sc > 0) item.stepCount = sc;
+    }
+
     await Promise.all(
       targets.map(async (item) => {
         item.stepCount = Number(summaries?.[item.id]?.stepCount || 0);

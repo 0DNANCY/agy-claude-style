@@ -3383,7 +3383,10 @@
         if (fill) {
           const nextWidth = `${rimFillPct.toFixed(1)}%`;
           if (fill.style.width !== nextWidth) fill.style.width = nextWidth;
-          if (fill.style.background !== rimColor) fill.style.background = rimColor;
+          if (fill._agCsRimBg !== rimColor) {
+            fill._agCsRimBg = rimColor;
+            fill.style.background = rimColor;
+          }
         }
       }
     } else {
@@ -4848,6 +4851,15 @@
       const inConvo = Boolean(cascadeId || card.closest('[data-testid="conversation-view"]'));
 
       if (!footer || cfg.inlineStats === false || cfg.composerRestyle === false) {
+        const composerShell = card.querySelector(':scope > div.relative.w-full') || card;
+        if (composerShell && composerShell.hasAttribute('data-ag-cs-rim')) {
+          composerShell.removeAttribute('data-ag-cs-rim');
+          composerShell.style.removeProperty('--ag-cs-rim-color');
+        }
+        if (card.hasAttribute('data-ag-cs-rim')) {
+          card.removeAttribute('data-ag-cs-rim');
+          card.style.removeProperty('--ag-cs-rim-color');
+        }
         card
           .querySelectorAll('.ag-cs-inline-stats, .ag-cs-quota-ring, .ag-cs-context-ring, .ag-cs-hud-top-bar, .ag-cs-hud-bottom-bar, .ag-cs-hud-rim-progress, .ag-cs-hud-footer-chip')
           .forEach((n) => n.remove());
@@ -5074,14 +5086,13 @@
   }
 
   // ── Settings Panel Integration ─────────────────────────────────────────
-  // Settings are now managed exclusively by the native Aux Pane control panel
-  // (sidecars/panel), so we no longer inject a duplicate section into Appearance.
+  // Kept active alongside the native Aux Pane control panel (sidecars/panel)
+  // so standalone installer & CLI users retain full Settings -> Appearance UI
+  // synced bidirectionally via config.json.
   const SETTINGS_SEC_ID = 'ag-cs-settings-sec';
 
   function ensureSettingsSection() {
-    const stale = document.getElementById(SETTINGS_SEC_ID);
-    if (stale) stale.remove();
-    return;
+    if (destroyed) return;
     const lang = getLang();
     const ui = uiText(lang);
     const targetTitles = ['Appearance', '外观', '外觀', '外観'];
@@ -5356,13 +5367,151 @@
           ['auto_chat', ui.optUndoAutoChat || 'Auto (Chat Only)'],
         ],
       },
+      glassEffect: {
+        key: 'glassEffect',
+        title: ui.setGlassTitle || 'Frosted Glass Effect',
+        desc: ui.setGlassDesc || 'Enable frosted-glass translucency and hairline specular highlights.',
+        opts: [
+          [true, ui.onLabel || 'On'],
+          [false, ui.offLabel || 'Off'],
+        ],
+      },
+      compactChatLayout: {
+        key: 'compactChatLayout',
+        title: ui.setCompactChatTitle || 'Compact Chat Layout',
+        desc: ui.setCompactChatDesc || 'Tighten message paragraph spacing and list margins for denser reading.',
+        opts: [
+          [true, ui.onLabel || 'On'],
+          [false, ui.offLabel || 'Off'],
+        ],
+      },
+      quotaCycleMode: {
+        key: 'quotaCycleMode',
+        title: ui.setQuotaCycleTitle || 'Quota Display Cycle',
+        desc: ui.setQuotaCycleDesc || 'Choose whether rings & HUD prioritize 5h window or Weekly quota.',
+        opts: [
+          ['auto', ui.optQuotaAuto || 'Auto'],
+          ['5h', ui.optQuota5h || '5h Window'],
+          ['weekly', ui.optQuotaWeekly || 'Weekly Quota'],
+        ],
+      },
+      hudRimSource: {
+        key: 'hudRimSource',
+        title: ui.setHudRimSourceTitle || 'Rim Progress Source',
+        desc: ui.setHudRimSourceDesc || 'Select telemetry metric shown by the composer rim bar.',
+        opts: [
+          ['auto', ui.optRimAuto || 'Auto'],
+          ['context', ui.optRimContext || 'Context Usage'],
+          ['quota', ui.optRimQuota || 'Model Quota'],
+        ],
+      },
+      stageCollapse: {
+        key: 'stageCollapse',
+        title: ui.setStageCollapseTitle || 'Auto-Collapse Stages',
+        desc: ui.setStageCollapseDesc || 'Stream live execution steps and auto-collapse worked stages once done.',
+        opts: [
+          [true, ui.onLabel || 'On'],
+          [false, ui.offLabel || 'Off'],
+        ],
+      },
+      stagePromptInjection: {
+        key: 'stagePromptInjection',
+        subRow: true,
+        title: ui.setStagePromptTitle || 'Stage Update Prompt Injection',
+        desc: ui.setStagePromptDesc || 'Append agy_cs_stage_updates instruction so the model emits compact progress updates (default OFF).',
+        opts: [
+          [true, ui.onLabel || 'On'],
+          [false, ui.offLabel || 'Off'],
+        ],
+      },
+      taskProgressCard: {
+        key: 'taskProgressCard',
+        title: ui.setTaskProgressTitle || 'Task Progress Card',
+        desc: ui.setTaskProgressDesc || 'Show docked or draggable live task checklist, phase, and subagent timings.',
+        opts: [
+          [true, ui.onLabel || 'On'],
+          [false, ui.offLabel || 'Off'],
+        ],
+      },
+      windowUnreadTitle: {
+        key: 'windowUnreadTitle',
+        title: ui.setUnreadTitleTitle || 'Window Title Unread Badge',
+        desc: ui.setUnreadTitleDesc || 'Prefix window title with [N] when background conversations finish or await approval.',
+        opts: [
+          [true, ui.onLabel || 'On'],
+          [false, ui.offLabel || 'Off'],
+        ],
+      },
+      branchSession: {
+        key: 'branchSession',
+        title: ui.setBranchSessionTitle || 'Branch From Response',
+        desc: ui.setBranchSessionDesc || 'Add a Fork button to assistant responses to branch a conversation at that step.',
+        opts: [
+          [true, ui.onLabel || 'On'],
+          [false, ui.offLabel || 'Off'],
+        ],
+      },
+      messageEdit: {
+        key: 'messageEdit',
+        title: ui.setMessageEditTitle || 'In-Place Message Edit',
+        desc: ui.setMessageEditDesc || 'Edit previous user prompts in-place and rewind + resend from that turn.',
+        opts: [
+          [true, ui.onLabel || 'On'],
+          [false, ui.offLabel || 'Off'],
+        ],
+      },
+      fileContextMenu: {
+        key: 'fileContextMenu',
+        title: ui.setFileMenuTitle || 'File & Media Context Menu',
+        desc: ui.setFileMenuDesc || 'Right-click file links and chat images to open, reveal, copy, or attach.',
+        opts: [
+          [true, ui.onLabel || 'On'],
+          [false, ui.offLabel || 'Off'],
+        ],
+      },
+      headerExtensionsBar: {
+        key: 'headerExtensionsBar',
+        title: ui.setHeaderExtTitle || 'Header Extensions Dock',
+        desc: ui.setHeaderExtDesc || 'Pin favorite sidecar extensions in the top header bar for 1-click access.',
+        opts: [
+          [true, ui.onLabel || 'On'],
+          [false, ui.offLabel || 'Off'],
+        ],
+      },
+      sidebarExtensionsSection: {
+        key: 'sidebarExtensionsSection',
+        title: ui.setSidebarExtTitle || 'Sidebar Extensions Section',
+        desc: ui.setSidebarExtDesc || 'List installed sidecar extensions in the left sidebar with header-pin toggles.',
+        opts: [
+          [true, ui.onLabel || 'On'],
+          [false, ui.offLabel || 'Off'],
+        ],
+      },
+      hideOnClose: {
+        key: 'hideOnClose',
+        title: ui.setHideOnCloseTitle || 'Hide Window on Close',
+        desc: ui.setHideOnCloseDesc || 'Hide or minimize the window on native close instead of terminating the app.',
+        opts: [
+          [true, ui.onLabel || 'On'],
+          [false, ui.offLabel || 'Off'],
+        ],
+      },
+      autoRelaunchWithCdp: {
+        key: 'autoRelaunchWithCdp',
+        title: ui.setAutoCdpTitle || 'Auto-Relaunch With CDP',
+        desc: ui.setAutoCdpDesc || 'Allow native plugin host to relaunch Antigravity automatically with CDP debugging.',
+        opts: [
+          [true, ui.onLabel || 'On'],
+          [false, ui.offLabel || 'Off'],
+        ],
+      },
     };
 
     const groups = [
       {
         id: 'appearance',
         title: ui.grpAppearance || 'Appearance & Layout',
-        keys: ['language', 'homeLayout', 'palette', 'logoInk', 'sidebarRestyle', 'composerRestyle'],
+        keys: ['language', 'homeLayout', 'palette', 'glassEffect', 'logoInk', 'sidebarRestyle', 'composerRestyle', 'compactChatLayout'],
       },
       {
         id: 'interaction',
@@ -5372,8 +5521,13 @@
       {
         id: 'telemetry',
         title: ui.grpTelemetry || 'Usage Ring & HUD',
-        keys: ['inlineStats', 'ringMode', 'turnBadges'],
-        hudKeys: ['hudTopBar', 'hudBottomBar', 'hudRimProgress', 'hudFooterChip', 'hudCompact'],
+        keys: ['inlineStats', 'ringMode', 'quotaCycleMode', 'turnBadges'],
+        hudKeys: ['hudTopBar', 'hudBottomBar', 'hudRimProgress', 'hudRimSource', 'hudFooterChip', 'hudCompact'],
+      },
+      {
+        id: 'powertools',
+        title: ui.setGrpPowertools || 'Powertools & Extensions',
+        keys: ['taskProgressCard', 'stageCollapse', 'stagePromptInjection', 'windowUnreadTitle', 'branchSession', 'messageEdit', 'fileContextMenu', 'headerExtensionsBar', 'sidebarExtensionsSection', 'hideOnClose', 'autoRelaunchWithCdp'],
       },
     ];
 
@@ -5524,6 +5678,7 @@
     getUi: () => uiText(getLang()),
     isDestroyed: () => destroyed,
     saveSetting,
+    scheduleSync: () => scheduleSync(),
   };
   const features = [];
   for (const name of FEATURE_ORDER) {
@@ -6450,7 +6605,7 @@
       });
       document
         .querySelectorAll(
-          '.ag-cs-inline-stats, .ag-cs-quota-ring, .ag-cs-context-ring, .ag-cs-hud-top-bar, .ag-cs-hud-bottom-bar, .ag-cs-hud-rim-progress, .ag-cs-hud-footer-chip, .ag-cs-perf-backdrop, .ag-cs-rewind-bar, .ag-cs-rewind-notice, .ag-cs-rewind-backdrop, .ag-cs-branch-btn, .ag-cs-edit-btn, .ag-cs-inline-edit, .ag-cs-file-menu, .ag-cs-progress-card, .ag-cs-action-toast, .ag-cs-stage-bar, .ag-cs-stage-badge, #' + SETTINGS_SEC_ID
+          '.ag-cs-inline-stats, .ag-cs-quota-ring, .ag-cs-context-ring, .ag-cs-hud-top-bar, .ag-cs-hud-bottom-bar, .ag-cs-hud-rim-progress, .ag-cs-hud-footer-chip, .ag-cs-perf-backdrop, .ag-cs-rewind-bar, .ag-cs-rewind-notice, .ag-cs-rewind-backdrop, .ag-cs-branch-btn, .ag-cs-edit-btn, .ag-cs-inline-edit, .ag-cs-file-menu, .ag-cs-file-submenu, .ag-cs-progress-card, .ag-cs-action-toast, .ag-cs-stage-bar, .ag-cs-stage-badge, .ag-cs-stage-meta-inline, .ag-cs-ext-header-bar, .ag-cs-ext-sidebar-sec, .ag-cs-ext-popover, .ag-cs-ext-tooltip, #' + SETTINGS_SEC_ID
         )
         .forEach((el) => el.remove());
       const html = document.documentElement;
@@ -6458,7 +6613,9 @@
         for (const attr of [
           'data-ag-cs-style',
           'data-ag-cs-palette',
+          'data-ag-cs-theme',
           'data-ag-cs-glass',
+          'data-ag-cs-crab',
           'data-ag-cs-home',
           'data-ag-cs-composer',
           'data-ag-cs-logo-ink',

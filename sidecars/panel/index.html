@@ -333,6 +333,7 @@
     let dashboardTab = null;
     let remoteTab = null;
 
+    let lastRenderedConfigJson = '';
     const app = {
       apiFetch,
       showToast,
@@ -342,12 +343,17 @@
       async saveUpdates(updates) {
         try {
           const res = await apiFetch('/api/config', { method: 'POST', body: JSON.stringify({ updates }) });
-          const data = await res.json();
-          if (data.config) currentConfig = data.config;
+          let data = {};
+          try { data = await res.json(); } catch {}
+          if (!res.ok && !data.rejected && !data.error) throw new Error(`HTTP ${res.status}`);
+          if (data.config) {
+            currentConfig = data.config;
+            lastRenderedConfigJson = JSON.stringify(currentConfig);
+          }
           controlTab.renderStaticChrome();
           controlTab.renderForm(currentConfig);
-          remoteTab.syncForm(currentConfig);
-          showToast(data.ok ? '已保存配置' : `配置校验失败: ${(data.rejected || []).join(',')}`);
+          remoteTab.syncForm(currentConfig, { force: true });
+          showToast(data.ok ? '已保存配置' : `配置校验失败: ${(data.rejected || [data.error || res.status]).join(',')}`);
           return Boolean(data.ok);
         } catch (err) {
           showToast(controlTab.getT().saveErrToast(err.message));
@@ -357,17 +363,25 @@
       async saveOne(key, value) {
         const ok = await app.saveUpdates({ [key]: value });
         if (ok) showToast(controlTab.getT().savedToast(key));
+        return ok;
       },
-      async refreshStatus() {
+      async refreshStatus({ preserveInteractive = false } = {}) {
         syncHostThemeAttr();
         try {
           const res = await apiFetch('/api/status', { method: 'GET' });
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
           const st = await res.json();
           lastStatus = st;
           currentConfig = st.config || currentConfig;
           controlTab.renderStaticChrome();
-          controlTab.renderForm(currentConfig);
-          remoteTab.syncForm(currentConfig);
+          const nextCfgJson = JSON.stringify(currentConfig);
+          const secEl = document.getElementById('sections');
+          const secHasFocus = Boolean(secEl && document.activeElement && secEl.contains(document.activeElement));
+          if (!preserveInteractive || (nextCfgJson !== lastRenderedConfigJson && !secHasFocus)) {
+            controlTab.renderForm(currentConfig);
+            lastRenderedConfigJson = nextCfgJson;
+          }
+          remoteTab.syncForm(currentConfig, { preserveDirty: preserveInteractive });
         } catch (err) {
           document.getElementById('status-text').textContent = 'Error';
           document.getElementById('meta-line').textContent = err.message;
@@ -381,8 +395,9 @@
         btns.forEach((b) => (b.disabled = true));
         try {
           const res = await apiFetch(endpoint, { method: 'POST', body: '{}' });
-          const data = await res.json();
-          if (!res.ok) throw new Error(data.error || 'Error');
+          let data = {};
+          try { data = await res.json(); } catch {}
+          if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
           showToast(controlTab.getT().actionOk(controlTab.getT()[labelKey]));
           await app.refreshStatus();
         } catch (err) {
@@ -425,14 +440,14 @@
       const nowVisible = app.isPanelVisible();
       if (nowVisible && !wasPanelVisible) {
         if (activeTab === 'dashboard') dashboardTab.onActivate();
-        else void app.refreshStatus();
+        else void app.refreshStatus({ preserveInteractive: true });
       }
       wasPanelVisible = nowVisible;
     };
     window.addEventListener('resize', handleVisibilityRestore);
     document.addEventListener('visibilitychange', handleVisibilityRestore);
     setInterval(() => {
-      if (app.isPanelVisible() && activeTab === 'control') void app.refreshStatus();
+      if (app.isPanelVisible() && activeTab === 'control') void app.refreshStatus({ preserveInteractive: true });
     }, 12000);
   </script>
 </body>

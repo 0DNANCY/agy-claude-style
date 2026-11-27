@@ -1,10 +1,11 @@
 // Read-only local transcript telemetry aggregator for AGY Claude Style Aux Pane Dashboard.
 // Parses ~/.gemini/antigravity/brain/*/.system_generated/logs/transcript.jsonl with mtime caching,
 // computes reference USD cost, detects short-interval cache-drop anomalies, and builds a 53-week heatmap.
-import { closeSync, existsSync, openSync, readdirSync, readSync, realpathSync, statSync } from 'node:fs';
+import { closeSync, existsSync, fstatSync, openSync, readdirSync, readSync, realpathSync, statSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
 import { dirname, join, sep } from 'node:path';
+import { StringDecoder } from 'node:string_decoder';
 
 const require = createRequire(import.meta.url);
 let _DatabaseSync = undefined;
@@ -331,8 +332,13 @@ function projectOversizedTranscriptLine(edgeText) {
     return m ? Number(m[1]) : undefined;
   };
   const strField = (name) => {
-    const m = edgeText.match(new RegExp(`"${name}"\\s*:\\s*"([^"\\\\]{0,256})"`));
-    return m ? m[1] : undefined;
+    const m = edgeText.match(new RegExp(`"${name}"\\s*:\\s*"((?:[^"\\\\]|\\\\.){0,256})`));
+    if (!m) return undefined;
+    try {
+      return JSON.parse(`"${m[1]}"`);
+    } catch {
+      return m[1].replace(/\\n/g, '\n').replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+    }
   };
   return {
     type,
@@ -537,74 +543,102 @@ export function parseTranscriptFileBounded(
   let truncated = false;
   try {
     fd = openSync(filePath, 'r');
+    const st = fstatSync(fd);
+    const fileSize = Number(st?.size || 0);
     const buf = Buffer.allocUnsafe(chunkBytes);
-    let carry = '';
-    let oversizedHead = '';
-    let oversizedTail = '';
-    let isOversized = false;
-    let totalRead = 0;
 
-    const emitLine = (text, oversized) => {
-      const idx = lineIdx++;
-      const trimmed = text.trim();
-      const obj = parseLineToProjectedObj(trimmed, !sawUserTitle, oversized);
-      if (!obj) return;
-      if (obj.type === 'USER_INPUT') sawUserTitle = true;
-      parsedObjs.push({ idx, obj });
-    };
+    const readSlice = (startOffset, byteBudget, skipFirstLine = false) => {
+      const decoder = new StringDecoder('utf8');
+      let carry = '';
+      let oversizedHead = '';
+      let oversizedTail = '';
+      let isOversized = false;
+      let totalRead = 0;
+      let skippedInitialPartial = !skipFirstLine;
 
-    const appendOversized = (part) => {
-      if (!part) return;
-      if (part.length >= OVERSIZED_EDGE_CHARS) {
-        oversizedTail = part.slice(-OVERSIZED_EDGE_CHARS);
-      } else {
-        const merged = oversizedTail + part;
-        oversizedTail = merged.length > OVERSIZED_EDGE_CHARS ? merged.slice(-OVERSIZED_EDGE_CHARS) : merged;
-      }
-    };
-
-    for (;;) {
-      const remaining = maxBytes - totalRead;
-      if (remaining <= 0) {
-        truncated = true;
-        break;
-      }
-      const n = readSync(fd, buf, 0, Math.min(chunkBytes, remaining), null);
-      if (n <= 0) break;
-      totalRead += n;
-      const chunkStr = buf.subarray(0, n).toString('utf8');
-      let start = 0;
-      for (;;) {
-        const nl = chunkStr.indexOf('\n', start);
-        if (nl === -1) break;
-        const piece = chunkStr.slice(start, nl);
-        start = nl + 1;
-        if (isOversized) {
-          appendOversized(piece);
-          emitLine(`${oversizedHead} ${oversizedTail}`, true);
-          oversizedHead = '';
-          oversizedTail = '';
-          isOversized = false;
-        } else {
-          emitLine(carry + piece, false);
-          carry = '';
+      const emitLine = (text, oversized) => {
+        if (!skippedInitialPartial) {
+          skippedInitialPartial = true;
+          return;
         }
+        const idx = lineIdx++;
+        const trimmed = text.trim();
+        const obj = parseLineToProjectedObj(trimmed, !sawUserTitle, oversized);
+        if (!obj) return;
+        if (obj.type === 'USER_INPUT') sawUserTitle = true;
+        parsedObjs.push({ idx, obj });
+      };
+
+      const appendOversized = (part) => {
+        if (!part) return;
+        if (part.length >= OVERSIZED_EDGE_CHARS) {
+          oversizedTail = part.slice(-OVERSIZED_EDGE_CHARS);
+        } else {
+          const merged = oversizedTail + part;
+          oversizedTail = merged.length > OVERSIZED_EDGE_CHARS ? merged.slice(-OVERSIZED_EDGE_CHARS) : merged;
+        }
+      };
+
+      const feedChunk = (chunkStr) => {
+        if (!chunkStr) return;
+        let start = 0;
+        for (;;) {
+          const nl = chunkStr.indexOf('\n', start);
+          if (nl === -1) break;
+          const piece = chunkStr.slice(start, nl);
+          start = nl + 1;
+          if (isOversized) {
+            appendOversized(piece);
+            emitLine(`${oversizedHead} ${oversizedTail}`, true);
+            oversizedHead = '';
+            oversizedTail = '';
+            isOversized = false;
+          } else {
+            emitLine(carry + piece, false);
+            carry = '';
+          }
+        }
+        const rem = chunkStr.slice(start);
+        if (isOversized) {
+          appendOversized(rem);
+        } else if (carry.length + rem.length > MAX_LINE_JSON_PARSE_BYTES) {
+          const combined = carry + rem;
+          oversizedHead = combined.slice(0, OVERSIZED_EDGE_CHARS);
+          oversizedTail = combined.slice(-OVERSIZED_EDGE_CHARS);
+          carry = '';
+          isOversized = true;
+        } else {
+          carry += rem;
+        }
+      };
+
+      for (;;) {
+        const remaining = byteBudget - totalRead;
+        if (remaining <= 0) break;
+        const n = readSync(fd, buf, 0, Math.min(chunkBytes, remaining), startOffset + totalRead);
+        if (n <= 0) break;
+        totalRead += n;
+        feedChunk(decoder.write(buf.subarray(0, n)));
       }
-      const rem = chunkStr.slice(start);
-      if (isOversized) {
-        appendOversized(rem);
-      } else if (carry.length + rem.length > MAX_LINE_JSON_PARSE_BYTES) {
-        const combined = carry + rem;
-        oversizedHead = combined.slice(0, OVERSIZED_EDGE_CHARS);
-        oversizedTail = combined.slice(-OVERSIZED_EDGE_CHARS);
-        carry = '';
-        isOversized = true;
-      } else {
-        carry += rem;
+      feedChunk(decoder.end());
+      if (isOversized) emitLine(`${oversizedHead} ${oversizedTail}`, true);
+      else if (carry) emitLine(carry, false);
+    };
+
+    if (fileSize > maxBytes && maxBytes > 0) {
+      truncated = true;
+      const headBudget = Math.min(256 * 1024, Math.max(0, fileSize - maxBytes));
+      if (headBudget > 0) {
+        readSlice(0, headBudget, false);
+        const titleEntry = parsedObjs.find((p) => p.obj?.type === 'USER_INPUT');
+        parsedObjs.length = 0;
+        if (titleEntry) parsedObjs.push(titleEntry);
       }
+      const tailOffset = Math.max(0, fileSize - maxBytes);
+      readSlice(tailOffset, fileSize - tailOffset, tailOffset > 0);
+    } else {
+      readSlice(0, maxBytes, false);
     }
-    if (isOversized) emitLine(`${oversizedHead} ${oversizedTail}`, true);
-    else if (carry) emitLine(carry, false);
   } finally {
     if (fd !== null) {
       try {
@@ -701,12 +735,11 @@ export function buildHeatmap53w(requests = [], nowMs = Date.now()) {
   const todayKey = formatLocalDate(today.getTime());
   const endDow = today.getDay();
   const totalDays = 52 * 7 + endDow + 1;
-  const startMs = today.getTime() - (totalDays - 1) * DAY_MS;
 
   const cells = [];
   let maxTokens = 0;
   for (let i = 0; i < totalDays; i++) {
-    const dt = new Date(startMs + i * DAY_MS);
+    const dt = new Date(today.getFullYear(), today.getMonth(), today.getDate() - (totalDays - 1 - i));
     const key = formatLocalDate(dt.getTime());
     const b = dayBuckets.get(key) || {
       date: key,

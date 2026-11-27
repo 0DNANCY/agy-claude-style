@@ -792,3 +792,22 @@ test('ui-rewind: clicking duplicate-text Undo button with timestamp matches exac
     destroy();
   }
 });
+
+test('ui-rewind: double-Esc does not hijack Escape when an extensions/radix popover is open', () => {
+  const dom = createFakeDom();
+  buildConversationTree(dom, [{ text: 'First turn', top: 10 }]);
+  const pop = dom.doc.createElement('div');
+  pop.className = 'ag-cs-ext-popover';
+  pop.setAttribute('data-state', 'open');
+  dom.doc.body.appendChild(pop);
+
+  const { destroy } = loadFeatureInDom(dom, { doubleEscRewind: true });
+  try {
+    dom.win.emitKeyDown({ key: 'Escape', preventDefault() {}, stopPropagation() {}, stopImmediatePropagation() {} });
+    dom.win.emitKeyDown({ key: 'Escape', preventDefault() {}, stopPropagation() {}, stopImmediatePropagation() {} });
+    assert.equal(dom.doc.querySelector('.ag-cs-rewind-bar'), null, 'Escape must not open rewind while a popover is open');
+  } finally {
+    destroy();
+  }
+});
+

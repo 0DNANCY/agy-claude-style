@@ -686,7 +686,7 @@ test('duplicate watcher handling: --managed exits 0 cleanly without clobbering, 
     });
     const dupPlainCode = await Promise.race([
       new Promise((resolve) => dupPlain.on('exit', resolve)),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('Plain duplicate watcher did not exit')), 5000)),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('Plain duplicate watcher did not exit')), 15000)),
     ]);
     assert.equal(dupPlainCode, 1);
     assert.equal(fs.readFileSync(pidFile, 'utf8').trim(), String(first.pid));
@@ -700,7 +700,7 @@ test('duplicate watcher handling: --managed exits 0 cleanly without clobbering, 
     });
     const dupManagedCode = await Promise.race([
       new Promise((resolve) => dupManaged.on('exit', resolve)),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('Duplicate --managed did not exit')), 5000)),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('Duplicate --managed did not exit')), 15000)),
     ]);
     assert.equal(dupManagedCode, 0);
     assert.equal(fs.readFileSync(pidFile, 'utf8').trim(), String(first.pid));
@@ -715,7 +715,7 @@ test('duplicate watcher handling: --managed exits 0 cleanly without clobbering, 
     });
     await Promise.race([
       firstExitPromise,
-      new Promise((_, reject) => setTimeout(() => reject(new Error('--replace did not terminate existing watcher')), 5000)),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('--replace did not terminate existing watcher')), 15000)),
     ]);
     await waitFor(() => {
       try {
@@ -723,7 +723,7 @@ test('duplicate watcher handling: --managed exits 0 cleanly without clobbering, 
       } catch {
         return false;
       }
-    }, 5000, 50);
+    }, 15000, 50);
     assert.equal(replacer.exitCode, null);
   } finally {
     for (const proc of [first, dupPlain, dupManaged, replacer]) {

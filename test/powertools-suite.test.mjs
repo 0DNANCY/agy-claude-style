@@ -1795,3 +1795,175 @@ test('windows non-TUN proxy compatibility: NODE_USE_ENV_PROXY, custom launcher v
   assert.match(csSource, /EnsureNodeUseEnvProxyIfProxySet/);
   assert.match(csSource, /AGY_CLAUDE_STYLE_LAUNCH_CMD/);
 });
+
+test('v2.2.0 security & robustness: file-actions UNC block, wt.exe semicolon escape, main.mjs fail-closed host & removed route', async () => {
+  const fa = await import('../sidecars/panel/lib/file-actions.mjs');
+  const main = await import('../sidecars/panel/main.mjs');
+
+  // UNC path blocked on file:// URI & win32 reveal
+  await assert.rejects(
+    () => fa.dispatchFileAction({ type: 'file.reveal', uri: 'file://fileserver/share/secret.txt' }, { platform: 'win32' }),
+    /remote|unc|host|local/i
+  );
+  // 127.0.0.1 host normalized to local path
+  const tmpFile = path.join(os.tmpdir(), `agy-fa-127-${Date.now()}.txt`);
+  fs.writeFileSync(tmpFile, 'hi');
+  try {
+    const resolved = fa.resolveLocalFilePath(`file://127.0.0.1${tmpFile}`);
+    assert.equal(resolved, tmpFile);
+  } finally {
+    try { fs.unlinkSync(tmpFile); } catch {}
+  }
+
+  // wt.exe semicolon escaping
+  let wtArgs = null;
+  const dirTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-wt-'));
+  const subDir = path.join(dirTmp, 'a;b');
+  fs.mkdirSync(subDir, { recursive: true });
+  try {
+    const fakeLocalAppData = path.join(dirTmp, 'AppDataLocal');
+    const fakeWtPath = path.join(fakeLocalAppData, 'Microsoft', 'WindowsApps', 'wt.exe');
+    await fa.openFileWithApp(subDir, 'terminal', {
+      platform: 'win32',
+      env: { LOCALAPPDATA: fakeLocalAppData },
+      exists: (p) => p === fakeWtPath || p === subDir,
+      spawnProcess: (_cmd, args) => { wtArgs = args; return { on() {}, unref() {} }; },
+    });
+    assert.ok(wtArgs && wtArgs.some((a) => String(a).includes('a\\;b')), `Expected escaped semicolon in wt.exe args: ${JSON.stringify(wtArgs)}`);
+  } finally {
+    fs.rmSync(dirTmp, { recursive: true, force: true });
+  }
+
+  // main.mjs isLocalHostRequest fail-closed when missing Host or bad Host/Origin
+  assert.equal(main.isLocalHostRequest({ headers: {} }), false);
+  assert.equal(main.isLocalHostRequest({ headers: { host: 'evil.example:8123', 'sec-fetch-site': 'same-origin' } }), false);
+  const mainSrc = fs.readFileSync(require.resolve('../sidecars/panel/main.mjs'), 'utf8');
+  assert.equal(mainSrc.includes('/api/file/action'), false, 'Panel HTTP server must not expose unauthenticated /api/file/action');
+});
+
+test('v2.2.0 telemetry & quota fixes: UTF-8 split chunk, >maxBytes tail, DST heatmap, pricing o3/null, quota 10m cap & default account guard', async () => {
+  const quotaTracker = await import('../sidecars/panel/lib/quota-tracker.mjs');
+  const pricing = await import('../sidecars/panel/lib/pricing.mjs');
+
+  // UTF-8 split multi-byte char + oversized file tail slice
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-tel-utf8-'));
+  try {
+    const jsonlPath = path.join(tmpDir, 'conv.jsonl');
+    const pad = JSON.stringify({ type: 'PLANNER_RESPONSE', model: 'claude-sonnet-4-6', input_tokens: 1, output_tokens: 1, created_at: '2026-11-27T09:00:00Z' });
+    const uLine = JSON.stringify({ type: 'USER_INPUT', content: '中文边界🧪测试', created_at: '2026-11-27T10:00:00Z' });
+    const rLine = JSON.stringify({ type: 'PLANNER_RESPONSE', model: 'claude-sonnet-4-6', input_tokens: 100, output_tokens: 50, created_at: '2026-11-27T10:00:02Z' });
+    const tailBytes = Buffer.byteLength(`${uLine}\n${rLine}\n`);
+    fs.writeFileSync(jsonlPath, `${pad}\n`.repeat(20) + `${uLine}\n${rLine}\n`, 'utf8');
+    const rows = telemetry.parseTranscriptFileBounded(jsonlPath, 'c1', 'local', {
+      maxBytes: tailBytes + 64,
+    });
+    assert.ok(rows.some((r) => r.conversationTitle === '中文边界🧪测试' && r.outputTokens === 50), 'Tail read must preserve valid UTF-8 CJK/emoji');
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+
+  // DST-safe 53-week calendar heatmap (2026-11-27 is Friday -> 52w*7 + 6 = 370 calendar days, 1 today cell)
+  const heat = telemetry.buildHeatmap53w([], Date.parse('2026-11-27T12:00:00Z'));
+  assert.equal(heat.length, 370);
+  assert.equal(heat.filter((c) => c.isToday).length, 1);
+  assert.equal(heat[heat.length - 1].isToday, true);
+
+  // pricing: null cache tokens don't become 0, dotted names normalize, o3 included
+  const parsedPricing = pricing.parseLiteLlmPricingJson({
+    o3: { input_cost_per_token: 2e-6, output_cost_per_token: 8e-6, cache_read_input_token_cost: null },
+    'anthropic/claude-4.6-sonnet': { input_cost_per_token: 3e-6, output_cost_per_token: 1.5e-5, cache_read_input_token_cost: 3e-7 },
+  });
+  assert.ok(parsedPricing.o3, 'o3 should be included by pricing parser');
+  assert.equal(parsedPricing.o3.cacheReadPerM, 0.5, 'null cache_read_input_token_cost must fall back to 0.25x estimate instead of 0');
+  const dottedResolved = pricing.resolveModelPrice('claude-4.6-sonnet', parsedPricing);
+  assert.equal(dottedResolved.inputPerM, 3);
+
+  // quota tracker: missing userStatus yields 'default' accountKey & cap >10min idle synthetic credit
+  assert.deepEqual(quotaTracker.extractAccountInfo(null), { accountKey: 'default', accountLabel: '' });
+  const store = quotaTracker.createEmptyStore();
+  const t0 = Date.parse('2026-11-27T10:00:00Z');
+  const pools = [{ name: 'Claude', remainingPct: 100, resetSec: Math.floor(t0 / 1000) + 18000 }];
+  quotaTracker.recordQuotaSample(store, pools, t0, { latestActivityMs: t0 });
+  const t2h = t0 + 2 * 3600 * 1000; // 2h gap with no activity (>10m cap)
+  quotaTracker.recordQuotaSample(store, pools, t2h, { latestActivityMs: t0 });
+  const summary = quotaTracker.summarizeWeeklyQuota(store, pools, t2h);
+  assert.equal(summary.available, true);
+  assert.equal(summary.pools[0].consumedTodayPct, 0);
+});
+
+test('v2.2.0 powertools fixes: cdp validator, extensions-dock XSS-free render, stagePromptInjection gating, unread numeric proto, branch-edit short query, task-progress checklist & macOS recursive payload', async () => {
+  const cdp = require('../cdp.js');
+  // cdp stagePromptInjection validator + default false
+  assert.equal(cdp.DEFAULT_CONFIG.stagePromptInjection, false);
+  assert.equal(cdp.validateConfigSetting('stagePromptInjection', 'yes'), false);
+  assert.equal(cdp.validateConfigSetting('stagePromptInjection', true), true);
+
+  // stage-collapse: applyStageUpdateConfig injects only when enabled=true, and ES module getter resolution works
+  const stageCollapse = require('../features/stage-collapse.js');
+  const baseCfg = { plannerConfig: { noToolExplanation: true, promptSectionCustomizationConfig: { appendPromptSections: [] } } };
+  const injectedCfg = stageCollapse.applyStageUpdateConfig(baseCfg, true);
+  assert.ok(injectedCfg.plannerConfig.promptSectionCustomizationConfig.appendPromptSections.some((s) => s.title === stageCollapse.STAGE_PROMPT_TITLE));
+  const strippedCfg = stageCollapse.applyStageUpdateConfig(injectedCfg, false);
+  assert.equal(strippedCfg.plannerConfig.promptSectionCustomizationConfig.appendPromptSections.length, 0);
+
+  const getterMod = Object.defineProperty({}, 'segmentFn', {
+    enumerable: true,
+    get() { return function () { return 'collapsible mode tool-group render'; }; },
+  });
+  Object.defineProperty(getterMod, 'cascadeFn', {
+    enumerable: true,
+    get() { return function () { return 'CascadeConfigSchema promptSectionCustomizationConfig'; }; },
+  });
+  const fakeWin = { webpackChunk_N_E: [[[], { 1: (_m, exp) => Object.assign(exp, getterMod) }]] };
+  assert.doesNotThrow(() => stageCollapse.discoverNativeStageBindings(fakeWin));
+
+  // unread-title: numeric protobuf states + summary unwrap
+  const unread = require('../features/unread-title.js');
+  assert.equal(unread.classifyTrajectoryState({ summary: { status: 2 } }), 'running');
+  assert.equal(unread.classifyTrajectoryState({ summary: { status: 9 } }), 'waiting');
+  assert.equal(unread.classifyTrajectoryState({ summary: { status: 3 } }), 'idle');
+
+  // extensions-dock: malicious XSS strings are escaped/stored via textContent rather than executed as innerHTML
+  const extDock = require('../features/extensions-dock.js');
+  const cleanEntry = extDock.normalizeSidecarEntry({ sidecarId: 'bad<script>1', title: '<img src=x onerror=alert(1)>' });
+  assert.equal(cleanEntry.title, '<img src=x onerror=alert(1)>');
+  const extSrc = fs.readFileSync(require.resolve('../features/extensions-dock.js'), 'utf8');
+  assert.equal(/\.innerHTML\s*=[^;\n]*\$\{[^}]*(ext\.title|shortLabel|logoSrc)/.test(extSrc), false, 'extensions-dock.js must not interpolate ext.title or logoSrc into innerHTML');
+
+  // branch-edit: short ambiguous query requires exact match, not substring
+  const branchEdit = require('../features/branch-edit.js');
+  const turns = [{ stepIndex: 1, text: 'hi there' }, { stepIndex: 3, text: 'hi' }];
+  const picked = branchEdit.matchTurnIndex(turns, [{ textContent: 'hi' }], { textContent: 'hi' });
+  assert.equal(picked?.stepIndex, 3);
+
+  // task-progress: summarizeSteps counts checklist and prioritizes update_steps toolCalls
+  const tpSummary = taskProgress.summarizeSteps([
+    {
+      status: 3,
+      step: {
+        case: 'plannerResponse',
+        value: {
+          toolCalls: [{ name: 'update_steps', argumentsJson: JSON.stringify({ steps: [{ title: 'A', status: 'done' }, { title: 'B', status: 'pending' }] }) }],
+          response: '- [ ] ignored fallback',
+        },
+      },
+    },
+  ]);
+  assert.equal(tpSummary.checklist.length, 2);
+  assert.equal(tpSummary.checklist[0].status, 'done');
+
+  // ssh-remote: spawn failure returns error result cleanly without TDZ & attaches stdin error handler
+  const sshRes = await sshRemote.fetchSshRemoteRequests('devbox', {
+    force: true,
+    spawnFn: () => { throw new Error('ENOENT ssh'); },
+  });
+  assert.match(String(sshRes.error || ''), /ENOENT ssh/);
+
+  // macOS installer & build script recursive features/ support
+  const repoRoot = path.dirname(require.resolve('../cdp.js'));
+  const buildMacosSrc = fs.readFileSync(path.join(repoRoot, 'scripts', 'build-macos.mjs'), 'utf8');
+  const swiftSetupSrc = fs.readFileSync(path.join(repoRoot, 'installer', 'macos', 'Setup', 'main.swift'), 'utf8');
+  assert.match(buildMacosSrc, /mkdirSync\(path\.dirname\(destPath\), \{ recursive: true \}\)/);
+  assert.match(swiftSetupSrc, /func copyPayloadDirectory\(/);
+});
+

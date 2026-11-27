@@ -418,17 +418,20 @@ test('inject expression mounts and REMOVE_EXPRESSION cleanly tears down on simul
     assert.equal(ctxPop.innerHTML.includes('Token HUD 与圆环快捷设置'), false);
     assert.equal(ctxPop.innerHTML.includes('data-hud-key'), false);
 
-    // Settings are managed by the native Aux Pane control panel, so Appearance stays untouched
+    // Settings section stays in Appearance panel alongside native Aux Pane control panel
     assert.equal(generalPanel.querySelector('#ag-cs-settings-sec'), null);
-    assert.equal(appearancePanel.querySelector('#ag-cs-settings-sec'), null);
+    const settingsSec = appearancePanel.querySelector('#ag-cs-settings-sec');
+    assert.ok(settingsSec, 'Expected #ag-cs-settings-sec to mount in Appearance panel');
+    assert.ok(settingsSec.querySelector('[data-ag-cs-group="powertools"]'), 'Expected Powertools group in Appearance panel');
+    assert.ok(settingsSec.querySelector('[data-ag-cs-row="stagePromptInjection"]'), 'Expected stagePromptInjection toggle in Appearance panel');
 
-    // Verify all 5 language switches work live via refreshConfig (used by Aux Pane control panel)
+    // Verify all 5 language switches work live via refreshConfig (used by both Aux Pane and Appearance panel)
     const checkLangSwitch = (targetLang, expectedOverviewTab, expectedPlaceholder, expectedQuotaTab) => {
       doc.hidden = true;
       sandbox.window.__agClaudeStyle.refreshConfig({ ...cdp.DEFAULT_CONFIG, language: targetLang, effortSliderStyle: 'liangwufeng' });
       doc.hidden = false;
       assert.equal(html.getAttribute('data-ag-cs-lang'), targetLang);
-      assert.equal(appearancePanel.querySelector('#ag-cs-settings-sec'), null);
+      assert.equal(appearancePanel.querySelector('#ag-cs-settings-sec')?.getAttribute('data-ag-cs-lang'), targetLang);
       assert.equal(home.querySelector('.ag-cs-home-tab[data-tab="overview"]')?.textContent, expectedOverviewTab);
       assert.equal(placeholder.getAttribute('data-ag-cs-placeholder'), expectedPlaceholder);
       assert.ok(ctxPop.innerHTML.includes(expectedQuotaTab));
@@ -498,6 +501,7 @@ test('inject expression mounts and REMOVE_EXPRESSION cleanly tears down on simul
     assert.equal(card.querySelector('.ag-cs-crab'), null);
     assert.equal(dialog.querySelector('#ag-cs-settings-sec'), null);
   } finally {
+    try { vm.runInNewContext(cdp.REMOVE_EXPRESSION, sandbox); } catch {}
     for (const id of timers) clearTimeout(id);
   }
 });
@@ -2631,6 +2635,11 @@ test('streaming Turn 2 response does not hijack #T1 badge, observer ignores exte
   const inputBox = makeNode('div', { id: 'antigravity.agentSidePanelInputBox', attrs: { 'data-testid': 'agent-input-box' } });
   const card = makeNode('div', { className: 'surface-composer-card' });
   const editorEl = makeNode('div', { attrs: { contenteditable: 'true', 'data-lexical-editor': 'true' } });
+  let editorLayoutReads = 0;
+  editorEl.getBoundingClientRect = () => {
+    editorLayoutReads++;
+    return { left: 0, top: 0, right: 300, bottom: 40, width: 300, height: 40 };
+  };
   const footer = makeNode('div', { className: 'agy-composer-footer' });
   footer.appendChild(makeNode('button', { attrs: { 'data-testid': 'model-selector-trigger' }, text: 'Gemini 4 Neon' }));
   card.appendChild(editorEl);
@@ -2759,6 +2768,9 @@ test('streaming Turn 2 response does not hijack #T1 badge, observer ignores exte
     pdfTextLayer.appendChild(pdfSpan);
     observerCb([{ type: 'childList', target: pdfTextLayer, addedNodes: [pdfSpan], removedNodes: [] }]);
     assert.equal(rafCalls, rafBefore, 'PDF text layer additions must not trigger composer sync');
+
+    // Unfocused composer caret sync must skip getBoundingClientRect() / forced layout reads (PR #21 / Fixes #20)
+    assert.equal(editorLayoutReads, 0, 'Unfocused composer must skip caret layout reads');
 
     vm.runInNewContext(cdp.REMOVE_EXPRESSION, sandbox);
   } finally {

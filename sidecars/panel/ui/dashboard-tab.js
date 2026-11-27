@@ -438,12 +438,12 @@
       const btn = document.getElementById('btn-dash-auto');
       if (!btn) return;
       btn.classList.toggle('is-on', autoRefresh);
-      btn.innerHTML = `<span class="auto-dot"></span><span>${autoRefresh ? '自动刷新 5s' : '已暂停刷新'}</span>`;
+      btn.innerHTML = `<span class="auto-dot"></span><span>${autoRefresh ? '自动刷新 8s' : '已暂停刷新'}</span>`;
     }
 
     async function refresh({ syncSsh = false, preserveScroll = true, silent = false } = {}) {
       if (inflight) {
-        // Coalesce user-triggered refreshes/filters instead of silently dropping them during 5s auto-poll.
+        // Coalesce user-triggered refreshes/filters instead of silently dropping them during 8s auto-poll.
         if (!silent) {
           queuedRefresh = {
             syncSsh: Boolean(queuedRefresh?.syncSsh || syncSsh),
@@ -516,13 +516,24 @@
 
         const modelSel = document.getElementById('dash-model');
         const prevModel = modelSel.value;
+        const availModels = d.availableModels || [];
         modelSel.innerHTML = '<option value="">全部模型</option>';
-        for (const m of d.availableModels || []) {
+        let foundPrevModel = !prevModel;
+        for (const m of availModels) {
           const o = document.createElement('option');
           o.value = m;
           o.textContent = m;
-          if (m === prevModel) o.selected = true;
+          if (m === prevModel) {
+            o.selected = true;
+            foundPrevModel = true;
+          }
           modelSel.appendChild(o);
+        }
+        if (prevModel && !foundPrevModel) {
+          modelSel.value = '';
+          if (!queuedRefresh) {
+            queuedRefresh = { syncSsh: false, preserveScroll: false, silent: true };
+          }
         }
 
         lastTodaySummary = d.todaySummary || null;
@@ -576,7 +587,8 @@
             const card = document.createElement('div');
             card.className = 'req-item' + (r.anomaly ? ' is-anomaly' : r.status === 'error' ? ' is-error' : '');
             const isSsh = r.source && r.source !== 'local';
-            const srcLabel = isSsh ? `SSH:${r.source}` : '本机';
+            const srcName = isSsh ? String(r.source).replace(/^ssh:/i, '') : '';
+            const srcLabel = isSsh ? `SSH:${srcName}` : '本机';
             const shortCid = r.conversationId ? `#${String(r.conversationId).slice(0, 8)}` : '';
             const convoTitle = r.conversationTitle || shortCid || '未知会话';
             const dropHtml = r.anomaly
@@ -714,15 +726,25 @@
         renderHeatmap(lastHeatCells, { autoScroll: false });
       });
     });
+    let todayTipTimer = null;
     document.getElementById('btn-heat-today').addEventListener('click', () => {
-      scrollHeatmapToToday();
-      if (lastTodaySummary) {
-        const todayCell = document.querySelector('#heatmap-grid .heat-cell.is-today');
-        if (todayCell) {
-          showHeatTooltip(lastTodaySummary, todayCell);
-          setTimeout(hideHeatTooltip, 2600);
-        }
+      if (todayTipTimer) {
+        clearTimeout(todayTipTimer);
+        todayTipTimer = null;
       }
+      scrollHeatmapToToday();
+      requestAnimationFrame(() => {
+        if (lastTodaySummary) {
+          const todayCell = document.querySelector('#heatmap-grid .heat-cell.is-today');
+          if (todayCell) {
+            showHeatTooltip(lastTodaySummary, todayCell);
+            todayTipTimer = setTimeout(() => {
+              todayTipTimer = null;
+              hideHeatTooltip();
+            }, 2600);
+          }
+        }
+      });
     });
     document.getElementById('btn-filter-today').addEventListener('click', () => {
       if (!lastTodaySummary) return;
@@ -848,6 +870,7 @@
     const pricingBtn = document.getElementById('btn-dash-pricing');
     if (pricingBtn) {
       pricingBtn.addEventListener('click', async () => {
+        const prevText = pricingBtn.textContent;
         pricingBtn.disabled = true;
         pricingBtn.textContent = '同步中…';
         try {
@@ -862,8 +885,10 @@
           }
         } catch (err) {
           app.showToast(`单价同步异常：${err.message}`);
+          if (pricingBtn.textContent === '同步中…') pricingBtn.textContent = prevText || '$ 单价';
         } finally {
           pricingBtn.disabled = false;
+          if (pricingBtn.textContent === '同步中…') pricingBtn.textContent = prevText || '$ 单价';
         }
       });
     }

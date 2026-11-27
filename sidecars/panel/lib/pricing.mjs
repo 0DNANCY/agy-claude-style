@@ -8,9 +8,13 @@ export const BUILTIN_MODEL_PRICING = [
   { match: /opus/i, inputPerM: 15.0, cacheReadPerM: 1.5, outputPerM: 75.0 },
   { match: /sonnet/i, inputPerM: 3.0, cacheReadPerM: 0.3, outputPerM: 15.0 },
   { match: /haiku/i, inputPerM: 0.8, cacheReadPerM: 0.08, outputPerM: 4.0 },
+  { match: /gemini-4-carbon|carbon/i, inputPerM: 2.0, cacheReadPerM: 0.2, outputPerM: 10.0 },
+  { match: /gemini-4-neon|neon/i, inputPerM: 1.5, cacheReadPerM: 0.15, outputPerM: 7.5 },
+  { match: /gemini-4-hydrogen|hydrogen/i, inputPerM: 1.5, cacheReadPerM: 0.15, outputPerM: 7.5 },
+  { match: /gemini-4-argon|argon/i, inputPerM: 0.5, cacheReadPerM: 0.05, outputPerM: 2.5 },
   { match: /gemini.*flash/i, inputPerM: 0.15, cacheReadPerM: 0.0375, outputPerM: 0.6 },
   { match: /gemini.*pro|gemini-4|gemini-3/i, inputPerM: 1.25, cacheReadPerM: 0.31, outputPerM: 10.0 },
-  { match: /gpt-5|o3|o4/i, inputPerM: 2.5, cacheReadPerM: 0.625, outputPerM: 10.0 },
+  { match: /gpt-5|o1|o3|o4/i, inputPerM: 2.5, cacheReadPerM: 0.625, outputPerM: 10.0 },
   { match: /gpt-4/i, inputPerM: 2.5, cacheReadPerM: 1.25, outputPerM: 10.0 },
   { match: /./, inputPerM: 1.5, cacheReadPerM: 0.3, outputPerM: 6.0 },
 ];
@@ -26,13 +30,15 @@ export const PRICING_SOURCES = [
   },
 ];
 
-const RELEVANT_KEY_RE = /^(?:(?:anthropic|openai|gemini|google|vertex_ai)\/)?(claude-|gemini-|gpt-|o[134]-)/i;
+const RELEVANT_KEY_RE = /^(?:(?:anthropic|openai|gemini|google|vertex_ai)\/)?(claude-|gemini-|gpt-|o[134](?:-|$))/i;
+const SPECIALIZED_MODALITY_RE = /-(audio|realtime|tts|transcribe|image|search|diarize)(?:-|$)/i;
 
 function normalizePricingKey(raw = '') {
   return String(raw || '')
     .trim()
     .toLowerCase()
     .replace(/^(?:anthropic|openai|gemini|google|vertex_ai|models)\//i, '')
+    .replace(/(\d)\.(\d)/g, '$1-$2')
     .replace(/\s+/g, '-')
     .replace(/_/g, '-')
     .replace(/-thinking$/i, '')
@@ -50,11 +56,13 @@ export function parseLiteLlmPricingJson(rawObj) {
     if (!Number.isFinite(inPerTok) || !Number.isFinite(outPerTok) || inPerTok <= 0 || outPerTok <= 0) {
       continue;
     }
-    const cachePerTok = Number(entry.cache_read_input_token_cost);
+    const rawCache = entry.cache_read_input_token_cost;
+    const hasExplicitCache = rawCache !== null && rawCache !== undefined && rawCache !== '';
+    const cachePerTok = hasExplicitCache ? Number(rawCache) : NaN;
     const inputPerM = Number((inPerTok * 1_000_000).toFixed(4));
     const outputPerM = Number((outPerTok * 1_000_000).toFixed(4));
     const cacheReadPerM =
-      Number.isFinite(cachePerTok) && cachePerTok >= 0
+      hasExplicitCache && Number.isFinite(cachePerTok) && cachePerTok >= 0
         ? Number((cachePerTok * 1_000_000).toFixed(4))
         : Number((inputPerM * 0.25).toFixed(4));
 
@@ -62,7 +70,7 @@ export function parseLiteLlmPricingJson(rawObj) {
     if (!norm) continue;
     // Prefer canonical unprefixed entries when both prefixed and unprefixed exist
     const isPrefixed = key.includes('/');
-    if (!out[norm] || !isPrefixed) {
+    if (!Object.hasOwn(out, norm) || !isPrefixed) {
       out[norm] = { inputPerM, cacheReadPerM, outputPerM };
     }
   }
@@ -81,24 +89,43 @@ export function resolveModelPrice(model = '', syncedModels = null) {
   if (syncedModels && typeof syncedModels === 'object') {
     const norm = normalizePricingKey(model);
     if (norm) {
-      if (syncedModels[norm]) return syncedModels[norm];
-      // Match longest prefix/substring (e.g. "claude-sonnet-4-6" -> "claude-sonnet-4-6-2026...")
-      let bestKey = '';
-      for (const k of Object.keys(syncedModels)) {
-        if (norm.startsWith(k) || k.startsWith(norm)) {
-          if (k.length > bestKey.length) bestKey = k;
+      if (Object.hasOwn(syncedModels, norm)) return syncedModels[norm];
+      const normSpecialized = SPECIALIZED_MODALITY_RE.test(norm);
+      const keys = Object.keys(syncedModels);
+
+      // 1. Specific model matches a shorter canonical prefix (prefer longest prefix)
+      let bestBase = '';
+      for (const k of keys) {
+        if (norm.startsWith(k + '-') && k.length > bestBase.length) {
+          bestBase = k;
         }
       }
-      if (bestKey) return syncedModels[bestKey];
-      // Family alias fallback (e.g. "Claude 4.6 Sonnet" -> claude-sonnet-4-6)
-      const tokens = norm.split('-').filter((t) => t && !/^(preview|latest|beta|exp|neon|pro-high)$/.test(t));
+      if (bestBase) return syncedModels[bestBase];
+
+      // 2. Canonical model prefix matches a dated/variant key (prefer shortest closest match, avoid specialized audio/realtime/tts variants)
+      let bestExt = '';
+      for (const k of keys) {
+        if (k.startsWith(norm + '-')) {
+          if (!normSpecialized && SPECIALIZED_MODALITY_RE.test(k.slice(norm.length))) continue;
+          if (!bestExt || k.length < bestExt.length) bestExt = k;
+        }
+      }
+      if (bestExt) return syncedModels[bestExt];
+
+      // 3. Family alias fallback (e.g. "Claude 4.6 Sonnet" -> claude-sonnet-4-6)
+      const tokens = norm
+        .split('-')
+        .filter((t) => t && !/^(preview|latest|beta|exp|pro-high|high|medium|low)$/.test(t));
       if (tokens.length >= 2) {
-        for (const k of Object.keys(syncedModels)) {
-          if (tokens.every((t) => k.includes(t))) {
-            if (k.length > bestKey.length) bestKey = k;
+        let bestAlias = '';
+        for (const k of keys) {
+          if (!normSpecialized && SPECIALIZED_MODALITY_RE.test(k)) continue;
+          const kTokens = new Set(k.split('-'));
+          if (tokens.every((t) => kTokens.has(t))) {
+            if (!bestAlias || k.length < bestAlias.length) bestAlias = k;
           }
         }
-        if (bestKey) return syncedModels[bestKey];
+        if (bestAlias) return syncedModels[bestAlias];
       }
     }
   }

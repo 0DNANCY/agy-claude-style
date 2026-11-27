@@ -78,26 +78,33 @@
     const domIdx = domNodes.indexOf(targetEl);
     const fromEnd = domIdx >= 0 ? domNodes.length - 1 - domIdx : -1;
     const cleanDom = stripRelTimeSuffix(extractDomPromptText(targetEl));
-    const matches = (t) => {
+    const exactMatches = (t) => {
       const cleanFt = stripRelTimeSuffix(t.text);
-      if (!cleanDom || !cleanFt) return false;
-      return cleanFt === cleanDom || cleanFt.startsWith(cleanDom.slice(0, 24)) || cleanDom.startsWith(cleanFt.slice(0, 24));
+      return Boolean(cleanDom && cleanFt && cleanFt === cleanDom);
     };
-    if (fromEnd >= 0) {
-      const expected = trajTurns.length - 1 - fromEnd;
-      if (expected >= 0 && expected < trajTurns.length && matches(trajTurns[expected])) {
-        return trajTurns[expected];
-      }
-      for (let off = 1; off < trajTurns.length; off++) {
-        for (const cand of [expected - off, expected + off]) {
-          if (cand >= 0 && cand < trajTurns.length && matches(trajTurns[cand])) {
-            return trajTurns[cand];
+    const prefixMatches = (t) => {
+      const cleanFt = stripRelTimeSuffix(t.text);
+      if (!cleanDom || !cleanFt || Math.min(cleanDom.length, cleanFt.length) < 16) return false;
+      const needleLen = Math.min(24, cleanDom.length, cleanFt.length);
+      return cleanFt.startsWith(cleanDom.slice(0, needleLen)) || cleanDom.startsWith(cleanFt.slice(0, needleLen));
+    };
+    for (const matcher of [exactMatches, prefixMatches]) {
+      if (fromEnd >= 0) {
+        const expected = trajTurns.length - 1 - fromEnd;
+        if (expected >= 0 && expected < trajTurns.length && matcher(trajTurns[expected])) {
+          return trajTurns[expected];
+        }
+        for (let off = 1; off < trajTurns.length; off++) {
+          for (const cand of [expected - off, expected + off]) {
+            if (cand >= 0 && cand < trajTurns.length && matcher(trajTurns[cand])) {
+              return trajTurns[cand];
+            }
           }
         }
       }
-    }
-    for (let i = trajTurns.length - 1; i >= 0; i--) {
-      if (matches(trajTurns[i])) return trajTurns[i];
+      for (let i = trajTurns.length - 1; i >= 0; i--) {
+        if (matcher(trajTurns[i])) return trajTurns[i];
+      }
     }
     return null;
   }
@@ -139,11 +146,15 @@
   function findHostApis(anchorEl) {
     const vals = collectProviders(anchorEl);
     let svc = null;
+    let stepHandler = null;
     let router = null;
     let cascadeId = '';
     for (const v of vals) {
       if (!svc && (typeof v.forkConversation === 'function' || typeof v.getCascadeTrajectory === 'function' || typeof v.revertToCascadeStep === 'function')) {
         svc = v;
+      }
+      if (!stepHandler && typeof v.revertToIndex === 'function') {
+        stepHandler = v;
       }
       if (!router && typeof v.navigate === 'function' && v.routesByPath) {
         router = v;
@@ -153,23 +164,30 @@
         if (typeof cid === 'string' && cid.length > 6) cascadeId = cid;
       }
     }
-    if (!router) {
-      // Fallback: search downward from #root for TanStack Router
+    if (!router || !stepHandler || !svc) {
+      // Fallback: search downward from #root for TanStack Router / host providers
       const rootEl = document.getElementById('root') || document.body?.firstElementChild;
       const rootKey = rootEl && Object.keys(rootEl).find((k) => k.startsWith('__reactFiber$') || k.startsWith('__reactContainer$'));
       if (rootKey && rootEl[rootKey]) {
         const seen = new Set();
         const stack = [rootEl[rootKey]];
         let n = 0;
-        while (stack.length && n < 5000) {
+        while (stack.length && n < 5000 && (!router || !stepHandler || !svc)) {
           n++;
           const f = stack.pop();
           if (!f || seen.has(f)) continue;
           seen.add(f);
           const v = f.memoizedProps?.value;
-          if (v && typeof v === 'object' && typeof v.navigate === 'function' && v.routesByPath) {
-            router = v;
-            break;
+          if (v && typeof v === 'object') {
+            if (!svc && (typeof v.forkConversation === 'function' || typeof v.getCascadeTrajectory === 'function' || typeof v.revertToCascadeStep === 'function')) {
+              svc = v;
+            }
+            if (!stepHandler && typeof v.revertToIndex === 'function') {
+              stepHandler = v;
+            }
+            if (!router && typeof v.navigate === 'function' && v.routesByPath) {
+              router = v;
+            }
           }
           if (f.child) stack.push(f.child);
           if (f.sibling) stack.push(f.sibling);
@@ -183,7 +201,7 @@
       const m = String(location.pathname || location.href || '').match(/\/c\/([a-zA-Z0-9_-]{8,})/);
       if (m) cascadeId = m[1];
     }
-    return { svc, router, cascadeId };
+    return { svc, stepHandler, router, cascadeId };
   }
 
   function extractStepIndexFromFiber(respEl) {
@@ -227,7 +245,9 @@
     }
 
     const domClean = preserveText(extractDomPromptText(respEl)).replace(/\s+/g, ' ').slice(0, 40);
-    const allResp = Array.from(document.querySelectorAll('[data-testid="agent-response"]'));
+    const allResp = Array.from(document.querySelectorAll('[data-testid="agent-response"]')).filter(
+      (el) => !el.closest('[data-testid="subagent-tab-conversation"]')
+    );
     const domIdx = allResp.indexOf(respEl);
     if (domIdx >= 0) {
       const fromEnd = allResp.length - 1 - domIdx;
@@ -270,30 +290,54 @@
     return msg.includes('subagent') && (msg.includes('not supported') || msg.includes('fork'));
   }
 
+  function findMainComposerBox() {
+    const boxes = Array.from(document.querySelectorAll('[data-testid="agent-input-box"]'));
+    return boxes.find((b) => !b.closest('[data-testid="subagent-tab-conversation"]')) || boxes[0] || null;
+  }
+
+  function findMainComposerEditor() {
+    const box = findMainComposerBox();
+    const scoped = box ? box.querySelector(COMPOSER_EDITOR_SEL) : null;
+    if (scoped) return scoped;
+    const eds = Array.from(document.querySelectorAll(COMPOSER_EDITOR_SEL));
+    return eds.find((ed) => !ed.closest('[data-testid="subagent-tab-conversation"]')) || eds[0] || null;
+  }
+
+  function isLexicalEditor(ed) {
+    if (!ed) return false;
+    if (ed.getAttribute?.('data-lexical-editor') === 'true') return true;
+    try {
+      return Object.keys(ed).some((k) => k.startsWith('__lexical'));
+    } catch {
+      return false;
+    }
+  }
+
   function insertTextIntoComposer(text) {
-    const editor = document.querySelector(COMPOSER_EDITOR_SEL);
+    const editor = findMainComposerEditor();
     if (!editor) return false;
+    const str = String(text || '');
+    const lexical = isLexicalEditor(editor);
     try {
       editor.focus?.();
+      let inserted = false;
       if (typeof document.execCommand === 'function') {
         document.execCommand('selectAll', false, null);
         document.execCommand('delete', false, null);
-        const lines = String(text || '').split('\n');
-        for (let i = 0; i < lines.length; i++) {
-          if (lines[i]) document.execCommand('insertText', false, lines[i]);
-          if (i < lines.length - 1) {
-            const ev = new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', shiftKey: true, bubbles: true, cancelable: true });
-            editor.dispatchEvent(ev);
-          }
-        }
-      } else {
-        editor.textContent = String(text || '');
+        inserted = Boolean(document.execCommand('insertText', false, str));
       }
-      editor.dispatchEvent(new Event('input', { bubbles: true }));
+      if (!inserted || (!lexical && preserveText(editor.textContent) !== str)) {
+        editor.textContent = str;
+        if (typeof InputEvent === 'function') {
+          editor.dispatchEvent(new InputEvent('input', { bubbles: true, data: str, inputType: 'insertText' }));
+        } else {
+          editor.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+      }
       return true;
     } catch {
       try {
-        editor.textContent = String(text || '');
+        editor.textContent = str;
         editor.dispatchEvent(new Event('input', { bubbles: true }));
         return true;
       } catch {
@@ -303,7 +347,7 @@
   }
 
   function triggerComposerSend() {
-    const box = document.querySelector('[data-testid="agent-input-box"]');
+    const box = findMainComposerBox();
     if (!box) return false;
     const btn =
       box.querySelector('[data-testid="send-button"]') ||
@@ -433,8 +477,11 @@
         try {
           if (typeof svc.getCascadeTrajectory === 'function') {
             const trajRes = await svc.getCascadeTrajectory({ cascadeId });
-            const steps = trajRes?.trajectory?.steps || trajRes?.steps || [];
-            const allResp = Array.from(document.querySelectorAll('[data-testid="agent-response"]'));
+            if (ctx.isDestroyed?.()) return false;
+            const steps = trajRes?.trajectory?.steps || trajRes?.response?.trajectory?.steps || trajRes?.steps || [];
+            const allResp = Array.from(document.querySelectorAll('[data-testid="agent-response"]')).filter(
+              (el) => !el.closest('[data-testid="subagent-tab-conversation"]')
+            );
             const domIdx = allResp.indexOf(respEl);
             const responseStepIndices = [];
             for (let i = 0; i < steps.length; i++) {
@@ -455,10 +502,12 @@
           }
         } catch {}
       }
+      if (ctx.isDestroyed?.()) return false;
 
       try {
         const payload = buildForkPayload(cascadeId, stepIndex, 1);
         const res = await svc.forkConversation(payload);
+        if (ctx.isDestroyed?.()) return false;
         const newId = res?.newCascadeId || res?.cascadeId || res?.conversationId || (typeof res === 'string' ? res : '');
         if (newId) {
           showToast(ui.branchCreated || '已创建会话分支');
@@ -492,7 +541,8 @@
         return true;
       } catch (err) {
         if (isSubagentForkUnsupportedError(err)) {
-          const isZh = String(ctx.getCfg?.().language || 'zh-CN') !== 'en';
+          const lang = String(ctx.getCfg?.().language || 'zh-CN');
+          const isZh = lang.startsWith('zh') || lang === 'yue';
           showToast(
             isZh
               ? '无法创建分支：该会话曾调用过子智能体 / Swarm，Antigravity 后端暂不支持分支此类对话'
@@ -549,30 +599,47 @@
         if (!nextText) return;
         sendBtn.disabled = true;
         try {
-          const { svc, cascadeId } = findHostApis(stepEl);
+          const { svc, stepHandler, cascadeId } = findHostApis(stepEl);
           let reverted = false;
-          if (svc && cascadeId && typeof svc.getCascadeTrajectory === 'function' && typeof svc.revertToCascadeStep === 'function') {
+          if (svc && cascadeId && typeof svc.getCascadeTrajectory === 'function' && (typeof stepHandler?.revertToIndex === 'function' || typeof svc.revertToCascadeStep === 'function')) {
             const trajRes = await svc.getCascadeTrajectory({ cascadeId });
-            const steps = trajRes?.trajectory?.steps || trajRes?.steps || [];
+            if (ctx.isDestroyed?.()) return;
+            const steps = trajRes?.trajectory?.steps || trajRes?.response?.trajectory?.steps || trajRes?.steps || [];
             const trajTurns = [];
             for (let i = 0; i < steps.length; i++) {
               const c = String(steps[i]?.step?.case || steps[i]?.type || '').toLowerCase();
               if (c === 'userinput' || c === 'user_input') {
-                trajTurns.push({ stepIndex: i, text: extractUserStepText(steps[i]) });
+                const realIdx = steps[i]?.metadata?.sourceTrajectoryStepInfo?.stepIndex;
+                trajTurns.push({ stepIndex: Number.isInteger(realIdx) && realIdx >= 0 ? realIdx : i, text: extractUserStepText(steps[i]) });
               }
             }
-            const domNodes = Array.from(document.querySelectorAll('[data-testid="user-input-step"]'));
+            const domNodes = Array.from(document.querySelectorAll('[data-testid="user-input-step"]')).filter(
+              (el) => !el.closest('[data-testid="subagent-tab-conversation"]')
+            );
             const matched = matchTurnIndex(trajTurns, domNodes, stepEl);
             if (matched && Number.isInteger(matched.stepIndex)) {
-              await svc.revertToCascadeStep({ cascadeId, stepIndex: matched.stepIndex, keepCodeChanges: true });
-              reverted = true;
-              if (typeof ctx.scheduleSync === 'function') ctx.scheduleSync();
+              const revertIdx = Math.max(0, matched.stepIndex - 1);
+              if (stepHandler && typeof stepHandler.revertToIndex === 'function') {
+                await stepHandler.revertToIndex(cascadeId, revertIdx, { conversationOnly: true });
+                reverted = true;
+              } else if (typeof svc.revertToCascadeStep === 'function') {
+                if (svc.revertToCascadeStep.length === 1) {
+                  await svc.revertToCascadeStep({ cascadeId, stepIndex: revertIdx, keepCodeChanges: true });
+                } else {
+                  await svc.revertToCascadeStep(cascadeId, revertIdx, undefined, true);
+                }
+                reverted = true;
+              }
+              if (ctx.isDestroyed?.()) return;
+              if (reverted && typeof ctx.scheduleSync === 'function') ctx.scheduleSync();
             }
           }
           closeActiveEditor();
           await new Promise((r) => setTimeout(r, reverted ? 120 : 30));
+          if (ctx.isDestroyed?.()) return;
           insertTextIntoComposer(nextText);
           await new Promise((r) => setTimeout(r, 40));
+          if (ctx.isDestroyed?.()) return;
           triggerComposerSend();
           showToast(reverted ? (ui.editSent || '已原位修改并重发') : (ui.editFilled || '已填入输入框并发送'));
         } catch (err) {
@@ -614,9 +681,14 @@
     function findResponseActionBar(respEl) {
       let cur = respEl;
       for (let depth = 0; depth < 4 && cur; depth++) {
+        if (depth > 0) {
+          if (cur.matches?.('[data-testid="conversation-view"],[data-testid="subagent-tab-conversation"]')) break;
+          const respCount = cur.querySelectorAll?.('[data-testid="agent-response"]')?.length || 0;
+          if (respCount > 1) break;
+        }
         const bars = cur.querySelectorAll('div.flex.shrink-0.items-center');
         for (const bar of bars) {
-          if (bar.closest('[data-testid="user-input-step"]')) continue;
+          if (bar.closest('[data-testid="user-input-step"],header,[role="toolbar"],[data-testid="subagent-tab-conversation"]')) continue;
           const nativeIconBtns = Array.from(bar.children).filter(
             (c) => c.tagName === 'BUTTON' && c.classList.contains('agy-button-icon') && !c.classList.contains('ag-cs-branch-btn')
           );

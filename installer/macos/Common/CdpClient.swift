@@ -54,7 +54,7 @@ final class PluginManifest {
         let manifestPath = (baseDir as NSString).appendingPathComponent("manifest.json")
         let text = try String(contentsOfFile: manifestPath, encoding: .utf8)
         let raw = try MiniJson.parseObject(text)
-        let version = raw["version"]?.stringValue ?? "2.1.0"
+        let version = raw["version"]?.stringValue ?? "2.2.0"
         let styleId = raw["styleId"]?.stringValue ?? "ag-claude-style-css"
         let settingBinding = raw["settingBinding"]?.stringValue ?? "__agClaudeStyleSetting"
         let removeExpression = raw["removeExpression"]?.stringValue ?? ""
@@ -454,6 +454,73 @@ enum CdpHelper {
         return cfg
     }
 
+    private static func hasUnsafeControlChars(_ s: String) -> Bool {
+        for sc in s.unicodeScalars {
+            if sc.value < 0x20 || sc.value == 0x7f { return true }
+        }
+        return false
+    }
+
+    private static func isValidSshHost(_ s: String) -> Bool {
+        let trimmed = s.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { return true }
+        if trimmed.hasPrefix("-") || trimmed.count > 128 { return false }
+        for ch in trimmed {
+            let ok = (ch >= "a" && ch <= "z") || (ch >= "A" && ch <= "Z") || (ch >= "0" && ch <= "9") ||
+                ch == "." || ch == "_" || ch == ":" || ch == "@" || ch == "-"
+            if !ok { return false }
+        }
+        return true
+    }
+
+    private static func isValidProxyUrl(_ s: String) -> Bool {
+        let trimmed = s.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { return true }
+        if trimmed.count > 256 { return false }
+        let badChars: Set<Character> = ["'", "\"", "`", "\\", ";", "$", "|", "&", "<", ">"]
+        for ch in trimmed {
+            if ch.isWhitespace || badChars.contains(ch) { return false }
+        }
+        guard let comps = URLComponents(string: trimmed),
+              let scheme = comps.scheme?.lowercased(),
+              ["http", "https", "socks5", "socks5h"].contains(scheme),
+              let host = comps.host, !host.isEmpty else {
+            return false
+        }
+        if !comps.path.isEmpty && comps.path != "/" { return false }
+        if comps.query != nil || comps.fragment != nil { return false }
+        return true
+    }
+
+    private static func isValidProxyBypass(_ s: String) -> Bool {
+        let badChars: Set<Character> = ["'", "\"", "`", "\\", "$", "|", "&", "<", ">", "%", "^", "!"]
+        for ch in s {
+            if badChars.contains(ch) { return false }
+        }
+        return true
+    }
+
+    private static func redactProxyUrl(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { return "" }
+        if let comps = URLComponents(string: trimmed),
+           (comps.user?.isEmpty == false || comps.password?.isEmpty == false),
+           let scheme = comps.scheme, let host = comps.host {
+            let formattedHost = (host.contains(":") && !host.hasPrefix("[")) ? "[\(host)]" : host
+            let portPart = comps.port != nil ? ":\(comps.port!)" : ""
+            return "\(scheme)://***@\(formattedHost)\(portPart)"
+        }
+        return trimmed
+    }
+
+    private static func sanitizeConfigForPage(_ config: [String: JsonValue]) -> [String: JsonValue] {
+        var copy = config
+        if let proxyStr = copy["proxyUrl"]?.stringValue, !proxyStr.isEmpty {
+            copy["proxyUrl"] = .string(redactProxyUrl(proxyStr))
+        }
+        return copy
+    }
+
     static func updateConfigSetting(baseDir: String, manifest: PluginManifest, key: String, value: JsonValue) -> Bool {
         guard let rule = manifest.validators[key] else { return false }
         if let ruleStr = rule.stringValue, ruleStr == "boolean" {
@@ -462,6 +529,37 @@ enum CdpHelper {
             guard let strVal = value.stringValue else { return false }
             let matched = allowed.contains { $0.stringValue == strVal }
             if !matched { return false }
+        } else if let spec = rule.objectValue, let typeStr = spec["type"]?.stringValue {
+            if typeStr == "integer" {
+                guard let iv = value.int64Value else { return false }
+                let minV = spec["min"]?.int64Value ?? Int64.min
+                let maxV = spec["max"]?.int64Value ?? Int64.max
+                if iv < minV || iv > maxV { return false }
+            } else if typeStr == "string" {
+                guard let sv = value.stringValue, !hasUnsafeControlChars(sv) else { return false }
+                let maxLen = spec["maxLength"]?.intValue ?? 512
+                if sv.count > maxLen { return false }
+                let kind = spec["kind"]?.stringValue ?? ""
+                if kind == "sshHost" && !isValidSshHost(sv) { return false }
+                if kind == "proxyUrl" && !isValidProxyUrl(sv) { return false }
+                if kind == "proxyBypass" && !isValidProxyBypass(sv) { return false }
+            } else if typeStr == "string[]" {
+                guard let arr = value.arrayValue else { return false }
+                let maxItems = spec["maxItems"]?.intValue ?? 32
+                let minItemLen = spec["minItemLength"]?.intValue ?? 1
+                let maxItemLen = spec["maxItemLength"]?.intValue ?? 128
+                if arr.count > maxItems { return false }
+                for itemVal in arr {
+                    guard let item = itemVal.stringValue,
+                          item.count >= minItemLen,
+                          item.count <= maxItemLen,
+                          !hasUnsafeControlChars(item) else {
+                        return false
+                    }
+                }
+            } else {
+                return false
+            }
         } else {
             return false
         }
@@ -502,7 +600,7 @@ enum CdpHelper {
     }
 
     static func buildConfigScriptExpression(baseDir: String, manifest: PluginManifest, expectedCodeHash: String) -> String {
-        var payload = readConfig(baseDir: baseDir, manifest: manifest)
+        var payload = sanitizeConfigForPage(readConfig(baseDir: baseDir, manifest: manifest))
         payload["binding"] = .string(manifest.settingBinding)
         payload["codeHash"] = .string(expectedCodeHash)
         let payloadJson = MiniJson.stringify(.object(payload), pretty: false)
@@ -536,7 +634,7 @@ enum CdpHelper {
         let bundle = try readRuntimeBundle(baseDir: baseDir, manifest: manifest)
         let codeHash = computeHash(bundle)
 
-        var initCfg = config
+        var initCfg = sanitizeConfigForPage(config)
         initCfg["binding"] = .string(manifest.settingBinding)
         initCfg["codeHash"] = .string(codeHash)
 
@@ -550,6 +648,8 @@ enum CdpHelper {
         sb.append("    const applyStyle = () => {\n")
         sb.append("      const targetParent = document.head || document.documentElement;\n")
         sb.append("      if (!targetParent) return;\n")
+        sb.append("      const conflictingStudio = document.getElementById('ag-claude-studio-css');\n")
+        sb.append("      if (conflictingStudio) conflictingStudio.remove();\n")
         sb.append("      let style = document.getElementById(")
         sb.append(styleIdJson)
         sb.append(");\n")
@@ -563,7 +663,8 @@ enum CdpHelper {
         sb.append("      if (style.parentNode !== targetParent || targetParent.lastElementChild !== style) {\n")
         sb.append("        targetParent.appendChild(style);\n")
         sb.append("      }\n")
-        sb.append("    };\n\n")
+        sb.append("    };\n")
+        sb.append("    globalThis.__agCsEnsureStyle = applyStyle;\n\n")
         sb.append("    let status = 'ok';\n")
         sb.append("    let mounted = false;\n")
         sb.append("    const mount = () => {\n")
@@ -575,6 +676,7 @@ enum CdpHelper {
         sb.append("          if (document.head) applyStyle();\n")
         sb.append("          else document.addEventListener('DOMContentLoaded', applyStyle, { once: true });\n")
         sb.append("        }\n")
+        sb.append("        globalThis.__agCsSidecarLogos = globalThis.__agCsSidecarLogos || {};\n")
         sb.append("        ")
         sb.append(bundle)
         sb.append("\n")
@@ -971,6 +1073,25 @@ enum CdpHelper {
             try proc.run()
             proc.waitUntilExit()
             return proc.terminationStatus == 0
+        } catch {
+            return false
+        }
+    }
+
+    @discardableResult
+    static func hideAntigravityApp() -> Bool {
+        if ProcessInfo.processInfo.environment["AGY_CS_NO_UI"] == "1" {
+            return false
+        }
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        proc.arguments = ["-e", "tell application \"System Events\" to set visible of first application process whose name is \"Antigravity\" to false"]
+        proc.standardInput = FileHandle.nullDevice
+        proc.standardOutput = FileHandle.nullDevice
+        proc.standardError = FileHandle.nullDevice
+        do {
+            try proc.run()
+            return true
         } catch {
             return false
         }

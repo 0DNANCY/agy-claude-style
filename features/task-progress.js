@@ -157,6 +157,7 @@
   function summarizeSteps(tail, baseIdx, turnStatus, isZh) {
     const toolCalls = [];
     let checklist = [];
+    let checklistFromTool = false;
     let retryCount = 0;
     let retryReason = null;
     let retryErrorRaw = '';
@@ -277,6 +278,7 @@
             try {
               const parsed = JSON.parse(tc.argumentsJson);
               if (Array.isArray(parsed?.steps)) {
+                checklistFromTool = true;
                 checklist = parsed.steps.map((it) => ({
                   title: String(it.title || ''),
                   status: String(it.status || 'pending'),
@@ -286,7 +288,7 @@
           }
         }
       }
-      if (!checklist.length && typeof val.response === 'string' && val.response.includes('- [')) {
+      if ((!checklist.length || !checklistFromTool) && typeof val.response === 'string' && /(?:^|\n)\s*[-*+]\s+\[[ xX/\-]\]/.test(val.response)) {
         const parsed = parseChecklist(val.response);
         if (parsed.length) checklist = parsed;
       }
@@ -371,16 +373,24 @@
       } catch {}
     }
     // 2. Fallback: native subagent card if mounted in DOM
-    const subNode = document.querySelector(`[data-testid="subagent-node"][data-cascade-id="${id}"]`);
+    const subNode = Array.from(document.querySelectorAll('[data-testid="subagent-node"][data-cascade-id]')).find(
+      (el) => el.getAttribute('data-cascade-id') === id
+    );
     if (subNode && typeof subNode.click === 'function') {
       try { subNode.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch {}
       subNode.click();
       return true;
     }
     // 3. Fallback: explicit clickable <a> link or tab
+    const encId = encodeURIComponent(id);
     const clickableLink =
-      document.querySelector(`a[href*="/c/${id}"]`) ||
-      document.querySelector(`[role="tab"][data-cascade-id="${id}"]`);
+      Array.from(document.querySelectorAll('a[href*="/c/"]')).find((el) => {
+        const href = String(el.getAttribute('href') || '');
+        return href.includes(`/c/${id}`) || href.includes(`/c/${encId}`);
+      }) ||
+      Array.from(document.querySelectorAll('[role="tab"][data-cascade-id]')).find(
+        (el) => el.getAttribute('data-cascade-id') === id
+      );
     if (clickableLink && typeof clickableLink.click === 'function') {
       try { clickableLink.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch {}
       clickableLink.click();
@@ -738,10 +748,11 @@
     let cardEl = null;
     let clockTimer = null;
     let collapsed = false;
-    let dismissedCid = '';
+    let dismissedCid = null;
     let floatPos = loadSavedPos();
     let isDragging = false;
     let lastInfo = null;
+    let dragBlurCleanup = null;
     const expandedSubIds = new Set();
 
     try {
@@ -757,6 +768,12 @@
 
     function removeCard() {
       stopClock();
+      if (dragBlurCleanup) {
+        dragBlurCleanup();
+        dragBlurCleanup = null;
+      }
+      isDragging = false;
+      observeConversationLayout(null);
       if (cardEl) {
         cardEl.remove();
         cardEl = null;
@@ -808,6 +825,10 @@
     }
 
     function attachDragHandlers(handleEl, card) {
+      if (dragBlurCleanup) {
+        dragBlurCleanup();
+        dragBlurCleanup = null;
+      }
       let startX = 0;
       let startY = 0;
       let originLeft = 0;
@@ -848,15 +869,23 @@
         if (!isDragging) return;
         isDragging = false;
         card.classList.remove('is-dragging');
-        try { handleEl.releasePointerCapture(ev.pointerId); } catch {}
+        if (ev && typeof ev.pointerId === 'number') {
+          try { handleEl.releasePointerCapture(ev.pointerId); } catch {}
+        }
         if (moved) {
           savePos(floatPos);
           card.setAttribute('data-just-dragged', '1');
           setTimeout(() => card.removeAttribute('data-just-dragged'), 120);
         }
       };
+      const onWinBlur = () => endDrag(null);
       handleEl.addEventListener('pointerup', endDrag);
       handleEl.addEventListener('pointercancel', endDrag);
+      handleEl.addEventListener('lostpointercapture', endDrag);
+      if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+        window.addEventListener('blur', onWinBlur);
+        dragBlurCleanup = () => window.removeEventListener('blur', onWinBlur);
+      }
       handleEl.addEventListener('dblclick', (ev) => {
         if (!card.classList.contains('is-floating')) return;
         ev.stopPropagation();
@@ -908,6 +937,7 @@
 
     function updateLiveClocks() {
       if (!cardEl || !lastInfo) return;
+      if (typeof document !== 'undefined' && document.hidden) return;
       const now = Date.now();
       const isZh = lastInfo.isZh !== false;
       const elapsedEl = cardEl.querySelector('.ag-cs-elapsed-val');
@@ -988,6 +1018,10 @@
         return;
       }
 
+      if (dismissedCid !== null && info.conversationId && info.conversationId !== dismissedCid) {
+        dismissedCid = null;
+      }
+
       // When floating (no native Overview panel), only show when actively running, retrying,
       // having active subagents, or having an active checklist — never spam when idle/done!
       const docked = Boolean(overview);
@@ -1001,10 +1035,6 @@
       if (!shouldShow) {
         removeCard();
         return;
-      }
-
-      if (info.running && dismissedCid === info.conversationId && info.status === 'running') {
-        // Keep dismissed for this turn if user explicitly closed it; reset on new conversation.
       }
       lastInfo = { ...info, isZh };
       if (info.running) {
@@ -1097,7 +1127,9 @@
       const badgeTone = isWarning ? 'warning' : info.running ? 'active' : info.status === 'error' ? 'critical' : '';
 
       const hostParent = docked ? overview : document.body || convoView;
-      if (!cardEl || !cardEl.isConnected || cardEl.parentElement !== hostParent) {
+      const isNewCard = !cardEl || !cardEl.isConnected || cardEl.parentElement !== hostParent;
+      const wasFloating = Boolean(cardEl && cardEl.classList.contains('is-floating'));
+      if (isNewCard) {
         if (cardEl) cardEl.remove();
         cardEl = document.createElement('section');
         cardEl.className = 'ag-cs-progress-card';
@@ -1108,7 +1140,6 @@
       cardEl.classList.toggle('is-floating', !docked);
       cardEl.classList.toggle('is-collapsed', collapsed);
       observeConversationLayout(!docked ? convoView : null);
-      applyFloatPosition(cardEl);
 
       const useLiveCollapsedBadge = Boolean(collapsed && info.totalCount === 0 && info.startedAtMs);
       const badgeKey = useLiveCollapsedBadge ? `${shortLive}|${info.startedAtMs}` : badge;
@@ -1155,6 +1186,9 @@
       if (cardEl.getAttribute('data-sig') === sig) {
         updateLiveClocks();
         return;
+      }
+      if (isNewCard || wasFloating !== !docked) {
+        applyFloatPosition(cardEl);
       }
       cardEl.setAttribute('data-sig', sig);
       cardEl.innerHTML = '';

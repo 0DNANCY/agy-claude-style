@@ -3,7 +3,7 @@
 import { execFile, spawn } from 'node:child_process';
 import { existsSync, readdirSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, isAbsolute, join, posix, resolve } from 'node:path';
+import { dirname, isAbsolute, join, posix, resolve, win32 } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
@@ -53,22 +53,30 @@ export function resolveLocalFilePath(rawUri = '', { platform = process.platform 
     if (!LOOPBACK_HOSTS.has(host)) {
       throw new Error(`Non-local file URI host rejected: ${host}`);
     }
+    if (parsed.hostname) {
+      parsed.hostname = '';
+    }
     const useWinUrl = platform === 'win32' && /^\/[a-zA-Z]:(?:\/|$)/.test(parsed.pathname || '');
     fsPath = fileURLToPath(parsed, { windows: useWinUrl });
-  } else if (isAbsolute(input) || /^[a-zA-Z]:[\\/]/.test(input)) {
+  } else if (/^(?:\\\\|\/\/)/.test(input)) {
+    throw new Error('UNC/network paths are not supported');
+  } else if ((platform === 'win32' && /^[a-zA-Z]:[\\/]/.test(input)) || (platform !== 'win32' && input.startsWith('/')) || isAbsolute(input)) {
+    if (/^(?:\\\\|\/\/)/.test(input)) throw new Error('UNC/network paths are not supported');
     fsPath = stripLineColAnchor(input);
   } else {
     throw new Error('Only local file:// URIs or absolute paths are supported');
   }
-  const normalized = platform === 'win32' ? fsPath : posix.resolve(fsPath);
+  const normalized = platform === 'win32'
+    ? (/^[a-zA-Z]:/.test(fsPath) ? win32.resolve(fsPath) : fsPath)
+    : posix.resolve(fsPath);
   if (/[\x00-\x1f\x7f]/.test(normalized)) {
     throw new Error('Invalid control character in path');
   }
   return normalized;
 }
 
-export function inspectLocalPath(rawUri = '') {
-  const localPath = resolveLocalFilePath(rawUri);
+export function inspectLocalPath(rawUri = '', { platform = process.platform } = {}) {
+  const localPath = resolveLocalFilePath(rawUri, { platform });
   const exists = existsSync(localPath);
   let isDirectory = false;
   if (exists) {
@@ -80,7 +88,7 @@ export function inspectLocalPath(rawUri = '') {
 }
 
 export async function openLocalFile(rawUri, { platform = process.platform, execFn = execFileAsync } = {}) {
-  const info = inspectLocalPath(rawUri);
+  const info = inspectLocalPath(rawUri, { platform });
   if (!info.exists) throw new Error(`File not found: ${info.path}`);
   if (platform === 'darwin') {
     await execFn('/usr/bin/open', [info.path], { timeout: 5000 });
@@ -97,7 +105,7 @@ export async function openLocalFile(rawUri, { platform = process.platform, execF
 }
 
 export async function revealLocalFile(rawUri, { platform = process.platform, execFn = null, spawnProcess = spawn } = {}) {
-  const info = inspectLocalPath(rawUri);
+  const info = inspectLocalPath(rawUri, { platform });
   if (!info.exists) throw new Error(`File not found: ${info.path}`);
   const runExec = execFn || execFileAsync;
   if (platform === 'darwin') {
@@ -139,7 +147,7 @@ export async function revealLocalFile(rawUri, { platform = process.platform, exe
 }
 
 export async function copyLocalFileToClipboard(rawUri, { platform = process.platform, execFn = execFileAsync } = {}) {
-  const info = inspectLocalPath(rawUri);
+  const info = inspectLocalPath(rawUri, { platform });
   if (!info.exists) throw new Error(`File not found: ${info.path}`);
   if (platform === 'darwin') {
     const script = 'on run argv\nset the clipboard to (POSIX file (item 1 of argv))\nend run';
@@ -472,7 +480,7 @@ export async function openFileWithApp(
     command = 'open';
     args = ['-a', app.command, filePath];
   } else if (app.style === 'terminal-wt') {
-    args = ['-d', targetDir];
+    args = ['-d', String(targetDir).replace(/;/g, '\\;')];
   } else if (app.style === 'terminal-gitbash') {
     args = [`--cd=${targetDir}`];
   } else if (app.style === 'terminal-wsl') {
@@ -489,8 +497,10 @@ export async function openFileWithApp(
     if (WIN_CMD_UNSAFE_RE.test(command) || args.some((a) => WIN_CMD_UNSAFE_RE.test(a))) {
       throw new Error('当前文件路径包含 Windows 批处理敏感字符，已拦截 .cmd 启动');
     }
-    args = ['/d', '/s', '/c', command, ...args];
+    const q = (v) => `"${String(v || '').replace(/"/g, '')}"`;
+    args = ['/d', '/s', '/c', `"${[q(command), ...args.map(q)].join(' ')}"`];
     command = env?.ComSpec || 'cmd.exe';
+    spawnOptions.windowsVerbatimArguments = true;
   }
 
   const child = spawnProcess(command, args, spawnOptions);

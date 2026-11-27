@@ -9,6 +9,9 @@ import { parseTranscriptJsonl } from './telemetry-db.mjs';
 
 const PROTOCOL_PREFIX = '__AGY_CS_SSH__:';
 const CACHE_TTL_MS = 60000;
+const MAX_CACHE_ENTRIES = 16;
+const MAX_SSH_STDOUT_BYTES = 16 * 1024 * 1024;
+const MAX_SSH_STDERR_BYTES = 256 * 1024;
 const remoteCache = new Map();
 
 export function validateSshHost(host) {
@@ -57,15 +60,44 @@ if (fs.existsSync(brainDir)) {
     } catch {}
   }
   cands.sort((a, b) => b.mtime - a.mtime);
+  const keepFields = (obj) => ({
+    type: obj.type,
+    step_index: obj.step_index,
+    created_at: obj.created_at,
+    completed_at: obj.completed_at,
+    finished_at: obj.finished_at,
+    model: obj.model,
+    status: obj.status,
+    usage: obj.usage,
+    input_tokens: obj.input_tokens,
+    cache_read_tokens: obj.cache_read_tokens,
+    cache_write_tokens: obj.cache_write_tokens,
+    output_tokens: obj.output_tokens,
+    duration_ms: obj.duration_ms,
+    latency_ms: obj.latency_ms,
+    elapsed_ms: obj.elapsed_ms,
+    ttft_ms: obj.ttft_ms,
+    time_to_first_token_ms: obj.time_to_first_token_ms,
+    streaming_duration_ms: obj.streaming_duration_ms,
+    stream_ms: obj.stream_ms,
+    content: (obj.type === 'USER_INPUT' || obj.type === 'ERROR_MESSAGE') && typeof obj.content === 'string'
+      ? obj.content.slice(0, 256)
+      : undefined
+  });
   for (const c of cands.slice(0, 60)) {
     try {
       const lines = fs.readFileSync(c.p, 'utf8').split(/\\r?\\n/);
       const filtered = [];
+      let sawTitle = false;
       for (const l of lines) {
         if (!l || l[0] !== '{') continue;
-        if (l.includes('"PLANNER_RESPONSE"') || l.includes('"ERROR_MESSAGE"') || l.includes('"CHECKPOINT"')) {
-          filtered.push(l);
-        }
+        const rel = l.includes('"PLANNER_RESPONSE"') || l.includes('"ERROR_MESSAGE"') || l.includes('"CHECKPOINT"') || (!sawTitle && l.includes('"USER_INPUT"'));
+        if (!rel) continue;
+        try {
+          const obj = JSON.parse(l);
+          if (obj.type === 'USER_INPUT') sawTitle = true;
+          filtered.push(JSON.stringify(keepFields(obj)));
+        } catch {}
       }
       if (filtered.length) out.push({ id: c.id, lines: filtered });
     } catch {}
@@ -92,11 +124,13 @@ export async function fetchSshRemoteRequests(host, { force = false, timeoutMs = 
   const result = await new Promise((resolve) => {
     let stdout = '';
     let stderr = '';
+    let stdoutOverflow = false;
     let done = false;
+    let timer = null;
     const finish = (val) => {
       if (done) return;
       done = true;
-      clearTimeout(timer);
+      if (timer) clearTimeout(timer);
       resolve(val);
     };
 
@@ -112,22 +146,35 @@ export async function fetchSshRemoteRequests(host, { force = false, timeoutMs = 
       return;
     }
 
-    const timer = setTimeout(() => {
-      try { child.kill('SIGTERM'); } catch {}
+    timer = setTimeout(() => {
+      try { child.kill?.('SIGTERM'); } catch {}
       finish({ ok: false, host: safeHost, requests: [], error: 'SSH 连接超时' });
     }, Math.max(2000, Number(timeoutMs) || 12000));
 
+    child.stdin?.on?.('error', () => {});
     child.stdout?.on('data', (chunk) => {
-      stdout += chunk.toString('utf8');
+      if (stdoutOverflow) return;
+      const piece = typeof chunk === 'string' ? chunk : chunk.toString('utf8');
+      if (stdout.length + piece.length > MAX_SSH_STDOUT_BYTES) {
+        stdoutOverflow = true;
+        try { child.kill?.('SIGTERM'); } catch {}
+        finish({ ok: false, host: safeHost, requests: [], error: 'SSH 输出超出上限' });
+        return;
+      }
+      stdout += piece;
     });
     child.stderr?.on('data', (chunk) => {
-      stderr += chunk.toString('utf8');
+      const piece = typeof chunk === 'string' ? chunk : chunk.toString('utf8');
+      if (stderr.length < MAX_SSH_STDERR_BYTES) {
+        stderr += piece.slice(0, MAX_SSH_STDERR_BYTES - stderr.length);
+      }
     });
     child.on('error', (err) => {
       finish({ ok: false, host: safeHost, requests: [], error: err?.message || String(err) });
     });
     child.on('close', (code) => {
-      const idx = stdout.lastIndexOf(PROTOCOL_PREFIX);
+      const anchoredIdx = stdout.lastIndexOf(`\n${PROTOCOL_PREFIX}`);
+      const idx = anchoredIdx >= 0 ? anchoredIdx + 1 : (stdout.startsWith(PROTOCOL_PREFIX) ? 0 : -1);
       if (idx >= 0) {
         const line = stdout.slice(idx + PROTOCOL_PREFIX.length).split(/\r?\n/)[0].trim();
         try {
@@ -156,7 +203,13 @@ export async function fetchSshRemoteRequests(host, { force = false, timeoutMs = 
   });
 
   if (result.ok) {
+    if (remoteCache.has(safeHost)) remoteCache.delete(safeHost);
     remoteCache.set(safeHost, { at: Date.now(), value: result });
+    while (remoteCache.size > MAX_CACHE_ENTRIES) {
+      const oldest = remoteCache.keys().next().value;
+      if (oldest === undefined) break;
+      remoteCache.delete(oldest);
+    }
   }
   return result;
 }

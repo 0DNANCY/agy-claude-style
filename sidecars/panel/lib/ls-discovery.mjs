@@ -9,6 +9,7 @@
 import { execFile } from 'node:child_process';
 import { open, readFile, readdir, readlink, stat } from 'node:fs/promises';
 import { request as httpRequest } from 'node:http';
+import { request as httpsRequest } from 'node:https';
 import { createConnection } from 'node:net';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -485,7 +486,7 @@ export async function resolveCachedLsEndpoint({
   return inFlightDiscovery;
 }
 
-function postJsonLoopback(lsAddress, csrfToken, service, method, payload = {}, { timeoutMs = 2500, requestFn = httpRequest } = {}) {
+function postJsonLoopback(lsAddress, csrfToken, service, method, payload = {}, { timeoutMs = 2500, requestFn = null } = {}) {
   const normalized = /^https?:\/\//i.test(lsAddress) ? lsAddress : `http://${lsAddress}`;
   let url;
   try {
@@ -493,6 +494,12 @@ function postJsonLoopback(lsAddress, csrfToken, service, method, payload = {}, {
   } catch {
     return Promise.resolve({ ok: false, reason: 'invalid_url', lost: false });
   }
+  const cleanHostname = String(url.hostname || '').replace(/^\[|\]$/g, '');
+  if (!isLocalAddr(cleanHostname)) {
+    return Promise.resolve({ ok: false, reason: 'non_local_host', lost: false });
+  }
+  const isHttps = url.protocol === 'https:';
+  const runner = requestFn || (isHttps ? httpsRequest : httpRequest);
   const body = JSON.stringify(payload || {});
   return new Promise((resolve) => {
     let settled = false;
@@ -501,13 +508,14 @@ function postJsonLoopback(lsAddress, csrfToken, service, method, payload = {}, {
       settled = true;
       resolve(val);
     };
-    const req = requestFn(
+    const req = runner(
       {
-        hostname: url.hostname,
-        port: Number(url.port) || 80,
+        hostname: cleanHostname,
+        port: Number(url.port) || (isHttps ? 443 : 80),
         path: url.pathname,
         method: 'POST',
         agent: false,
+        ...(isHttps ? { rejectUnauthorized: false } : {}),
         headers: {
           'Content-Type': 'application/json',
           'Connect-Protocol-Version': '1',
@@ -551,7 +559,7 @@ function postJsonLoopback(lsAddress, csrfToken, service, method, payload = {}, {
       finish({ ok: false, reason: 'timeout', lost: false });
     });
     req.on('error', (err) => {
-      const lost = ['ECONNREFUSED', 'ECONNRESET', 'EPIPE', 'ENOTCONN'].includes(err?.code);
+      const lost = ['ECONNREFUSED', 'ECONNRESET', 'EPIPE', 'ENOTCONN', 'ENOTFOUND'].includes(err?.code);
       finish({ ok: false, reason: err?.message || 'network_error', lost });
     });
     req.end(body);
@@ -572,7 +580,7 @@ export async function callLsRpcWithRecovery(
     timeoutMs = 2500,
     allowRediscover = true,
     discoverFn = discoverLiveLsEndpoint,
-    requestFn = httpRequest,
+    requestFn = null,
   } = {}
 ) {
   const envAddr = String(lsAddress || '').trim();
@@ -588,12 +596,16 @@ export async function callLsRpcWithRecovery(
   if (firstAddr) {
     const res = await postJsonLoopback(firstAddr, firstToken, service, method, payload, { timeoutMs, requestFn });
     if (res.ok || !res.lost || !allowRediscover) return res;
+    if (cachedEndpoint) {
+      cachedEndpoint = null;
+      nextRetryAt = 0;
+    }
   } else if (!allowRediscover) {
     return { ok: false, reason: 'no_ls_address' };
   }
 
-  // Rediscover live LS process/daemon credential and retry once.
-  const recovered = await resolveCachedLsEndpoint({ force: true, discoverFn });
+  // Rediscover live LS process/daemon credential respecting negative-cache backoff.
+  const recovered = await resolveCachedLsEndpoint({ force: false, discoverFn });
   if (!recovered) return { ok: false, reason: 'ls_rediscovery_failed' };
   if (recovered.lsAddress === firstAddr && recovered.csrfToken === firstToken) {
     return { ok: false, reason: 'endpoint_unchanged' };

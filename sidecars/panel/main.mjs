@@ -5,7 +5,6 @@ import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { dispatchFileAction } from './lib/file-actions.mjs';
 import { queryTelemetryDashboard } from './lib/telemetry-db.mjs';
 import { createPricingStore } from './lib/pricing.mjs';
 import { createQuotaTracker } from './lib/quota-tracker.mjs';
@@ -29,28 +28,55 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const HTML_PATH = join(__dirname, 'index.html');
 const NO_STORE_HEADERS = { 'Cache-Control': 'no-store, no-cache, must-revalidate' };
 
-function isLocalHostRequest(req) {
-  if (!req?.headers) return true;
-  const host = String(req.headers.host || '').trim().toLowerCase();
-  const hostMatch = host.match(/^(127\.0\.0\.1|localhost|\[::1\])(?::(\d+))?$/);
-  if (host && !hostMatch) return false;
+function ensureLoopbackNoProxy() {
+  for (const key of ['NO_PROXY', 'no_proxy']) {
+    const raw = String(process.env[key] || '');
+    const existing = raw.split(',').map((s) => s.trim()).filter(Boolean);
+    const seen = new Set(existing.map((s) => s.toLowerCase()));
+    let changed = false;
+    for (const needed of ['localhost', '127.0.0.1', '::1', '[::1]']) {
+      if (!seen.has(needed)) {
+        existing.push(needed);
+        seen.add(needed);
+        changed = true;
+      }
+    }
+    if (changed || !raw) {
+      process.env[key] = existing.join(',');
+    }
+  }
+}
 
-  const origin = String(req.headers.origin || '').trim().toLowerCase();
-  if (origin && /^(?:vscode-webview|plugin):\/\/[a-z0-9._-]+$/.test(origin)) {
+ensureLoopbackNoProxy();
+
+function readHeaderValue(headers, name) {
+  if (!headers) return '';
+  if (typeof headers.get === 'function') {
+    return String(headers.get(name) || '').trim();
+  }
+  return String(headers[name] || headers[name.toLowerCase()] || '').trim();
+}
+
+function isLocalHostRequest(req) {
+  if (!req?.headers) return false;
+  const host = readHeaderValue(req.headers, 'host').toLowerCase();
+  const hostMatch = host.match(/^(127\.0\.0\.1|localhost|\[::1\])(?::(\d+))?$/);
+  if (!hostMatch) return false;
+
+  const origin = readHeaderValue(req.headers, 'origin').toLowerCase();
+  const secFetchSite = readHeaderValue(req.headers, 'sec-fetch-site').toLowerCase();
+  if (origin && /^plugin:\/\/agy-claude-style--panel(?:-\d+)?$/.test(origin)) {
     return true;
   }
-  const secFetchSite = String(req.headers['sec-fetch-site'] || '').toLowerCase();
   if (secFetchSite === 'cross-site') return false;
 
   if (origin) {
     const originMatch = origin.match(/^(https?):\/\/(127\.0\.0\.1|localhost|\[::1\])(?::(\d+))?$/);
     if (!originMatch) return false;
-    if (hostMatch) {
-      const defaultPort = originMatch[1] === 'https' ? '443' : '80';
-      const originPort = originMatch[3] || defaultPort;
-      const hostPort = hostMatch[2] || defaultPort;
-      if (originPort !== hostPort) return false;
-    }
+    const defaultPort = originMatch[1] === 'https' ? '443' : '80';
+    const originPort = originMatch[3] || defaultPort;
+    const hostPort = hostMatch[2] || defaultPort;
+    if (originPort !== hostPort) return false;
   }
   return true;
 }
@@ -402,8 +428,15 @@ async function startPanelSidecar() {
   app.api('/api/config', guardApi(async (data) => applyConfigUpdate(data)), 'POST');
   app.api('/api/reset', guardApi(async () => resetConfig()), 'POST');
   app.api('/api/reinject', guardApi(async () => {
-    await injectOnce();
-    return { ok: true };
+    try {
+      await injectOnce();
+      return { ok: true };
+    } catch (err) {
+      return new Response(JSON.stringify({ ok: false, error: err?.message || String(err) }), {
+        status: 500,
+        contentType: 'application/json',
+      });
+    }
   }), 'POST');
   app.api('/api/remove', guardApi(async () => {
     const removed = await lifecycle.removeInjectedUiFromReachablePages(cdp, { timeoutMs: 2000 });
@@ -496,10 +529,15 @@ async function startPanelSidecar() {
     const search = String(data?.search || '');
     const offset = Number(data?.offset) || 0;
     const limit = Number(data?.limit) || 50;
-    const includeSsh = Boolean(cfg.sshRemoteStats && cfg.sshHost);
+    const sshHost = String(cfg.sshHost || '').trim();
+    const includeSsh = Boolean(cfg.sshRemoteStats && sshHost);
     let sshInfo = lastSshSync;
-    if (includeSsh && (data?.syncSsh || lastSshSync.host !== cfg.sshHost)) {
-      sshInfo = await fetchSshRemoteRequests(cfg.sshHost, { force: Boolean(data?.syncSsh) });
+    if (includeSsh && (data?.syncSsh || lastSshSync.host !== sshHost)) {
+      try {
+        sshInfo = await fetchSshRemoteRequests(sshHost, { force: Boolean(data?.syncSsh) });
+      } catch (err) {
+        sshInfo = { ok: false, host: sshHost, requests: [], count: 0, error: err?.message || String(err) };
+      }
       lastSshSync = sshInfo;
     }
     const extraRequests = includeSsh && sshInfo.ok ? sshInfo.requests : [];
@@ -518,10 +556,17 @@ async function startPanelSidecar() {
     });
     let weeklyQuota;
     if (data?.syncSsh) {
-      weeklyQuota = await Promise.race([
-        quotaTracker.sampleNow({ force: true }),
-        new Promise((resolveTimeout) => setTimeout(() => resolveTimeout(quotaTracker.getSummary()), 2500)),
-      ]);
+      let raceTimer = null;
+      try {
+        weeklyQuota = await Promise.race([
+          quotaTracker.sampleNow({ force: true }),
+          new Promise((resolveTimeout) => {
+            raceTimer = setTimeout(() => resolveTimeout(quotaTracker.getSummary()), 2500);
+          }),
+        ]);
+      } finally {
+        if (raceTimer) clearTimeout(raceTimer);
+      }
     } else {
       weeklyQuota = quotaTracker.getSummary();
       void quotaTracker.sampleNow({ force: false });
@@ -532,7 +577,7 @@ async function startPanelSidecar() {
       pricing: pricingStore.getMeta(),
       ssh: {
         enabled: includeSsh,
-        host: cfg.sshHost || '',
+        host: sshHost,
         ok: sshInfo.ok,
         count: sshInfo.count || 0,
         error: sshInfo.error || '',
@@ -549,9 +594,15 @@ async function startPanelSidecar() {
     const cfg = cdp.readConfig();
     const host = String(data?.host || cfg.sshHost || '').trim();
     if (!host) return { ok: false, error: '请先填写 SSH 主机名' };
-    const res = await fetchSshRemoteRequests(host, { force: true });
-    lastSshSync = res;
-    return { ok: res.ok, host: res.host, count: res.count || 0, error: res.error || '' };
+    try {
+      const res = await fetchSshRemoteRequests(host, { force: true });
+      lastSshSync = res;
+      return { ok: res.ok, host: res.host, count: res.count || 0, error: res.error || '' };
+    } catch (err) {
+      const msg = err?.message || String(err);
+      lastSshSync = { ok: false, host, requests: [], count: 0, error: msg };
+      return { ok: false, host, count: 0, error: msg };
+    }
   }), 'POST');
 
   app.api('/api/proxy/test', guardApi(async (data) => {
@@ -564,23 +615,13 @@ async function startPanelSidecar() {
     return await testProxyConnectivity(rawUrl);
   }), 'POST');
 
-  app.api('/api/file/action', guardApi(async (data) => {
-    try {
-      return await dispatchFileAction(data || {});
-    } catch (err) {
-      return new Response(JSON.stringify({ ok: false, error: err?.message || String(err) }), {
-        status: 400,
-        contentType: 'application/json',
-      });
-    }
-  }), 'POST');
-
   let shuttingDown = false;
   let watchdog = null;
 
   const shutdown = async () => {
     if (shuttingDown) return;
     shuttingDown = true;
+    clearInterval(quotaTimer);
     const forceTimer = setTimeout(() => process.exit(0), 1500);
     forceTimer.unref?.();
     try {

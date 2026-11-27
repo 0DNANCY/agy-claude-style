@@ -2,6 +2,40 @@
 
 All notable changes to **AGY Claude Style (`agy-claude-style`)** are documented in this file.
 
+## [v2.2.0] - 2026-11-27
+
+`v2.2.0` 正式整合 **原生 Antigravity 插件宿主、侧栏 3 页签控制室与 Powertools 效率套件**（基于 PR #19 @NoFires 扩展并完成全量安全与稳定性加固），以及 **打开长对话时的强制布局读取性能优化**（PR #21 @liuhaodongliu990-cmyk，Fixes #20）。同时完整保留 **「设置 → 外观」原生设置面板** 与 **右侧边栏 3 页签控制室** 双入口并实现双向同步，并恢复 Windows / macOS 独立安装器、Launcher 与 CDP 运行时的跨平台一致性。
+
+### 🚀 原生插件模式、侧栏 3 页签控制室与双入口设置同步
+- **方式四：Antigravity 原生插件宿主（Plugin Host + Aux Pane）**：
+  - 新增 `plugin.json`、`plugin/mcp-host.js`（零工具极简 MCP 宿主）与 `plugin/host-lifecycle.js`（随插件宿主启动/退出自动拉起并托管 `inject.js --watch` 与独立 `sidecars/panel` 侧栏）。
+  - 在原生插件宿主、Windows `.exe`、macOS `.dmg` 与 Node CLI 四种安装/运行模式间保持完整兼容；卸载或恢复原生时清理全部附加 DOM 节点、样式与全局属性。
+- **右侧栏 3 页签控制室 (`sidecars/panel/`)**：
+  - **仪表盘 (Dashboard)**：本地 + SSH 远程 JSONL 流式遥测聚合（支持 UTF-8 分片边界解码与超大单行前后缀投影）、53 周跨夏令时日历热力图、缓存骤降异常检测、模型健康度时间线与 TTFT / Streaming TPS 分离统计（区分 `stream` / `buffered` / `toolOnly`）、LiteLLM 动态定价刷新与 5 小时 / 周配额追踪。
+  - **控制室 (Control)**：全量外观、HUD、Powertools、阶段汇报提示词注入开关及窗口标题未读统计的可视化调教（支持 3-way 配置合并、轮询期间表单防覆盖与即时轻量化热更新）。
+  - **远程与代理 (Remote & Proxy)**：SSH 多主机发现与远程 `.jsonl` 遥测拉取，以及独立非 TUN 代理与冷启动/断连告警。
+- **双入口实时同步**：
+  - 同时保留 Antigravity 原生 **`设置 → 外观`** 底部全量可视化设置组（`#ag-cs-settings-sec`）与 **右侧栏「控制室」页签**，双方共同读写 `config.json` 并在 5 种界面语言间同步切换。
+
+### 🧰 Powertools 效率套件与界面打磨（模块化拆分 `features/*`）
+- **交互增强模块**：
+  - **时间旅行撤销 (`ui-rewind.js`)**：`双击 Esc` 或点击消息撤销触发两步安全回退（支持「恢复对话 + 代码 / 仅恢复对话 / 仅恢复代码」及异步 diff 预览）。
+  - **对话分支与消息原地编辑 (`features/branch-edit.js`)**：支持从任意助手回复分叉创建新会话（保留工作区）及双击用户消息内联编辑重发（兼容 Lexical 编辑器）。
+  - **文件链接菜单 (`features/file-menu.js`)**：点击文件引用弹出右键/快捷操作菜单，支持「本地打开 / 资源管理器定位 / 复制路径 / 外部编辑器或终端打开（带行列号跳转）/ 插入到输入框」，拦截 UNC 网络路径与批处理敏感字符注入。
+  - **浮动任务进度卡片 (`features/task-progress.js`)**：悬浮/停靠双形态追踪任务步骤、`[x]` 清单进度、重试原因分类及实时等待计时。
+  - **扩展坞固定栏 (`features/extensions-dock.js`)**：支持将常用扩展侧栏固定到顶栏或左侧边栏快捷打开。
+  - **窗口后台未读徽章 (`features/unread-title.js`)** 与 **关闭隐藏托盘拦截 (`features/hide-on-close.js`)**。
+  - **阶段自动折叠与可选提示词注入 (`features/stage-collapse.js`)**：默认启用 **`stageCollapse`（UI 自动折叠阶段工具组与汇报）**；并将「向发送请求附加 `agy_cs_stage_updates` 系统提示规则」拆分为独立开关 **`stagePromptInjection`（默认 `false` 关闭，透明可控）**。
+- **玻璃拟态、紧凑布局与细节修复**：
+  - 新增 **液态玻璃效果 (`glassEffect`)**、**对话紧凑排版 (`compactChatLayout`)**、**配额显示周期 (`quotaCycleMode`: `auto` / `5h` / `weekly`)**、**边框进度数据源 (`hudRimSource`)**；优化 `200k` / `1M` 同后缀模型思考强度匹配（`effort-core.js`）与媒体预览关闭按钮层级。
+
+### ⚡ 长对话性能与全链路安全加固
+- **零强制同步布局读取（整合 PR #21，Fixes #20）**：
+  - 在输入框未获焦时跳过平滑光标 `measureEditorCaretBox` / `getBoundingClientRect()` 测量，并在空闲检查时将轻量下标守卫置于 `getBoundingClientRect()` 之前，消除打开或切换长对话时的卡顿。
+- **安全性与稳定性修复（PR #19 深度审查闭环）**：
+  - 修复 Windows/macOS 原生安装器对 `features/*.js` 嵌套子目录的打包与递归复制；修复 C# 5 编译器兼容性（`Program.cs` 移除 `?.`、`$"`, 替换 `System.Windows.Forms`）。
+  - 加固侧栏 HTTP 服务（Fail-Closed `Host` / `Origin` 校验并移除无鉴权 `/api/file/action`）、`file-actions.mjs` UNC/符号注入拦截与 `wt.exe` 分号转义、`ssh-remote.mjs` EPIPE/TDZ 防护、`cdp.js` 日志脱敏，以及 `extensions-dock.js` DOM XSS 消除。
+
 ## [v2.1.0] - 2026-11-22
 
 `v2.1.0` 新增 **Swarm 蜂群侧栏（`/swarm` 面板）与 Plan / Orchestrator 模式完整 5 语言本地化**（#15），并修复了长对话虚拟列表及模型思考阶段输出下方轮次 HUD（`#T` 徽章）可能出现历史或残缺虚假信息的问题。

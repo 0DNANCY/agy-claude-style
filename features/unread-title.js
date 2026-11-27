@@ -26,24 +26,29 @@
 
   function classifyTrajectoryState(summary) {
     if (!summary || typeof summary !== 'object') return 'idle';
-    const raw = String(
-      summary.status ||
-        summary.runStatus ||
-        summary.cascadeStatus ||
-        summary.executionStatus ||
-        summary.state ||
-        ''
-    ).toUpperCase();
+    const s = summary.summary && typeof summary.summary === 'object' ? summary.summary : summary;
+    const rawStatus =
+      s.status !== undefined && s.status !== null && s.status !== ''
+        ? s.status
+        : s.runStatus ?? s.cascadeStatus ?? s.executionStatus ?? s.state ?? '';
+    const numStatus = typeof rawStatus === 'number' ? rawStatus : /^\d+$/.test(String(rawStatus)) ? Number(rawStatus) : NaN;
+    const raw = String(rawStatus).toUpperCase();
     if (
-      summary.waitingForUser === true ||
-      summary.needsApproval === true ||
+      s.waitingForUser === true ||
+      s.needsApproval === true ||
+      numStatus === 9 ||
       /WAITING_FOR_USER|AWAITING|APPROVAL|PERMISSION|PENDING_CONFIRMATION|NEEDS_INPUT/.test(raw)
     ) {
       return 'waiting';
     }
     if (
-      summary.isRunning === true ||
-      summary.running === true ||
+      s.isRunning === true ||
+      s.running === true ||
+      s.notFullyIdle === true ||
+      s.hasActivity === true ||
+      s.hasRunningSubagents === true ||
+      numStatus === 2 ||
+      numStatus === 4 ||
       /RUNNING|GENERATING|IN_PROGRESS|ACTIVE|EXECUTING|STREAMING|WORKING/.test(raw)
     ) {
       return 'running';
@@ -62,7 +67,7 @@
   function findReduxStoreAndActiveCid(cachedStore) {
     let store = cachedStore && typeof cachedStore.getState === 'function' ? cachedStore : null;
     let activeCid = readActiveCidFromDom();
-    if (store && activeCid) return { store, activeCid };
+    if (store && (activeCid || cachedStore === store)) return { store, activeCid };
     const anchors = [
       document.querySelector('[data-testid="conversation-view"]'),
       document.querySelector('[data-testid="agent-input-box"]'),
@@ -199,23 +204,22 @@
     }
 
     function onFocusOrVisible() {
-      if (document.hidden) return;
+      if (document.hidden || !isEnabled()) return;
       const { activeCid } = findReduxStoreAndActiveCid(cachedStore);
-      if (activeCid) unreadIds.delete(activeCid);
-      // Clear anonymous DOM badges and completed unread markers when user returns to window
+      // Clear anonymous DOM badges and the currently viewed conversation while preserving other background unread chats
       for (const id of Array.from(unreadIds)) {
-        if (id.startsWith('dom-') || id === activeCid) unreadIds.delete(id);
-      }
-      // If no distinct background tab holds unread state, clear all on focus
-      if (unreadIds.size > 0 && document.hasFocus && document.hasFocus()) {
-        unreadIds.clear();
+        if (id.startsWith('dom-') || (activeCid && id === activeCid)) {
+          unreadIds.delete(id);
+        }
       }
       pollTrajectories(true);
     }
 
     window.addEventListener('focus', onFocusOrVisible);
     document.addEventListener('visibilitychange', onFocusOrVisible);
-    timer = setInterval(() => pollTrajectories(false), 1800);
+    timer = setInterval(() => {
+      if (!document.hidden && isEnabled()) pollTrajectories(false);
+    }, 1800);
 
     return {
       sync() {

@@ -328,7 +328,7 @@ test('Windows C# sources define managed launch contract and stay strictly C# 5 c
   assert.ok(csClient.includes('__agCsOverrideConfig'));
   assert.ok(csClient.includes('plugin://swarm--'), 'CdpClient.cs must include Swarm sidecar iframe targets');
   assert.ok(csClient.includes("location.protocol === 'plugin:'"), 'CdpClient.cs must skip CSS injection in plugin: sidecars');
-  assert.ok(createManifest('v2.1.0').parts.includes('sidecar-core.js'), 'Installer manifest must bundle sidecar-core.js');
+  assert.ok(createManifest('v2.2.0').parts.includes('sidecar-core.js'), 'Installer manifest must bundle sidecar-core.js');
   assert.equal(csClient.includes('System.Windows.Forms'), false, 'CdpClient.cs must not reference System.Windows.Forms');
 
   assert.match(csWatcher, /--launch/);
