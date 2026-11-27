@@ -1956,3 +1956,259 @@ test('v2.2.0 powertools fixes: cdp validator, extensions-dock XSS-free render, s
   assert.match(swiftSetupSrc, /func copyPayloadDirectory\(/);
 });
 
+test('sidebar-polish: tags tree hierarchy, links active parent, folds empty projects on demand, and cleans up on destroy', () => {
+  const vm = require('node:vm');
+  const cdp = require('../cdp.js');
+  assert.equal(cdp.DEFAULT_CONFIG.sidebarFoldEmpty, true);
+  assert.equal(cdp.validateConfigSetting('sidebarFoldEmpty', true), true);
+  assert.equal(cdp.validateConfigSetting('sidebarFoldEmpty', 'yes'), false);
+  assert.ok(cdp.RUNTIME_PARTS.includes('features/sidebar-polish.js'));
+  assert.ok(cdp.RUNTIME_PARTS.indexOf('features/sidebar-polish.js') < cdp.RUNTIME_PARTS.indexOf('ui-runtime.js'));
+
+  const css = cdp.readCss();
+  assert.ok(css.includes('[data-ag-cs-sb-children="1"]::before'));
+  assert.ok(css.includes('[data-ag-cs-sidebar-fold-empty="on"]'));
+  assert.ok(css.includes('[data-ag-cs-sb-active="1"]::before'));
+
+  const makeNode = (tag, opts = {}) => {
+    const el = {
+      tagName: tag.toUpperCase(),
+      attributes: { ...(opts.attrs || {}) },
+      children: [],
+      parentElement: null,
+      _text: opts.text || '',
+      get textContent() {
+        return this._text || this.children.map((c) => c.textContent).join('');
+      },
+      set textContent(v) {
+        this._text = String(v || '');
+      },
+      getAttribute(k) {
+        return Object.prototype.hasOwnProperty.call(this.attributes, k) ? this.attributes[k] : null;
+      },
+      setAttribute(k, v) {
+        this.attributes[k] = String(v);
+      },
+      removeAttribute(k) {
+        delete this.attributes[k];
+      },
+      hasAttribute(k) {
+        return Object.prototype.hasOwnProperty.call(this.attributes, k);
+      },
+      get nextElementSibling() {
+        if (!this.parentElement) return null;
+        const idx = this.parentElement.children.indexOf(this);
+        return idx >= 0 && idx + 1 < this.parentElement.children.length ? this.parentElement.children[idx + 1] : null;
+      },
+      appendChild(ch) {
+        ch.parentElement = this;
+        this.children.push(ch);
+        return ch;
+      },
+      contains(target) {
+        let cur = target;
+        while (cur) {
+          if (cur === this) return true;
+          cur = cur.parentElement;
+        }
+        return false;
+      },
+      matches(sel) {
+        return sel.split(',').some((rawPart) => {
+          const part = rawPart.trim();
+          if (!part) return false;
+          const tagMatch = /^([a-zA-Z0-9_-]+)/.exec(part);
+          let rest = part;
+          if (tagMatch) {
+            if (this.tagName !== tagMatch[1].toUpperCase()) return false;
+            rest = part.slice(tagMatch[1].length);
+          }
+          const attrMatches = [...rest.matchAll(/\[([^\]=*~]+)(\*)?(?:="([^"]*)")?\]/g)];
+          for (const m of attrMatches) {
+            const [, attrName, isContains, expected] = m;
+            const actual = this.getAttribute(attrName);
+            if (expected === undefined) {
+              if (actual === null) return false;
+            } else if (isContains === '*') {
+              if (actual === null || !actual.includes(expected)) return false;
+            } else if (actual !== expected) {
+              return false;
+            }
+          }
+          if (part.startsWith('.') && !(this.getAttribute('class') || '').split(/\s+/).includes(part.slice(1))) {
+            return false;
+          }
+          return true;
+        });
+      },
+      closest(sel) {
+        let cur = this;
+        while (cur) {
+          if (cur.matches(sel)) return cur;
+          cur = cur.parentElement;
+        }
+        return null;
+      },
+      querySelectorAll(sel) {
+        const out = [];
+        const walk = (n) => {
+          for (const ch of n.children) {
+            if (ch.matches(sel)) out.push(ch);
+            walk(ch);
+          }
+        };
+        walk(this);
+        return out;
+      },
+      querySelector(sel) {
+        return this.querySelectorAll(sel)[0] || null;
+      },
+    };
+    return el;
+  };
+
+  const doc = makeNode('document');
+  const rootSidebar = makeNode('div', { attrs: { 'data-testid': 'conversation-list-sidebar' } });
+  doc.appendChild(rootSidebar);
+
+  const navItems = makeNode('div', { attrs: { 'data-testid': 'sidebar-navigation-items' } });
+  const navCustom = makeNode('a', { attrs: { href: '/customizations' }, text: '自定义' });
+  navItems.appendChild(navCustom);
+  rootSidebar.appendChild(navItems);
+
+  // Project 1: Active conversation inside
+  const g1 = makeNode('div');
+  const g1HeaderWrap = makeNode('div');
+  const g1Btn = makeNode('button', { attrs: { 'data-testid': 'project-header' }, text: 'copilot-hub-windows' });
+  g1HeaderWrap.appendChild(g1Btn);
+  const g1Body = makeNode('div');
+  const g1Row = makeNode('div', { attrs: { 'data-testid': 'conversation-row-sidebar', 'data-selected': 'true' }, text: 'File Unpacking' });
+  g1Body.appendChild(g1Row);
+  g1.appendChild(g1HeaderWrap);
+  g1.appendChild(g1Body);
+  rootSidebar.appendChild(g1);
+
+  // Project 2: Natively expanded empty project showing "还没有对话" + sibling "+" button
+  const g2 = makeNode('div');
+  const g2HeaderWrap = makeNode('div');
+  const g2Btn = makeNode('button', { attrs: { 'data-testid': 'project-header' }, text: 'agy-claude-style' });
+  const g2PlusBtn = makeNode('button', { attrs: { 'data-testid': 'new-project-conversation' }, text: '+' });
+  g2HeaderWrap.appendChild(g2Btn);
+  g2HeaderWrap.appendChild(g2PlusBtn);
+  const g2Body = makeNode('div');
+  const g2EmptyRow = makeNode('div', { text: '还没有对话' });
+  g2Body.appendChild(g2EmptyRow);
+  g2.appendChild(g2HeaderWrap);
+  g2.appendChild(g2Body);
+  rootSidebar.appendChild(g2);
+
+  // Project 3: Natively collapsed empty project (no children mounted yet)
+  const g3 = makeNode('div');
+  const g3HeaderWrap = makeNode('div');
+  const g3Btn = makeNode('button', { attrs: { 'data-testid': 'project-header' }, text: 'iloader' });
+  g3HeaderWrap.appendChild(g3Btn);
+  g3.appendChild(g3HeaderWrap);
+  rootSidebar.appendChild(g3);
+
+  const src = fs.readFileSync(new URL('../features/sidebar-polish.js', import.meta.url), 'utf8');
+  const sandbox = {
+    globalThis: {},
+    window: {},
+    document: doc,
+    location: { pathname: '/customizations' },
+    module: { exports: {} },
+  };
+  vm.runInNewContext(src, sandbox);
+  const sidebarPolish = sandbox.module.exports;
+
+  const cfg = { sidebarRestyle: true, sidebarFoldEmpty: true };
+  let syncScheduled = 0;
+  const inst = sidebarPolish.create({
+    getCfg: () => cfg,
+    isDestroyed: () => false,
+    scheduleSync: () => { syncScheduled++; },
+  });
+
+  inst.sync();
+
+  // Verify top nav, active parent linkage, and tree markers
+  assert.equal(navCustom.getAttribute('data-ag-cs-sb-nav-active'), '1');
+  assert.equal(g1.getAttribute('data-ag-cs-sb-group'), '1');
+  assert.equal(g1.getAttribute('data-ag-cs-sb-has-convos'), '1');
+  assert.equal(g1.getAttribute('data-ag-cs-sb-has-active'), '1');
+  assert.equal(g1Body.getAttribute('data-ag-cs-sb-children'), '1');
+  assert.equal(g1Row.getAttribute('data-ag-cs-sb-active'), '1');
+
+  // Verify expanded empty project is folded by default
+  assert.equal(g2.getAttribute('data-ag-cs-sb-empty'), '1');
+  assert.equal(g2.getAttribute('data-ag-cs-sb-peek'), null);
+  assert.equal(g2EmptyRow.getAttribute('data-ag-cs-sb-empty-row'), '1');
+  assert.equal(g2EmptyRow.getAttribute('data-ag-cs-sb-folded'), '1');
+
+  // Clicking sibling "+" button must not be intercepted
+  let prevented = false;
+  let stopped = false;
+  const plusRes = inst.onClick({
+    target: g2PlusBtn,
+    preventDefault: () => { prevented = true; },
+    stopPropagation: () => { stopped = true; },
+  });
+  assert.equal(plusRes, false);
+  assert.equal(prevented, false);
+
+  // 1st click on natively expanded empty project peeks the empty row and blocks React collapse
+  const res1 = inst.onClick({
+    target: g2Btn,
+    preventDefault: () => { prevented = true; },
+    stopPropagation: () => { stopped = true; },
+  });
+  assert.equal(res1, true);
+  assert.equal(prevented, true);
+  assert.equal(stopped, true);
+  assert.equal(g2.getAttribute('data-ag-cs-sb-peek'), '1');
+  assert.equal(g2EmptyRow.getAttribute('data-ag-cs-sb-folded'), null);
+
+  // 2nd click collapses it back cleanly
+  prevented = false;
+  const res2 = inst.onClick({
+    target: g2Btn,
+    preventDefault: () => { prevented = true; },
+    stopPropagation: () => {},
+  });
+  assert.equal(res2, true);
+  assert.equal(g2.getAttribute('data-ag-cs-sb-peek'), null);
+  assert.equal(g2EmptyRow.getAttribute('data-ag-cs-sb-folded'), '1');
+
+  // Natively collapsed empty project lets React expand on 1st click, then shows empty row
+  const res3 = inst.onClick({ target: g3Btn, preventDefault: () => {}, stopPropagation: () => {} });
+  assert.equal(res3, false);
+  const g3Body = makeNode('div');
+  const g3EmptyRow = makeNode('div', { text: 'No conversations yet' });
+  g3Body.appendChild(g3EmptyRow);
+  g3.appendChild(g3Body);
+  inst.sync();
+  assert.equal(g3.getAttribute('data-ag-cs-sb-peek'), '1');
+  assert.equal(g3EmptyRow.getAttribute('data-ag-cs-sb-folded'), null);
+
+  // Adding a real conversation clears empty/peek flags automatically
+  g3Body.children = [];
+  const g3NewRow = makeNode('div', { attrs: { 'data-testid': 'conversation-row-sidebar' }, text: 'First chat' });
+  g3Body.appendChild(g3NewRow);
+  inst.sync();
+  assert.equal(g3.getAttribute('data-ag-cs-sb-empty'), null);
+  assert.equal(g3.getAttribute('data-ag-cs-sb-peek'), null);
+  assert.equal(g3.getAttribute('data-ag-cs-sb-has-convos'), '1');
+
+  // Turning sidebarFoldEmpty off exposes empty rows
+  cfg.sidebarFoldEmpty = false;
+  inst.sync();
+  assert.equal(g2EmptyRow.getAttribute('data-ag-cs-sb-folded'), null);
+
+  // Destroy cleanly strips every custom attribute
+  inst.destroy();
+  assert.equal(g1.hasAttribute('data-ag-cs-sb-group'), false);
+  assert.equal(g2EmptyRow.hasAttribute('data-ag-cs-sb-empty-row'), false);
+  assert.equal(navCustom.hasAttribute('data-ag-cs-sb-nav-active'), false);
+});
+
+

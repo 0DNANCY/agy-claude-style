@@ -163,6 +163,22 @@
       'Apply Claude-style row height and hover plates to sidebar.',
       '左サイドバーの行間とホバー表示を Claude スタイルに調整します。',
     ],
+    setSidebarCompactTitle: ['紧凑侧边栏', '緊湊側邊欄', '緊湊側欄', 'Compact Sidebar', 'コンパクトサイドバー'],
+    setSidebarCompactDesc: [
+      '收紧左侧项目与对话行高，在单屏内展示更多会话。',
+      '收緊左側專案與對話行高，在單螢幕內展示更多對話。',
+      '收緊左邊專案同對話行高，一頁顯示更多對話。',
+      'Tighter sidebar row height for more sessions on screen.',
+      'サイドバーの行高を詰めてより多くの会話を表示します。',
+    ],
+    setSidebarFoldEmptyTitle: ['默认收起空项目', '預設收合空專案', '預設收起空專案', 'Collapse Empty Projects', '空プロジェクトを折りたたむ'],
+    setSidebarFoldEmptyDesc: [
+      '默认隐藏「还没有对话」占位行减少纵向占屏，点击项目可按需展开或直接新建。',
+      '預設隱藏「尚無對話」佔位列減少縱向佔屏，點擊專案可按需展開或直接新建。',
+      '預設收起「仲未有對話」佔位行慳返空間，撳專案名可以隨時展開查看。',
+      'Hide "No conversations yet" placeholders by default; click a project to peek or start a chat.',
+      '「会話はまだありません」の空行を既定で折りたたみ、クリック時のみ表示します。',
+    ],
     setComposerTitle: ['极简输入框重排', '極簡輸入框重排', '極簡輸入框重排', 'Composer Restyle', '入力欄リスタイル'],
     setComposerDesc: [
       '将输入框重排为纯圆角输入区 + 底部无边框控制栏。',

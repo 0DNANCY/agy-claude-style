@@ -23,6 +23,7 @@
   "smoothCaret": true,
   "sidebarRestyle": true,
   "sidebarCompact": false,
+  "sidebarFoldEmpty": true,
   "compactChatLayout": false,
   "stageCollapse": true,
   "stagePromptInjection": false,
