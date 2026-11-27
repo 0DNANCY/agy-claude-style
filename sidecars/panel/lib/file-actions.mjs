@@ -56,19 +56,19 @@ export function resolveLocalFilePath(rawUri = '', { platform = process.platform 
     if (parsed.hostname) {
       parsed.hostname = '';
     }
-    const useWinUrl = platform === 'win32' && /^\/[a-zA-Z]:(?:\/|$)/.test(parsed.pathname || '');
+    const useWinUrl = /^\/[a-zA-Z]:(?:\/|$)/.test(parsed.pathname || '') && (platform === 'win32' || process.platform === 'win32');
     fsPath = fileURLToPath(parsed, { windows: useWinUrl });
   } else if (/^(?:\\\\|\/\/)/.test(input)) {
     throw new Error('UNC/network paths are not supported');
-  } else if ((platform === 'win32' && /^[a-zA-Z]:[\\/]/.test(input)) || (platform !== 'win32' && input.startsWith('/')) || isAbsolute(input)) {
+  } else if (/^[a-zA-Z]:[\\/]/.test(input) || (platform !== 'win32' && input.startsWith('/')) || isAbsolute(input)) {
     if (/^(?:\\\\|\/\/)/.test(input)) throw new Error('UNC/network paths are not supported');
     fsPath = stripLineColAnchor(input);
   } else {
     throw new Error('Only local file:// URIs or absolute paths are supported');
   }
-  const normalized = platform === 'win32'
-    ? (/^[a-zA-Z]:/.test(fsPath) ? win32.resolve(fsPath) : fsPath)
-    : posix.resolve(fsPath);
+  const normalized = /^[a-zA-Z]:/.test(fsPath)
+    ? win32.resolve(fsPath)
+    : (platform === 'win32' ? fsPath : posix.resolve(fsPath));
   if (/[\x00-\x1f\x7f]/.test(normalized)) {
     throw new Error('Invalid control character in path');
   }

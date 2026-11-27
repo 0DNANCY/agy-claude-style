@@ -1806,10 +1806,13 @@ test('v2.2.0 security & robustness: file-actions UNC block, wt.exe semicolon esc
     /remote|unc|host|local/i
   );
   // 127.0.0.1 host normalized to local path
+  const { pathToFileURL } = require('node:url');
   const tmpFile = path.join(os.tmpdir(), `agy-fa-127-${Date.now()}.txt`);
   fs.writeFileSync(tmpFile, 'hi');
   try {
-    const resolved = fa.resolveLocalFilePath(`file://127.0.0.1${tmpFile}`);
+    const loopbackUri = pathToFileURL(tmpFile);
+    loopbackUri.hostname = '127.0.0.1';
+    const resolved = fa.resolveLocalFilePath(loopbackUri.href);
     assert.equal(resolved, tmpFile);
   } finally {
     try { fs.unlinkSync(tmpFile); } catch {}
