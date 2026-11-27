@@ -1,7 +1,7 @@
 {
   "name": "agy-claude-style",
   "displayName": "AGY Claude Style",
-  "version": "2.2.0",
+  "version": "3.0.0",
   "description": "Claude Code studio theme, Rewind timeline bar, dual-ring quota/context meter, 5-language Swarm localization, Powertools productivity suite, and native Aux Pane control panel for Google Antigravity.",
   "logo": "assets/logo.svg",
   "repository": "https://github.com/0DNANCY/agy-claude-style",

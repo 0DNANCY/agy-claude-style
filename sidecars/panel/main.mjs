@@ -1,6 +1,6 @@
 // Aux Pane Sidecar UI server for AGY Claude Style (agy-claude-style).
 // Uses Antigravity built-in sidecar_sdk and exits cleanly via host /healthz watchdog.
-import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, watch } from 'node:fs';
 import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -21,7 +21,7 @@ import {
 
 const require = createRequire(import.meta.url);
 const cdp = require('../../cdp.js');
-const { injectOnce } = require('../../inject.js');
+const { injectOnce, createWatchController } = require('../../inject.js');
 const lifecycle = require('../../plugin/host-lifecycle.js');
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -474,6 +474,10 @@ async function startPanelSidecar() {
   const isTestHost = String(process.env.ANTIGRAVITY_LS_ADDRESS || '').trim() === 'test.invalid';
   let sidecarOwner = null;
   if (!isTestHost) {
+    try {
+      mkdirSync(cdp.STATE_DIR, { recursive: true });
+      process.chdir(cdp.STATE_DIR);
+    } catch {}
     sidecarOwner = new SidecarOwner(cdp.STATE_DIR);
     try {
       const claimed = await sidecarOwner.claim();
@@ -617,16 +621,182 @@ async function startPanelSidecar() {
 
   let shuttingDown = false;
   let watchdog = null;
+  let watchController = null;
+  let watchReconcileInFlight = null;
+  let watchReconcileQueued = false;
+  let watchDebounceTimer = null;
+  let watchStandbyTimer = null;
+  let stateDirWatcher = null;
+  let hostConfigWatcher = null;
 
-  const shutdown = async () => {
+  const antigravityConfigPath =
+    String(process.env.AGY_CLAUDE_STYLE_ANTIGRAVITY_CONFIG || '').trim() ||
+    (String(process.env.AGY_CLAUDE_STYLE_STATE_DIR || '').trim()
+      ? null
+      : join(homedir(), '.gemini', 'config', 'config.json'));
+
+  const runSidecarWatchReconcile = async () => {
+    if (shuttingDown || isTestHost) return;
+    const pluginState = antigravityConfigPath
+      ? lifecycle.readAntigravityPluginEnabledState({
+          pluginName: 'agy-claude-style',
+          configPath: antigravityConfigPath,
+        })
+      : 'unknown';
+    if (pluginState === 'disabled') {
+      if (watchController && !watchController.isStopped()) {
+        const ctrl = watchController;
+        watchController = null;
+        await ctrl.stop({ removeFromPages: true, reason: 'plugin-disabled' }).catch(() => {});
+      }
+      return;
+    }
+    if (watchController && !watchController.isStopped()) {
+      return;
+    }
+    watchController = null;
+    try {
+      const ctrl = await createWatchController({
+        allowGracefulDuplicateExit: true,
+        allowAutoRelaunch: true,
+        enableConsole: false,
+        logFile: join(cdp.STATE_DIR, 'watch.log'),
+      });
+      if (!ctrl) return;
+      if (shuttingDown) {
+        await ctrl.stop({ removeFromPages: false, reason: 'late-shutdown' }).catch(() => {});
+        return;
+      }
+      const postState = antigravityConfigPath
+        ? lifecycle.readAntigravityPluginEnabledState({
+            pluginName: 'agy-claude-style',
+            configPath: antigravityConfigPath,
+          })
+        : 'unknown';
+      if (postState === 'disabled') {
+        await ctrl.stop({ removeFromPages: true, reason: 'plugin-disabled' }).catch(() => {});
+        return;
+      }
+      watchController = ctrl;
+    } catch (err) {
+      logSidecarBoot(`internal watch controller failed: ${err?.message || err}`);
+    }
+  };
+
+  const triggerSidecarWatchReconcile = () => {
+    if (shuttingDown || isTestHost) return watchReconcileInFlight || Promise.resolve();
+    if (watchReconcileInFlight) {
+      watchReconcileQueued = true;
+      return watchReconcileInFlight;
+    }
+    watchReconcileInFlight = (async () => {
+      do {
+        watchReconcileQueued = false;
+        if (shuttingDown) break;
+        await runSidecarWatchReconcile();
+      } while (watchReconcileQueued && !shuttingDown);
+    })()
+      .catch(() => {})
+      .finally(() => {
+        watchReconcileInFlight = null;
+        if (watchReconcileQueued && !shuttingDown) {
+          void triggerSidecarWatchReconcile();
+        }
+      });
+    return watchReconcileInFlight;
+  };
+
+  const scheduleSidecarWatchReconcile = () => {
+    if (shuttingDown || isTestHost) return;
+    clearTimeout(watchDebounceTimer);
+    watchDebounceTimer = setTimeout(() => {
+      watchDebounceTimer = null;
+      void triggerSidecarWatchReconcile();
+    }, 60);
+    if (typeof watchDebounceTimer.unref === 'function') watchDebounceTimer.unref();
+  };
+
+  if (!isTestHost) {
+    void triggerSidecarWatchReconcile();
+    try {
+      if (existsSync(cdp.STATE_DIR)) {
+        stateDirWatcher = watch(cdp.STATE_DIR, (_, filename) => {
+          if (shuttingDown) return;
+          if (!filename || filename === '.watch.pid') scheduleSidecarWatchReconcile();
+        });
+        if (typeof stateDirWatcher.unref === 'function') stateDirWatcher.unref();
+      }
+    } catch {}
+    try {
+      const cfgDir = dirname(antigravityConfigPath);
+      const cfgBase = 'config.json';
+      if (existsSync(cfgDir)) {
+        hostConfigWatcher = watch(cfgDir, (_, filename) => {
+          if (shuttingDown) return;
+          if (!filename || String(filename) === cfgBase) scheduleSidecarWatchReconcile();
+        });
+        if (typeof hostConfigWatcher.unref === 'function') hostConfigWatcher.unref();
+      }
+    } catch {}
+    const standbyPollMs = Math.max(100, Number(process.env.AGY_CLAUDE_STYLE_STANDBY_POLL_MS) || 1500);
+    watchStandbyTimer = setInterval(() => {
+      void triggerSidecarWatchReconcile();
+    }, standbyPollMs);
+    if (typeof watchStandbyTimer.unref === 'function') watchStandbyTimer.unref();
+  }
+
+  const shutdown = async (reason = 'shutdown') => {
     if (shuttingDown) return;
     shuttingDown = true;
     clearInterval(quotaTimer);
-    const forceTimer = setTimeout(() => process.exit(0), 1500);
+    if (watchStandbyTimer) {
+      clearInterval(watchStandbyTimer);
+      watchStandbyTimer = null;
+    }
+    if (watchDebounceTimer) {
+      clearTimeout(watchDebounceTimer);
+      watchDebounceTimer = null;
+    }
+    try { stateDirWatcher?.close(); } catch {}
+    stateDirWatcher = null;
+    try { hostConfigWatcher?.close(); } catch {}
+    hostConfigWatcher = null;
+
+    const forceTimer = setTimeout(() => process.exit(0), 2000);
     forceTimer.unref?.();
     try {
       sidecarOwner?.stop();
       watchdog?.stop();
+      if (!isTestHost) {
+        if (watchReconcileInFlight) {
+          await Promise.race([
+            watchReconcileInFlight.catch(() => {}),
+            new Promise((r) => setTimeout(r, 400)),
+          ]);
+        }
+        const pluginState = antigravityConfigPath
+          ? lifecycle.readAntigravityPluginEnabledState({
+              pluginName: 'agy-claude-style',
+              configPath: antigravityConfigPath,
+            })
+          : 'unknown';
+        const shouldRemove =
+          pluginState === 'disabled' && reason !== 'ls-dead' && reason !== 'parent-dead';
+        if (watchController) {
+          const ctrl = watchController;
+          watchController = null;
+          await ctrl.stop({ removeFromPages: shouldRemove, reason });
+        } else if (shouldRemove) {
+          const alivePeers = lifecycle.listAliveMcpHosts({
+            stateDir: cdp.STATE_DIR,
+            excludePid: process.pid,
+            pruneStale: true,
+          });
+          if (alivePeers.length === 0) {
+            await lifecycle.removeInjectedUiFromReachablePages(cdp, { timeoutMs: 1200 }).catch(() => {});
+          }
+        }
+      }
       await app.close();
     } catch {
       // ignore close errors
@@ -639,12 +809,12 @@ async function startPanelSidecar() {
   if (sidecarOwner) {
     sidecarOwner.watch(() => {
       logSidecarBoot('panel sidecar ownership lost to newer instance; shutting down');
-      void shutdown();
+      void shutdown('superseded');
     });
   }
 
   const onPipeError = (err) => {
-    if (lifecycle.isBrokenPipeError(err)) void shutdown();
+    if (lifecycle.isBrokenPipeError(err)) void shutdown('broken-pipe');
   };
   process.stdout?.on('error', onPipeError);
   process.stderr?.on('error', onPipeError);
@@ -654,10 +824,17 @@ async function startPanelSidecar() {
     watchStdin: false,
     checkIntervalMs: 3000,
     maxLsFailures: 2,
-    onShutdown: () => {
-      void shutdown();
+    onShutdown: (reason) => {
+      void shutdown(reason);
     },
   });
+  if (!isTestHost) {
+    for (const sig of ['SIGINT', 'SIGTERM', 'SIGBREAK']) {
+      process.on(sig, () => {
+        void shutdown(`signal:${sig}`);
+      });
+    }
+  }
 
   await app.run();
   return app;

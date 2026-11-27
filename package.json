@@ -1,16 +1,10 @@
 {
   "name": "agy-claude-style",
-  "version": "2.2.0",
+  "version": "3.0.0",
   "description": "AGY Claude Style — Claude Code / dsh-claude-style studio UI theme, interactive ASCII ripple field, usage dashboard, compact composer, and pixel crab mascot for Google Antigravity.",
   "private": true,
   "scripts": {
     "test": "node --test test/*.test.mjs",
-    "launch": "node inject.js --launch",
-    "relaunch": "node inject.js --launch --relaunch",
-    "managed": "node inject.js --managed",
-    "inject": "node inject.js",
-    "watch": "node inject.js --watch",
-    "remove": "node remove.js",
     "build:installer": "node scripts/build-installer.mjs",
     "build:macos": "node scripts/build-macos.mjs"
   }

@@ -150,7 +150,6 @@ jobs:
             --out "$OUT_DMG" \
             --app-out "dist/AGY Claude Style.app"
           lipo -archs "dist/AGY Claude Style.app/Contents/MacOS/AGY Claude Style"
-          lipo -archs "dist/AGY Claude Style.app/Contents/MacOS/agy-claude-style-watcher"
           codesign --verify --deep --strict "dist/AGY Claude Style.app"
           hdiutil verify "$OUT_DMG"
           SHA=$(shasum -a 256 "$OUT_DMG" | awk '{print $1}')

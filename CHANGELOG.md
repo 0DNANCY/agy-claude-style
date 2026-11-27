@@ -2,6 +2,25 @@
 
 All notable changes to **AGY Claude Style (`agy-claude-style`)** are documented in this file.
 
+## [v3.0.0] - 2026-11-28
+
+`v3.0.0` 完成重大架构升级：**全面转向 Antigravity Desktop 原生插件运行架构，彻底废除外部 CDP 守护程序与外置启动脚本**。Windows（`.exe`）与 macOS（`.dmg`）安装器职责降级为纯正的零后台驻留原生插件部署与旧版迁移清理工具，CDP 动态注入与热更新 100% 在原生插件宿主内部完成（目标机器无需安装 Node.js）。
+
+### 🔌 原生插件内部 CDP 注入（零外部程序依赖）
+- **Sidecar 内建 Electron CDP 监督器**：在 `sidecars/panel/main.mjs`（随 Antigravity Desktop 内置 Electron Node 运行时自动拉起）中集成 `createWatchController` 与 `STATE_DIR/.watch.pid` 协调锁，与 `plugin/mcp-host.js` 协同托管 CDP 窗口注入、`<2KB` 轻量配置热更新、冷启动自动带参重启以及停用/卸载时的实时无痕还原，普通桌面用户**无需安装外部 Node.js** 即可完整运行。
+- **Windows 目录句柄防锁定**：`sidecars/panel/main.mjs` 与 `plugin/mcp-host.js` 启动后自动切换工作目录至 `STATE_DIR`（`~/.gemini/antigravity/plugin_data/agy-claude-style`），避免锁住 `~/.gemini/config/plugins/agy-claude-style` 导致更新或卸载被占用。
+- **核心模块纯化与进程归属校验升级**：`inject.js` 剥离全部 CLI 参数与 `launchWithCdp`/`watch` 入口；`cdp.js` 的 `evaluateWatcherOwnership` 改为仅识别原生插件双宿主进程（`plugin/mcp-host.js` 与 `sidecars/panel/main.mjs`，支持 Sidecar `--max-old-space-size` / `--import` 运行参数与 macOS `/private` 软链规范化），保留 Fail-Closed 防误杀锁策略。
+
+### 📦 安装器轻量化重构（纯原生插件安装 / 更新 / 卸载）
+- **安装包聚焦纯部署职能**：Windows `Program.cs` 与 macOS `Setup/main.swift` 统一将完整原生插件包（含 `plugin.json`、`mcp_config.json`、`plugin/`、`sidecars/panel/`、`features/`、`assets/` 与全部运行时）部署至 `~/.gemini/config/plugins/agy-claude-style`，用户配置统一存放于 `~/.gemini/antigravity/plugin_data/agy-claude-style/config.json`。
+- **自动迁移与旧版清理**：安装/升级时自动迁移旧版 `%LOCALAPPDATA%\agy-claude-style\config.json` / `~/Library/Application Support/agy-claude-style/config.json`（自动剔除废弃字段 `exitOnHostClose`），并自动停止和清理旧版 `agy-claude-style-watcher`、Windows Startup / macOS `LaunchAgent` 开机自启项与桌面/程序坞托管快捷方式。
+- **免重启热启用**：若本地 Antigravity Language Server 正在运行，安装器通过 `JetboxWriteState` / `DeletePlugin` RPC 自动完成插件与侧栏的热加载/热卸载（离线时原子写入 `~/.gemini/config/config.json`）。
+
+### 💥 Breaking Changes（清理废弃组件）
+- 删除外部 C#/Swift CDP 守护源码：`installer/watcher/`、`installer/common/CdpClient.cs`、`installer/macos/Watcher/`、`installer/macos/Common/CdpClient.swift`。
+- 删除全部根目录外置启动与卸载脚本：`*.bat`、`*.sh`、`watch-hidden.vbs`、`remove.js` 以及 `package.json` 中的 `launch` / `relaunch` / `managed` / `inject` / `watch` / `remove` 脚本。
+- 移除废弃配置字段 `exitOnHostClose` 与辅助函数 `STARTUP_GRACE_SECONDS`、`ensureAntigravityWithCdp`、`readEffectiveLaunchConfig`、`cleanupLegacyMacLauncher`。
+
 ## [v2.2.0] - 2026-11-27
 
 `v2.2.0` 正式整合 **原生 Antigravity 插件宿主、侧栏 3 页签控制室与 Powertools 效率套件**（基于 PR #19 @NoFires 扩展并完成全量安全与稳定性加固），以及 **打开长对话时的强制布局读取性能优化**（PR #21 @liuhaodongliu990-cmyk，Fixes #20）。同时完整保留 **「设置 → 外观」原生设置面板** 与 **右侧边栏 3 页签控制室** 双入口并实现双向同步，并恢复 Windows / macOS 独立安装器、Launcher 与 CDP 运行时的跨平台一致性。

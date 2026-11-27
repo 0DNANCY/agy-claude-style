@@ -12,8 +12,7 @@ import {
   VALIDATORS,
   normalizeVersion,
   getArtifactNames,
-  createManifest,
-  resolveActiveConfigFile,
+  collectPluginPayloadFiles,
   buildMultiResIco,
   buildZip,
 } from './build-common.mjs';
@@ -32,7 +31,7 @@ function findCsc() {
   throw new Error('csc.exe (.NET Framework 4.x) not found');
 }
 
-function buildInstaller({ outputPath, configPath, version = cdp.PLUGIN_VERSION } = {}) {
+function buildInstaller({ outputPath, version = cdp.PLUGIN_VERSION } = {}) {
   const cleanVersion = normalizeVersion(version);
   const resolvedOut = outputPath || path.join(ROOT_DIR, getArtifactNames(cleanVersion).windowsInstaller);
   const csc = findCsc();
@@ -42,49 +41,11 @@ function buildInstaller({ outputPath, configPath, version = cdp.PLUGIN_VERSION }
     const icoPath = path.join(stageDir, 'app.ico');
     fs.writeFileSync(icoPath, buildMultiResIco());
 
-    const manifest = createManifest(cleanVersion);
-    const manifestJson = JSON.stringify(manifest, null, 2) + '\n';
-    fs.writeFileSync(path.join(stageDir, 'manifest.json'), manifestJson, 'utf8');
-
-    const watcherOut = path.join(stageDir, 'agy-claude-style-watcher.exe');
-    const commonMiniJson = path.join(ROOT_DIR, 'installer', 'common', 'MiniJson.cs');
-    const commonCdpClient = path.join(ROOT_DIR, 'installer', 'common', 'CdpClient.cs');
-    const watcherMain = path.join(ROOT_DIR, 'installer', 'watcher', 'Program.cs');
-
-    execFileSync(csc, [
-      '/nologo',
-      '/utf8output',
-      '/codepage:65001',
-      '/target:winexe',
-      '/optimize+',
-      `/win32icon:${icoPath}`,
-      `/out:${watcherOut}`,
-      '/r:System.dll',
-      '/r:System.Core.dll',
-      '/r:System.Management.dll',
-      '/r:System.Net.Http.dll',
-      commonMiniJson,
-      commonCdpClient,
-      watcherMain,
-    ], { stdio: 'inherit' });
-
-    const activeConfigFile = resolveActiveConfigFile(configPath);
-
-    const payloadFiles = [
-      { name: 'agy-claude-style-watcher.exe', data: fs.readFileSync(watcherOut) },
-      { name: 'manifest.json', data: Buffer.from(manifestJson, 'utf8') },
-      { name: 'style.css', data: fs.readFileSync(path.join(ROOT_DIR, 'style.css')) },
-      { name: 'config.json', data: fs.readFileSync(activeConfigFile) },
-      { name: 'config.example.json', data: fs.readFileSync(path.join(ROOT_DIR, 'config.example.json')) },
-      ...cdp.RUNTIME_PARTS.map((part) => ({
-        name: part,
-        data: fs.readFileSync(path.join(ROOT_DIR, part)),
-      })),
-    ];
-
+    const payloadFiles = collectPluginPayloadFiles(ROOT_DIR);
     const payloadZip = path.join(stageDir, 'payload.zip');
     fs.writeFileSync(payloadZip, buildZip(payloadFiles));
 
+    const commonMiniJson = path.join(ROOT_DIR, 'installer', 'common', 'MiniJson.cs');
     const setupManifest = path.join(ROOT_DIR, 'installer', 'setup', 'app.manifest');
     const setupMain = path.join(ROOT_DIR, 'installer', 'setup', 'Program.cs');
     const tempOut = path.join(stageDir, 'installer.exe');
@@ -104,11 +65,8 @@ function buildInstaller({ outputPath, configPath, version = cdp.PLUGIN_VERSION }
       '/r:System.Drawing.dll',
       '/r:System.IO.Compression.dll',
       '/r:System.IO.Compression.FileSystem.dll',
-      '/r:System.Management.dll',
-      '/r:System.Net.Http.dll',
       '/r:System.Windows.Forms.dll',
       commonMiniJson,
-      commonCdpClient,
       setupMain,
     ], { stdio: 'inherit' });
 
@@ -118,7 +76,6 @@ function buildInstaller({ outputPath, configPath, version = cdp.PLUGIN_VERSION }
     return {
       outputPath: resolvedOut,
       sizeBytes: stat.size,
-      watcherSizeBytes: fs.statSync(watcherOut).size,
       payloadZipBytes: fs.statSync(payloadZip).size,
       fileCount: payloadFiles.length,
     };

@@ -59,9 +59,10 @@ test('resolvePluginDataDir aligns MCP PLUGIN_DATA and sidecar ANTIGRAVITY_EXECUT
   );
 });
 
-test('evaluateWatcherOwnership recognizes plugin/mcp-host.js as owned and rejects foreign scripts', () => {
+test('evaluateWatcherOwnership recognizes plugin/mcp-host.js and sidecars/panel/main.mjs as owned and rejects foreign scripts', () => {
   const targetDir = path.resolve(__dirname, '..');
   const mcpScript = path.join(targetDir, 'plugin', 'mcp-host.js');
+  const sidecarScript = path.join(targetDir, 'sidecars', 'panel', 'main.mjs');
   assert.equal(
     cdp.evaluateWatcherOwnership({ cmd: `node ${mcpScript}`, args: ['node', mcpScript] }, targetDir),
     'owned'
@@ -71,7 +72,30 @@ test('evaluateWatcherOwnership recognizes plugin/mcp-host.js as owned and reject
     'owned'
   );
   assert.equal(
+    cdp.evaluateWatcherOwnership(
+      {
+        cmd: `Antigravity --max-old-space-size=192 --import=file:///app/register_loader.js "${sidecarScript}"`,
+        args: ['Antigravity', '--max-old-space-size=192', '--import=file:///app/register_loader.js', sidecarScript],
+      },
+      targetDir
+    ),
+    'owned'
+  );
+  assert.equal(
+    cdp.evaluateWatcherOwnership(
+      {
+        cmd: `node --max-old-space-size 192 "${sidecarScript}"`,
+      },
+      targetDir
+    ),
+    'owned'
+  );
+  assert.equal(
     cdp.evaluateWatcherOwnership({ cmd: 'node /tmp/other/plugin/mcp-host.js' }, targetDir),
+    'foreign'
+  );
+  assert.equal(
+    cdp.evaluateWatcherOwnership({ cmd: 'node /tmp/other/sidecars/panel/main.mjs' }, targetDir),
     'foreign'
   );
 });

@@ -6,9 +6,8 @@ const path = require('path');
 const { execFileSync, spawn } = require('child_process');
 
 const STYLE_ID = 'ag-claude-style-css';
-const PLUGIN_VERSION = '2.2.0';
+const PLUGIN_VERSION = '3.0.0';
 const SETTING_BINDING = '__agClaudeStyleSetting';
-const STARTUP_GRACE_SECONDS = 90;
 const IS_MAC = process.platform === 'darwin';
 const IS_WIN = process.platform === 'win32';
 
@@ -106,11 +105,10 @@ const DEFAULT_CONFIG = {
   proxyForceHttp1: true,
   proxyColdStartAlert: true,
   autoRelaunchWithCdp: true,
-  exitOnHostClose: false,
   pollIntervalMs: 2500,
 };
 
-// Shared declarative schema consumed by inject.js and installer build manifests (Node, C#, Swift).
+// Shared declarative schema consumed by inject.js and sidecar config endpoints.
 const CONFIG_VALIDATORS = {
   language: ['zh-CN', 'zh-TW', 'yue', 'en', 'ja'],
   palette: ['obsidian', 'claude', 'host'],
@@ -161,7 +159,6 @@ const CONFIG_VALIDATORS = {
   proxyForceHttp1: 'boolean',
   proxyColdStartAlert: 'boolean',
   autoRelaunchWithCdp: 'boolean',
-  exitOnHostClose: 'boolean',
   pollIntervalMs: { type: 'integer', min: 250, max: 60000 },
 };
 
@@ -1090,29 +1087,13 @@ function hasPathToken(haystack, targetPath, targetPlatform = process.platform) {
   return false;
 }
 
-function extractDirFlagValue(cmd, args, cwd, targetPlatform = process.platform) {
-  if (Array.isArray(args) && args.length > 0) {
-    for (let i = 1; i < args.length; i++) {
-      if (args[i] === '--dir' && i + 1 < args.length) {
-        return { present: true, resolved: resolveCandidatePath(args[i + 1], cwd, targetPlatform) };
-      }
-      if (args[i].startsWith('--dir=')) {
-        return { present: true, resolved: resolveCandidatePath(args[i].slice(6), cwd, targetPlatform) };
-      }
-    }
-    return { present: false, resolved: '' };
-  }
-  const m = cmd.match(/(?:^|\s)--dir(?:=|\s+)(?:"([^"]+)"|'([^']+)'|(.+?))(?=\s+--[a-z0-9-]+(?:=|\s|$)|$)/i);
-  if (!m) return { present: false, resolved: '' };
-  const rawVal = (m[1] || m[2] || m[3] || '').trim();
-  return { present: true, resolved: resolveCandidatePath(rawVal, cwd, targetPlatform) };
-}
-
 const NODE_DISALLOWED_ENTRY_FLAGS = new Set([
   '-e',
   '--eval',
   '-p',
   '--print',
+  '-r',
+  '--require',
   '-i',
   '--interactive',
   '-c',
@@ -1127,7 +1108,7 @@ function isNodeBinaryName(binPathOrToken, targetPlatform = process.platform) {
   if (!binPathOrToken || typeof binPathOrToken !== 'string') return false;
   const pathMod = targetPlatform === 'win32' ? path.win32 : path.posix;
   const base = pathMod.basename(binPathOrToken).toLowerCase();
-  return /^(?:node(?:\.exe)?|nodejs|electron(?:\.exe)?|electron helper.*|antigravity(?:\.exe)?)$/.test(base);
+  return /^(?:node(?:\.exe)?|nodejs|electron(?:\.exe)?|electron helper.*|antigravity(?:\.exe)?|antigravity helper.*)$/.test(base);
 }
 
 function evaluateWatcherOwnership(rawInfo, targetDir = __dirname, targetPlatform = process.platform) {
@@ -1153,42 +1134,12 @@ function evaluateWatcherOwnership(rawInfo, targetDir = __dirname, targetPlatform
     return 'foreign';
   }
 
-  // 1. Native watcher binary check (must match executable itself, never mid-command arguments like `tail /path/watcher`).
-  const nativeExeName = targetPlatform === 'win32' ? 'agy-claude-style-watcher.exe' : 'agy-claude-style-watcher';
-  const expectedNativeExe = normalizePathForCompare(pathMod.join(normTargetDir, nativeExeName), targetPlatform);
-  const exePrefix = cmd.split(/\s+--/)[0].trim().replace(/^["']|["']$/g, '');
-  const leadingToken = exePrefix.split(/\s+/)[0] || '';
-  const exeMatchesNative = info.exePath
-    ? pathMod.basename(info.exePath).toLowerCase() === nativeExeName
-    : args && args[0]
-    ? pathMod.basename(args[0]).toLowerCase() === nativeExeName
-    : normalizePathForCompare(exePrefix, targetPlatform) === expectedNativeExe ||
-      (!/\s/.test(exePrefix) && pathMod.basename(exePrefix).toLowerCase() === nativeExeName);
-
-  if (exeMatchesNative) {
-    const dirFlag = extractDirFlagValue(cmd, args, info.cwd, targetPlatform);
-    if (dirFlag.present) {
-      if (dirFlag.resolved) {
-        return dirFlag.resolved === normTargetDir ? 'owned' : 'foreign';
-      }
-      return 'unknown';
-    }
-    const resolvedExe = info.exePath
-      ? normalizePathForCompare(pathMod.resolve(info.exePath), targetPlatform)
-      : args && args[0]
-      ? resolveCandidatePath(args[0], info.cwd, targetPlatform)
-      : pathMod.isAbsolute(exePrefix)
-      ? normalizePathForCompare(exePrefix, targetPlatform)
-      : '';
-    if (resolvedExe) {
-      return normalizePathForCompare(pathMod.dirname(resolvedExe), targetPlatform) === normTargetDir ? 'owned' : 'foreign';
-    }
-    return 'unknown';
-  }
-
-  // 2. Node watcher check: supports both `node inject.js --watch|--managed` and native `node plugin/mcp-host.js`.
-  const expectedScript = normalizePathForCompare(pathMod.join(normTargetDir, 'inject.js'), targetPlatform);
+  // Native plugin host check: recognizes both `plugin/mcp-host.js` and `sidecars/panel/main.mjs`.
   const expectedMcpScript = normalizePathForCompare(pathMod.join(normTargetDir, 'plugin', 'mcp-host.js'), targetPlatform);
+  const expectedSidecarScript = normalizePathForCompare(
+    pathMod.join(normTargetDir, 'sidecars', 'panel', 'main.mjs'),
+    targetPlatform
+  );
   const matchesTargetRealpath = (candidatePath, expectedPath) => {
     if (!candidatePath) return false;
     if (candidatePath === expectedPath) return true;
@@ -1202,37 +1153,82 @@ function evaluateWatcherOwnership(rawInfo, targetDir = __dirname, targetPlatform
     }
     return false;
   };
-  const isWatchOrManaged = hasFlag('--watch') || hasFlag('--managed');
-
-  if (args && args.length >= 2) {
-    if (!isNodeBinaryName(info.exePath || args[0], targetPlatform)) return 'foreign';
-    const entryScript = args[1];
+  const classifyEntryScript = (entryScript) => {
     if (!entryScript) return 'foreign';
-    if (entryScript.startsWith('-')) {
-      return NODE_DISALLOWED_ENTRY_FLAGS.has(entryScript.toLowerCase()) ? 'foreign' : 'unknown';
-    }
     const baseEntry = pathMod.basename(entryScript).toLowerCase();
     if (baseEntry === 'mcp-host.js') {
-      const resolvedEntry = resolveCandidatePath(entryScript, info.cwd, targetPlatform);
-      if (resolvedEntry) {
-        return matchesTargetRealpath(resolvedEntry, expectedMcpScript) ? 'owned' : 'foreign';
+      const resolved = resolveCandidatePath(entryScript, info.cwd, targetPlatform);
+      if (resolved) {
+        return matchesTargetRealpath(resolved, expectedMcpScript) ? 'owned' : 'foreign';
       }
       return 'unknown';
     }
-    if (!isWatchOrManaged) return 'foreign';
-    if (baseEntry !== 'inject.js') {
+    if (baseEntry === 'main.mjs') {
+      const resolved = resolveCandidatePath(entryScript, info.cwd, targetPlatform);
+      if (resolved) {
+        return matchesTargetRealpath(resolved, expectedSidecarScript) ? 'owned' : 'foreign';
+      }
+      return 'unknown';
+    }
+    return 'foreign';
+  };
+  const scanLeadingFlag = (tok, hasNextToken) => {
+    const lower = tok.toLowerCase();
+    if (
+      NODE_DISALLOWED_ENTRY_FLAGS.has(lower) ||
+      lower.startsWith('--eval=') ||
+      lower.startsWith('--require=') ||
+      lower.startsWith('--print=')
+    ) {
       return 'foreign';
     }
-    const resolvedEntry = resolveCandidatePath(entryScript, info.cwd, targetPlatform);
-    if (resolvedEntry) {
-      return matchesTargetRealpath(resolvedEntry, expectedScript) ? 'owned' : 'foreign';
+    if (/^--(?:import|max-old-space-size|loader|experimental-loader)$/i.test(lower)) {
+      return hasNextToken ? 'skip2' : 'unknown';
+    }
+    if (lower.startsWith('--')) {
+      return 'skip1';
     }
     return 'unknown';
+  };
+
+  if (args && args.length >= 2) {
+    if (!isNodeBinaryName(info.exePath || args[0], targetPlatform)) return 'foreign';
+    let i = 1;
+    while (i < args.length) {
+      const tok = args[i];
+      if (!tok) {
+        i++;
+        continue;
+      }
+      if (tok === '--') {
+        i++;
+        break;
+      }
+      if (tok.startsWith('-')) {
+        const action = scanLeadingFlag(tok, i + 1 < args.length);
+        if (action === 'skip1') {
+          i++;
+          continue;
+        }
+        if (action === 'skip2') {
+          i += 2;
+          continue;
+        }
+        return action;
+      }
+      return classifyEntryScript(tok);
+    }
+    if (i < args.length) {
+      return classifyEntryScript(args[i]);
+    }
+    return 'foreign';
   }
 
   // Space-joined cmd string (e.g. macOS ps): use info.exePath (from -o comm=) when available, else first token.
   let launcherTok = '';
   let rest = '';
+  const exePrefix = cmd.split(/\s+--/)[0].trim().replace(/^["']|["']$/g, '');
+  const leadingToken = exePrefix.split(/\s+/)[0] || '';
   if (info.exePath) {
     launcherTok = info.exePath;
     if (cmd.startsWith(info.exePath) && (cmd.length === info.exePath.length || /\s/.test(cmd[info.exePath.length]))) {
@@ -1258,49 +1254,53 @@ function evaluateWatcherOwnership(rawInfo, targetDir = __dirname, targetPlatform
 
   if (!isNodeBinaryName(launcherTok, targetPlatform)) return 'foreign';
   if (!rest) return 'foreign';
-  if (rest.startsWith('-')) {
-    const firstFlag = rest.split(/\s+/)[0].toLowerCase();
-    return NODE_DISALLOWED_ENTRY_FLAGS.has(firstFlag) ? 'foreign' : 'unknown';
+
+  const restTokens = splitCommandArgs(rest);
+  let tokIdx = 0;
+  while (tokIdx < restTokens.length) {
+    const tok = restTokens[tokIdx];
+    if (!tok) {
+      tokIdx++;
+      continue;
+    }
+    if (tok === '--') {
+      tokIdx++;
+      break;
+    }
+    if (tok.startsWith('-')) {
+      const action = scanLeadingFlag(tok, tokIdx + 1 < restTokens.length);
+      if (action === 'skip1') {
+        tokIdx++;
+        continue;
+      }
+      if (action === 'skip2') {
+        tokIdx += 2;
+        continue;
+      }
+      return action;
+    }
+    break;
+  }
+  if (tokIdx >= restTokens.length) return 'foreign';
+
+  if (tokIdx === 0) {
+    const normRest = targetPlatform === 'win32' ? rest.toLowerCase().replace(/\//g, '\\') : rest;
+    const rawUnquotedRest = normRest.replace(/^["']/, '');
+    const unquotedRest =
+      targetPlatform === 'darwin'
+        ? rawUnquotedRest.replace(/^\/private(?=\/(?:var|tmp|etc)(?:\/|\s|"|'|$))/, '')
+        : rawUnquotedRest;
+    for (const expectedScript of [expectedMcpScript, expectedSidecarScript]) {
+      if (unquotedRest.startsWith(expectedScript)) {
+        const nextChar = unquotedRest[expectedScript.length];
+        if (!nextChar || /[\s"']/.test(nextChar)) {
+          return 'owned';
+        }
+      }
+    }
   }
 
-  const normRest = targetPlatform === 'win32' ? rest.toLowerCase().replace(/\//g, '\\') : rest;
-  const rawUnquotedRest = normRest.replace(/^["']/, '');
-  const unquotedRest =
-    targetPlatform === 'darwin'
-      ? rawUnquotedRest.replace(/^\/private(?=\/(?:var|tmp|etc)(?:\/|\s|"|'|$))/, '')
-      : rawUnquotedRest;
-  if (unquotedRest.startsWith(expectedMcpScript)) {
-    const nextChar = unquotedRest[expectedMcpScript.length];
-    if (!nextChar || /[\s"']/.test(nextChar)) {
-      return 'owned';
-    }
-  }
-  const firstArg = rest.replace(/^["']/, '').split(/[\s"']/)[0] || '';
-  if (firstArg && pathMod.basename(firstArg).toLowerCase() === 'mcp-host.js') {
-    const resolvedMcp = resolveCandidatePath(firstArg, info.cwd, targetPlatform);
-    if (resolvedMcp) {
-      return matchesTargetRealpath(resolvedMcp, expectedMcpScript) ? 'owned' : 'foreign';
-    }
-    return 'unknown';
-  }
-  if (!isWatchOrManaged) return 'foreign';
-  if (unquotedRest.startsWith(expectedScript)) {
-    const nextChar = unquotedRest[expectedScript.length];
-    if (!nextChar || /[\s"']/.test(nextChar)) {
-      return 'owned';
-    }
-  }
-
-  if (!firstArg || pathMod.basename(firstArg).toLowerCase() !== 'inject.js') {
-    // Handles non-inject.js first arg (e.g. other.js) AND also safe fallback for unknown spaces in script path
-    if (pathMod.isAbsolute(firstArg)) return 'foreign';
-    return firstArg.toLowerCase().endsWith('inject.js') ? 'unknown' : 'foreign';
-  }
-  const resolvedRel = resolveCandidatePath(firstArg, info.cwd, targetPlatform);
-  if (resolvedRel) {
-    return matchesTargetRealpath(resolvedRel, expectedScript) ? 'owned' : 'foreign';
-  }
-  return 'unknown';
+  return classifyEntryScript(restTokens[tokIdx]);
 }
 
 function matchesWatcherForDir(rawInfo, targetDir = __dirname, targetPlatform = process.platform) {
@@ -1610,75 +1610,6 @@ function launchAntigravityWithCdp(opts = {}) {
   });
   if (child && typeof child.unref === 'function') child.unref();
   return true;
-}
-
-async function ensureAntigravityWithCdp(opts = {}) {
-  const readPortFn = typeof opts.readPort === 'function' ? opts.readPort : readPort;
-  const listPagesFn = typeof opts.listPages === 'function' ? opts.listPages : listPages;
-  const detectProcessFn =
-    typeof opts.detectProcess === 'function' ? opts.detectProcess : detectAntigravityProcess;
-  const hasCdpFlagFn =
-    typeof opts.hasRemoteDebuggingFlag === 'function'
-      ? opts.hasRemoteDebuggingFlag
-      : hasRemoteDebuggingFlag;
-  const launchFn = typeof opts.launch === 'function' ? opts.launch : launchAntigravityWithCdp;
-  const relaunchFn =
-    typeof opts.relaunch === 'function'
-      ? opts.relaunch
-      : typeof opts.relaunchFn === 'function'
-      ? opts.relaunchFn
-      : relaunchAntigravityWithCdp;
-  const activateFn =
-    typeof opts.activate === 'function' ? opts.activate : activateAntigravityWindow;
-  const shouldRelaunch = opts.relaunch === true || Boolean(opts.autoRelaunchWithCdp);
-
-  const port = readPortFn();
-  if (port) {
-    try {
-      const pages = await listPagesFn(port);
-      if (Array.isArray(pages) && pages.length > 0) {
-        try {
-          await activateFn({ appPath: opts.appPath });
-        } catch {}
-        return { ok: true, action: 'already-cdp', port, pagesCount: pages.length };
-      }
-    } catch {}
-  }
-
-  const proc = detectProcessFn() || { running: false, pids: [] };
-  const pids = Array.isArray(proc.pids) ? proc.pids : [];
-  if (proc.running) {
-    if (hasCdpFlagFn(pids)) {
-      try {
-        await activateFn({ appPath: opts.appPath });
-      } catch {}
-      return { ok: true, action: 'waiting-cdp', pids };
-    }
-    if (shouldRelaunch) {
-      const relaunchOpts = {
-        port: opts.port ?? 0,
-        waitMs: opts.waitMs,
-        appPath: opts.appPath,
-      };
-      if (Array.isArray(opts.extraArgs) && opts.extraArgs.length) relaunchOpts.extraArgs = opts.extraArgs;
-      if (opts.extraEnv && Object.keys(opts.extraEnv).length) relaunchOpts.extraEnv = opts.extraEnv;
-      const res = await relaunchFn(relaunchOpts);
-      if (res && res.relaunched) {
-        return { ok: true, action: 'relaunched' };
-      }
-      return { ok: false, action: 'relaunch-failed', reason: res?.reason || 'unknown' };
-    }
-    return { ok: false, action: 'running-without-cdp', pids };
-  }
-
-  const launchOpts = { port: opts.port ?? 0, appPath: opts.appPath };
-  if (Array.isArray(opts.extraArgs) && opts.extraArgs.length) launchOpts.extraArgs = opts.extraArgs;
-  if (opts.extraEnv && Object.keys(opts.extraEnv).length) launchOpts.extraEnv = opts.extraEnv;
-  const launched = launchFn(launchOpts);
-  if (launched) {
-    return { ok: true, action: 'launched' };
-  }
-  return { ok: false, action: 'executable-not-found' };
 }
 
 function scheduleDetachedRelaunch({
@@ -2295,27 +2226,6 @@ function resetRelaunchGuard({ markSuccess = false, reason = '', nowMs = Date.now
   return next;
 }
 
-function readEffectiveLaunchConfig(configPath = CONFIG_FILE, homeDir = os.homedir()) {
-  const cfg = readConfig(configPath);
-  if (cfg.proxyEnabled && cfg.proxyUrl) return cfg;
-  if (!CONFIG_FILE_ENV && homeDir) {
-    const nativeCfgPath = path.join(homeDir, '.gemini', 'antigravity', 'plugin_data', 'agy-claude-style', 'config.json');
-    if (path.resolve(nativeCfgPath).toLowerCase() !== path.resolve(configPath).toLowerCase() && fs.existsSync(nativeCfgPath)) {
-      const nativeCfg = readConfig(nativeCfgPath);
-      if (nativeCfg.proxyEnabled && nativeCfg.proxyUrl) {
-        return {
-          ...cfg,
-          proxyEnabled: nativeCfg.proxyEnabled,
-          proxyUrl: nativeCfg.proxyUrl,
-          proxyBypass: nativeCfg.proxyBypass,
-          proxyForceHttp1: nativeCfg.proxyForceHttp1,
-        };
-      }
-    }
-  }
-  return cfg;
-}
-
 function buildProxyLaunchOptionsFromConfig(cfg = {}) {
   if (!cfg || cfg.proxyEnabled !== true) return { args: [], env: {} };
   const raw = typeof cfg.proxyUrl === 'string' ? cfg.proxyUrl.trim() : '';
@@ -2391,44 +2301,29 @@ function hasConfiguredProxyFlag(pids, cfg = {}, { inspectCmdFn = inspectProcessC
   return { required: true, matched: false, inspected: true, expectedUrl };
 }
 
-function cleanupLegacyMacLauncher({ homeDir = os.homedir(), platform = process.platform } = {}) {
-  if (platform !== 'darwin') return { removed: false, path: '' };
-  const legacyPath = path.join(homeDir, 'Applications', 'Antigravity (AGY Claude Style).app');
-  try {
-    if (!fs.existsSync(legacyPath)) return { removed: false, path: legacyPath };
-    const stat = fs.lstatSync(legacyPath);
-    if (!stat.isDirectory() && !stat.isSymbolicLink()) return { removed: false, path: legacyPath };
-    fs.rmSync(legacyPath, { recursive: true, force: true });
-    return { removed: true, path: legacyPath };
-  } catch {
-    return { removed: false, path: legacyPath };
-  }
-}
-
 function formatCdpUnavailableMessage({ running, port }) {
   const launchHint = IS_MAC
-    ? 'open -a Antigravity --args --remote-debugging-port=0（或运行 ./launch.sh）'
+    ? '在右侧 Claude Style 控制室点击「立即重启启用」，或执行 open -a Antigravity --args --remote-debugging-port=0'
     : IS_WIN
-    ? 'Antigravity.exe --remote-debugging-port=0（或双击 launch.bat）'
-    : 'antigravity --remote-debugging-port=0（或运行 ./launch.sh）';
+    ? '在右侧 Claude Style 控制室点击「立即重启启用」，或带参数启动 Antigravity.exe --remote-debugging-port=0'
+    : '在右侧 Claude Style 控制室点击「立即重启启用」，或带参数启动 antigravity --remote-debugging-port=0';
   if (running) {
     return (
       `检测到 Antigravity 正在运行，但未开启远程调试端口（Antigravity 2.33.0+ 默认关闭 CDP` +
       `${port ? `，端口 ${port} 无响应` : `，未生成 ${PORT_FILE}`}）。` +
-      `请完全退出 Antigravity 后带参启动：${launchHint}`
+      `请${launchHint}`
     );
   }
   if (port) {
-    return `端口 ${port} 无响应：Antigravity 可能未运行。请通过带参方式启动：${launchHint}`;
+    return `端口 ${port} 无响应：Antigravity 可能未运行。请${launchHint}`;
   }
-  return `未找到调试端口文件，Antigravity 未运行: ${PORT_FILE}。如使用 Antigravity 2.33.0+，请使用 ${launchHint}`;
+  return `未找到调试端口文件，Antigravity 未运行: ${PORT_FILE}。如使用 Antigravity 2.33.0+，请${launchHint}`;
 }
 
 module.exports = {
   STYLE_ID,
   PLUGIN_VERSION,
   SETTING_BINDING,
-  STARTUP_GRACE_SECONDS,
   RUNTIME_PARTS,
   PORT_FILE,
   STATE_DIR,
@@ -2440,7 +2335,6 @@ module.exports = {
   validateConfigSetting,
   writeFileAtomic,
   readConfig,
-  readEffectiveLaunchConfig,
   updateConfigSetting,
   readPort,
   SWARM_SIDECAR_URL_PREFIX,
@@ -2485,8 +2379,6 @@ module.exports = {
   resetRelaunchGuard,
   buildProxyLaunchOptionsFromConfig,
   hasConfiguredProxyFlag,
-  cleanupLegacyMacLauncher,
-  ensureAntigravityWithCdp,
   formatCdpUnavailableMessage,
   CdpSession,
   readCss,

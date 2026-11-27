@@ -502,15 +502,7 @@ test('cdp: persistent auto-relaunch guard enforces same-PID dedup, 120s cooldown
     assert.ok(pOn.args.includes('--proxy-server=http://127.0.0.1:7897'));
     assert.equal(pOn.env.GODEBUG, 'http2client=0');
 
-    // 6. Legacy macOS dual .app launcher cleanup
-    const fakeHome = path.join(tmpDir, 'home');
-    const legacyApp = path.join(fakeHome, 'Applications', 'Antigravity (AGY Claude Style).app');
-    fs.mkdirSync(legacyApp, { recursive: true });
-    assert.equal(cdp.cleanupLegacyMacLauncher({ homeDir: fakeHome, platform: 'win32' }).removed, false);
-    assert.equal(cdp.cleanupLegacyMacLauncher({ homeDir: fakeHome, platform: 'darwin' }).removed, true);
-    assert.equal(fs.existsSync(legacyApp), false);
-
-    // 7. Detached relaunch uses /usr/bin/open (no /usr/bin/osascript invocation)
+    // 6. Detached relaunch uses /usr/bin/open (no /usr/bin/osascript invocation)
     assert.equal(/\/osascript\b|['"]osascript['"]/.test(cdp.scheduleDetachedRelaunch.toString()), false);
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -1788,12 +1780,6 @@ test('windows non-TUN proxy compatibility: NODE_USE_ENV_PROXY, custom launcher v
   assert.equal(winSpec.appPath, 'C:\\Tools\\Antigravity-Proxy.cmd');
   assert.equal(detachedWin.opts.env.HTTPS_PROXY, 'http://127.0.0.1:7890');
   assert.match(cdp.scheduleDetachedRelaunch.toString(), /NODE_USE_ENV_PROXY/);
-
-  // 6. C# CdpClient.cs includes custom launcher & NODE_USE_ENV_PROXY helpers
-  const csSource = fs.readFileSync(require.resolve('../installer/common/CdpClient.cs'), 'utf8');
-  assert.match(csSource, /ResolveCustomLaunchCommand/);
-  assert.match(csSource, /EnsureNodeUseEnvProxyIfProxySet/);
-  assert.match(csSource, /AGY_CLAUDE_STYLE_LAUNCH_CMD/);
 });
 
 test('v2.2.0 security & robustness: file-actions UNC block, wt.exe semicolon escape, main.mjs fail-closed host & removed route', async () => {

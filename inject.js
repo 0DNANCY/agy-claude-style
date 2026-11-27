@@ -1,63 +1,20 @@
-// Inject AGY Claude Style (agy-claude-style) into every open Antigravity window over CDP.
-//
-//   node inject.js            one-shot: inject now and exit
-//   node inject.js --watch    daemon mode: auto-inject into new/reloaded windows
-//                             and hot-reload style.css / *.js / config.json
-//   node inject.js --launch   launch Antigravity with --remote-debugging-port=0
-//                             (add --relaunch to restart a running instance without CDP)
-//   node inject.js --managed  managed mode (equivalent to --launch --watch --exit-on-host-close):
-//                             launch/attach Antigravity with CDP, watch windows, and exit when host closes
-//   Options: --exit-on-host-close, --startup-grace <sec> (default 90s), --poll-ms <ms>, --replace
+// Internal CDP injection and hot-reload controller for AGY Claude Style (agy-claude-style).
+// Invoked exclusively by native Antigravity Desktop plugin hosts (sidecars/panel/main.mjs and plugin/mcp-host.js).
 const fs = require('fs');
 const path = require('path');
 let cdpApi = require('./cdp');
 const {
   PID_FILE,
-  CONFIG_FILE,
   SETTING_BINDING,
-  STARTUP_GRACE_SECONDS,
 } = cdpApi;
 
-const MANAGED = process.argv.includes('--managed');
-const LAUNCH = MANAGED || process.argv.includes('--launch');
-const WATCH = MANAGED || process.argv.includes('--watch');
-const RELAUNCH = process.argv.includes('--relaunch');
-const REPLACE_EXISTING = process.argv.includes('--replace');
-const SKIP_IF_RUNNING = process.argv.includes('--skip-if-running');
-const EXIT_ON_HOST_CLOSE_FLAG = MANAGED || process.argv.includes('--exit-on-host-close');
 const LOG_FILE = path.join(cdpApi.STATE_DIR || __dirname, 'watch.log');
-
-function parseIntArg(flag, envName) {
-  const prefix = `${flag}=`;
-  for (let i = 0; i < process.argv.length; i++) {
-    const arg = process.argv[i];
-    let raw = null;
-    if (arg === flag && i + 1 < process.argv.length) {
-      raw = process.argv[i + 1];
-    } else if (arg.startsWith(prefix)) {
-      raw = arg.slice(prefix.length);
-    }
-    if (raw !== null) {
-      const n = parseInt(raw, 10);
-      if (Number.isInteger(n) && n > 0) return n;
-    }
-  }
-  if (envName && process.env[envName]) {
-    const n = parseInt(process.env[envName], 10);
-    if (Number.isInteger(n) && n > 0) return n;
-  }
-  return null;
-}
-
-const PARENT_PID = parseIntArg('--parent-pid', 'AG_PARENT_PID');
-const STARTUP_GRACE_SECONDS_VAL =
-  parseIntArg('--startup-grace', 'AG_STARTUP_GRACE_SEC') || STARTUP_GRACE_SECONDS;
 const POLL_INTERVAL_MS = Math.max(
   100,
-  Math.min(10000, parseIntArg('--poll-ms', 'AG_WATCH_POLL_MS') || 2000)
+  Math.min(10000, parseInt(process.env.AG_WATCH_POLL_MS || '', 10) || 2000)
 );
 
-let consoleLoggingEnabled = true;
+let consoleLoggingEnabled = false;
 let activeLogFile = LOG_FILE;
 
 function log(...args) {
@@ -67,7 +24,7 @@ function log(...args) {
       console.log(line);
     } catch {}
   }
-  if (WATCH || !consoleLoggingEnabled) {
+  if (!consoleLoggingEnabled && activeLogFile) {
     try {
       const dir = path.dirname(activeLogFile);
       if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
@@ -120,62 +77,6 @@ async function injectOnce() {
   }
 }
 
-async function launchWithCdp({ autoRelaunchFromConfig = false } = {}) {
-  const cfg =
-    typeof cdpApi.readEffectiveLaunchConfig === 'function'
-      ? cdpApi.readEffectiveLaunchConfig()
-      : cdpApi.readConfig();
-  const autoRelaunchWithCdp =
-    WATCH || autoRelaunchFromConfig ? cfg.autoRelaunchWithCdp === true : false;
-  const proxyOpts =
-    typeof cdpApi.buildProxyLaunchOptionsFromConfig === 'function'
-      ? cdpApi.buildProxyLaunchOptionsFromConfig(cfg)
-      : { args: [], env: {} };
-  const res = await cdpApi.ensureAntigravityWithCdp({
-    port: 0,
-    relaunch: RELAUNCH,
-    autoRelaunchWithCdp,
-    extraArgs: proxyOpts.args,
-    extraEnv: proxyOpts.env,
-  });
-  if (res.action === 'already-cdp') {
-    log(`[✓] Antigravity 已在调试端口 ${res.port} 运行 (${res.pagesCount} 个窗口)`);
-    return;
-  }
-  if (res.action === 'waiting-cdp') {
-    log(`[*] Antigravity 已携带调试参数启动 (PID: ${res.pids.join(', ')})，等待调试端口就绪...`);
-    return;
-  }
-  if (res.action === 'relaunched') {
-    log('[✓] 已重新启动 Antigravity（CDP 远程调试端口已开启）');
-    return;
-  }
-  if (res.action === 'launched') {
-    log('[✓] 已以 --remote-debugging-port=0 启动 Antigravity');
-    return;
-  }
-  if (res.action === 'running-without-cdp') {
-    throw new Error(
-      `Antigravity 正在运行但未开启 CDP 端口（PID: ${res.pids.join(', ')}）。` +
-        `请先完全退出 Antigravity，或运行 node inject.js --launch --relaunch 自动重启。`
-    );
-  }
-  if (res.action === 'relaunch-failed') {
-    throw new Error(`自动重启失败 (${res.reason})，请手动完全退出 Antigravity 后重试`);
-  }
-  throw new Error('未找到 Antigravity 可执行程序，请手动以 --remote-debugging-port=0 启动');
-}
-
-function isAlive(pid) {
-  if (!Number.isInteger(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (err) {
-    return err && err.code === 'EPERM';
-  }
-}
-
 function releasePidFile() {
   try {
     if (fs.readFileSync(PID_FILE, 'utf8').trim() === String(process.pid)) {
@@ -191,7 +92,7 @@ function sleepSync(ms) {
 function acquireLock(opts = {}) {
   const pidFile = opts.pidFile || PID_FILE;
   const targetDir = opts.targetDir || __dirname;
-  const replaceExisting = opts.replaceExisting !== undefined ? opts.replaceExisting : REPLACE_EXISTING;
+  const replaceExisting = Boolean(opts.replaceExisting);
   const allowGracefulDuplicateExit = Boolean(opts.allowGracefulDuplicateExit);
   const duplicateWaitMs = Number.isInteger(opts.duplicateWaitMs) && opts.duplicateWaitMs >= 0 ? opts.duplicateWaitMs : 1500;
   const killFn = typeof opts.killFn === 'function' ? opts.killFn : (p, sig) => process.kill(p, sig);
@@ -258,7 +159,7 @@ function acquireLock(opts = {}) {
         return { acquired: false, duplicate: true, pid: reDecision.pid };
       }
     } else {
-      console.error(`[!] 守护进程已在运行 (PID ${pid})。如需重启请先运行 remove.sh / remove.bat 或附加 --replace`);
+      console.error(`[!] 插件宿主监听进程已在运行 (PID ${pid})`);
       return exitFn(1, { blocked: true, reason: 'already-running', pid });
     }
   }
@@ -316,21 +217,16 @@ async function applyPageScripts(entry, { expr, configExpr, refreshOnly = false }
 }
 
 async function createWatchController({
-  forceExitOnHostClose = false,
-  startupGraceEnabled = false,
-  allowGracefulDuplicateExit = false,
+  allowGracefulDuplicateExit = true,
   allowAutoRelaunch = true,
-  manageProcessExit = true,
-  enableConsole = true,
+  enableConsole = false,
   logFile = LOG_FILE,
 } = {}) {
   consoleLoggingEnabled = Boolean(enableConsole);
   if (logFile) activeLogFile = logFile;
   const lockRes = acquireLock({
     allowGracefulDuplicateExit,
-    exitFn: manageProcessExit
-      ? (code) => process.exit(code)
-      : () => ({ acquired: false }),
+    exitFn: () => ({ acquired: false }),
   });
   if (!lockRes || !lockRes.acquired) return null;
   const emitLog = (...args) => {
@@ -356,12 +252,8 @@ async function createWatchController({
     }
   } catch {}
   emitLog(
-    `[*] AGY Claude Style (agy-claude-style) 守护模式启动 (PID ${process.pid})，每 ${POLL_INTERVAL_MS / 1000} 秒检查一次窗口`
+    `[*] AGY Claude Style (agy-claude-style) 原生插件监听启动 (PID ${process.pid})，每 ${POLL_INTERVAL_MS / 1000} 秒检查一次窗口`
   );
-
-  const watchStartedAt = Date.now();
-  const startupGraceMs = STARTUP_GRACE_SECONDS_VAL * 1000;
-  const effectiveExitOnCloseFlag = EXIT_ON_HOST_CLOSE_FLAG || forceExitOnHostClose;
 
   const attached = new Map();
   let currentConfig = cdpApi.readConfig();
@@ -388,10 +280,10 @@ async function createWatchController({
     attached.clear();
   }
 
-  async function stop({ removeFromPages = false, code = 0, reason = '' } = {}) {
+  async function stop({ removeFromPages = false, reason = '' } = {}) {
     if (shuttingDown) return;
     shuttingDown = true;
-    if (reason) emitLog(`[*] 守护进程退出: ${reason}`);
+    if (reason) emitLog(`[*] 监听控制器退出: ${reason}`);
     if (tickTimer) {
       clearTimeout(tickTimer);
       tickTimer = null;
@@ -422,40 +314,6 @@ async function createWatchController({
     closeAllSessions();
     releasePidFile();
     process.removeListener('exit', releasePidFile);
-    if (manageProcessExit) {
-      process.exit(code);
-    }
-  }
-
-  function shutdown(code = 0, reason = '') {
-    void stop({ removeFromPages: false, code, reason });
-  }
-
-  if (manageProcessExit) {
-    for (const sig of ['SIGINT', 'SIGTERM', 'SIGBREAK']) {
-      process.on(sig, () => shutdown(0, `收到信号 ${sig}`));
-    }
-
-    // Prevent orphan CPU spin when stdout/stderr pipe disconnects (e.g. ELECTRON_RUN_AS_NODE=1)
-    for (const stream of [process.stdout, process.stderr]) {
-      if (stream && typeof stream.on === 'function') {
-        stream.on('error', (err) => {
-          if (err && (err.code === 'EPIPE' || err.code === 'EOF' || err.code === 'ERR_STREAM_DESTROYED')) {
-            shutdown(0);
-          }
-        });
-      }
-    }
-    if ((PARENT_PID || process.env.ELECTRON_RUN_AS_NODE === '1') && process.stdin && !process.stdin.isTTY) {
-      try {
-        const st = fs.fstatSync(0);
-        if (st.isFIFO() || st.isSocket()) {
-          process.stdin.resume();
-          process.stdin.on('end', () => shutdown(0, '标准输入管道已关闭'));
-          process.stdin.on('close', () => shutdown(0, '标准输入管道已断开'));
-        }
-      } catch {}
-    }
   }
 
   async function apply(entry, opts = {}) {
@@ -559,10 +417,6 @@ async function createWatchController({
 
   async function tick() {
     if (busy || shuttingDown) return;
-    if (PARENT_PID && !isAlive(PARENT_PID)) {
-      shutdown(0, `父进程 ${PARENT_PID} 已退出`);
-      return;
-    }
     busy = true;
     let nextDelayMs = POLL_INTERVAL_MS;
     try {
@@ -670,23 +524,6 @@ async function createWatchController({
         }
 
         const proc = process.env.AG_CDP_PORT ? { running: false, pids: [] } : cdpApi.detectAntigravityProcess();
-        const shouldExitOnClose = effectiveExitOnCloseFlag || currentConfig.exitOnHostClose === true;
-        if (shouldExitOnClose && hadAttachedWindow && attached.size === 0 && consecutivePortFailures >= 3 && !proc.running) {
-          shutdown(0, 'Antigravity 宿主已关闭');
-          return;
-        }
-        if (
-          shouldExitOnClose &&
-          startupGraceEnabled &&
-          !hadAttachedWindow &&
-          attached.size === 0 &&
-          consecutivePortFailures >= 2 &&
-          !proc.running &&
-          Date.now() - watchStartedAt >= startupGraceMs
-        ) {
-          shutdown(0, `启动超过 ${STARTUP_GRACE_SECONDS_VAL} 秒仍未检测到 Antigravity CDP 端口`);
-          return;
-        }
 
         if (proc.running) {
           noCdpRunningTicks++;
@@ -761,7 +598,7 @@ async function createWatchController({
           noCdpRunningTicks = 0;
           warnedNoCdpSig = '';
           cdpFlagCache = { pidSig: '', hasFlag: false };
-          if (consecutivePortFailures >= 3 && !(startupGraceEnabled && !hadAttachedWindow)) {
+          if (consecutivePortFailures >= 3) {
             nextDelayMs = Math.max(5000, POLL_INTERVAL_MS);
           }
         }
@@ -845,15 +682,6 @@ async function createWatchController({
     } catch {}
   }
 
-  if (WATCH && manageProcessExit) {
-    process.on('uncaughtException', (err) => {
-      emitLog(`[!] 未捕获异常: ${err && err.stack ? err.stack : err}`);
-    });
-    process.on('unhandledRejection', (err) => {
-      emitLog(`[!] 未处理 Promise 拒绝: ${err && err.stack ? err.stack : err}`);
-    });
-  }
-
   await tick();
   return {
     stop,
@@ -862,41 +690,9 @@ async function createWatchController({
   };
 }
 
-async function watch(opts = {}) {
-  return createWatchController({ ...opts, manageProcessExit: true });
-}
-
-async function main() {
-  if (LAUNCH && WATCH) {
-    await launchWithCdp({ autoRelaunchFromConfig: true });
-    await watch({
-      forceExitOnHostClose: true,
-      startupGraceEnabled: true,
-      allowGracefulDuplicateExit: true,
-    });
-  } else if (LAUNCH) {
-    await launchWithCdp({ autoRelaunchFromConfig: false });
-  } else if (WATCH) {
-    await watch({
-      forceExitOnHostClose: false,
-      startupGraceEnabled: EXIT_ON_HOST_CLOSE_FLAG,
-      allowGracefulDuplicateExit: SKIP_IF_RUNNING,
-    });
-  } else {
-    await injectOnce();
-  }
-}
-
 module.exports = {
   injectOnce,
   createWatchController,
   acquireLock,
   applyPageScripts,
 };
-
-if (require.main === module) {
-  main().catch((err) => {
-    console.error(`[✗] ${err.message}`);
-    process.exit(1);
-  });
-}
