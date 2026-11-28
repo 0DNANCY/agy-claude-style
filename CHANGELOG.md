@@ -4,27 +4,32 @@ All notable changes to **AGY Claude Style (`agy-claude-style`)** are documented 
 
 ## [v4.1.0] - 2026-11-28
 
-`v4.1.0` 新增 **插件内在线检查更新与热重载升级、控制室极简重构与外置联动跳转、动态壁纸首页字符波纹透明度/全量还原默认设置、上下文模型名完整展示**，同时修复自签回环端口 / TUN 代理导致的控制室 `HTTP 500`，并将 GitHub Actions 精简为纯源码极速打包工作流。
+`v4.1.0` 新增 **插件内在线检查更新与热重载升级、控制室极简重构与外置联动跳转、动态壁纸首页字符波纹透明度/全量还原默认设置、上下文模型名完整展示**，同时修复自签回环端口 / TUN 代理导致的控制室 `HTTP 500`，并将 GitHub Actions 精简为纯源码极速打包工作流（[#29](https://github.com/0DNANCY/agy-claude-style/pull/29)）。
 
 ### 🔄 在线检查更新、一键热升级与遗留清理
 - **全端检查更新与零停机升级（`sidecars/panel/lib/updater.mjs`）**：
-  - 在控制室顶部与原生 **「设置 → 外观」** 面板及 CLI（`npm run check-update` / `npm run update`）提供版本检测与一键在线更新，内置 6 小时静默缓存（`autoCheckUpdate`）与竞速多源探测（GitHub API / Release 重定向 / jsDelivr + TUN/代理直连回退），超时上限压缩至 `4.5s` 内。
-  - 采用纯 Node PKZIP 安全解压（校验 CRC32、拦截 Zip-Slip 与解压炸弹），自动保留 `config.json` 与 `wallpapers/` 目录；升级完成后触发 Antigravity Language Server 热重载并注入更新后脚本。
+  - 在控制室顶部与原生 **「设置 → 外观」** 面板及 CLI（`npm run check-update` / `npm run update`）提供版本检测与一键在线更新，内置 6 小时静默缓存（`autoCheckUpdate`）与竞速多源探测（GitHub API / Release 重定向 / jsDelivr + HTTP `CONNECT` / IPv4 直连回退），超时上限压缩至 `4.5s` 内，兼容 TUN 与系统代理环境。
+  - 采用纯 Node PKZIP 安全解压（校验 CRC32、拦截 Zip-Slip 与解压炸弹），自动保留 `config.json` 与 `wallpapers/` 目录；升级完成后自动触发 Antigravity Language Server 热重载并注入更新后脚本。
 - **升级清理旧版外置程序与废弃文件**：
-  - 自动清理旧版安装遗留的 Windows 卸载器 `agy-claude-style-uninstaller.exe`、旧版独立目录、旧版 watcher/快捷方式/注册表及 macOS `LaunchAgent`，并依据新版压缩包清单修剪插件目录内残留的过时文件；同时自动终止占用 `.watch.pid` 的陈旧独立 `mcp-host.js` 进程并支持 `inject.js` 磁盘变更热重载。
+  - 自动清理旧版安装遗留的 Windows 卸载器 `agy-claude-style-uninstaller.exe`、旧版独立目录、旧版 watcher / 快捷方式 / 注册表及 macOS `LaunchAgent` 残留，并依据新版压缩包清单修剪插件目录内残留的过时文件；同时自动终止占用 `.watch.pid` 的陈旧独立 `mcp-host.js` 进程并支持 `inject.js` 磁盘变更热重载。
 
 ### 🎛 控制室重构、壁纸波纹控制与一键还原
-- **单行精简顶栏与 5 类导航**：控制室重排为极简头部（低频操作收进 `⋯` 菜单）+ 5 个分类胶囊（`🎨 主题` / `🎬 壁纸` / `🎛 交互` / `📊 HUD` / `⚡ 效率`），壁纸关闭时自动折叠衍生滑块；原生 **「设置 → 外观」** 缺失功能区新增一键跳转按钮（直达对应控制室模块并高亮脉冲提示）。
+- **单行精简顶栏与 5 类导航**：控制室重排为极简头部（低频操作收进 `⋯` 菜单）+ 5 个分类胶囊（`🎨 主题` / `🎬 壁纸` / `🎛 交互` / `📊 HUD` / `⚡ 效率`），`wpMode` 关闭时自动折叠衍生滑块；原生 **「设置 → 外观」** 缺失功能区新增一键跳转按钮，关闭弹窗后直接打开右侧控制室并高亮脉冲定位目标模块。
 - **动态壁纸波纹透明度（`wpRippleOpacity`）与全量恢复默认**：
   - 启用动态壁纸时可自由调节首页字符矩阵波纹不透明度（`0%–100%`，默认推荐 `35%`；设为 `0%` 时彻底卸载波纹画布释放 GPU/CPU）。
   - 在控制室与「设置 → 外观」同步提供二次确认 **「↺ 恢复默认」**，一键重置 `config.json` 与全窗口 `localStorage` 本地覆盖项。
 
 ### 🛠 稳定性与界面修复
-- **修复控制室 `HTTP 500` 与 TUN 代理兼容**：重构 `plugin/host-lifecycle.js` / `plugin/mcp-host.js` 的回环 `/healthz` 探针为原生 `http/https` 直连并放行回环自签 TLS 证书，在 `sidecar.json` 中显式配置 `NO_PROXY` 白名单，彻底消除 Antigravity 自签 HTTPS 端口引发的 Sidecar 频繁重启与网关 `500`。
+- **修复控制室 `HTTP 500` 与 TUN 代理兼容**：重构 `plugin/host-lifecycle.js` / `plugin/mcp-host.js` 的回环 `/healthz` 探针为原生 `http/https` 直连并放行回环自签 TLS 证书，在 `sidecars/panel/sidecar.json` 中显式配置 `NO_PROXY` 白名单，彻底消除 Antigravity 自签 HTTPS 端口引发的 Sidecar 频繁重启与网关 `500`。
 - **完整显示上下文浮窗模型名称**：将 `.ag-cs-ctx-popover` 顶部重排为双行结构，使模型徽章独占整行宽度，完整呈现如 `Gemini 4 Hydrogen (High)` 的模型全称。
 
 ### ⚙️ 精简纯源码 CI / Release 工作流
-- 删除冗余的 `_build-and-test.yml` 与 Windows/macOS 多系统矩阵，将 `ci.yml` 与 `release.yml` 统一收敛为单台 `ubuntu-latest` 直接校验并打包纯源码 `agy-claude-style-v<version>.zip` + `SHA256SUMS.txt`；Action 升级至 `@v6`、`scripts/build-package.mjs` 支持同步写入打包版本号，并修复普通正式版 Release 被误标为 `prerelease` 的问题。
+- 删除冗余的 `.github/workflows/_build-and-test.yml` 与 Windows/macOS 多系统矩阵，将 `ci.yml` 与 `release.yml` 统一收敛为单台 `ubuntu-latest` 直接校验并打包纯源码 `agy-claude-style-v<version>.zip` + `SHA256SUMS.txt`；GitHub Actions 升级至 `@v6`，`scripts/build-package.mjs` 支持将 `--version` 同步写入归档内的 `plugin.json` / `package.json` / `cdp.js`，并修复普通正式版 Release 被误标为 `prerelease` 的问题。
+
+### 🧪 自动化测试扩充
+- 新增 `test/updater.test.mjs`（覆盖 Semver 比较、PKZIP CRC/Zip-Slip 防护、GitHub API 限流 302 重定向与竞速回退、6 小时缓存及沙盒升级保留配置/壁纸并清理旧版残留），同步更新 `test/plugin-host.test.mjs`、`test/theme-wallpaper.test.mjs`、`test/cli-install.test.mjs` 与 `test/cdp-watcher.test.mjs`；全量套件扩展至 153 项测试（Windows 下 152 项通过、1 项 POSIX `install.sh` 按平台跳过）。
+
+**Full Changelog**: https://github.com/0DNANCY/agy-claude-style/compare/v4.0.0...v4.1.0
 
 ---
 
