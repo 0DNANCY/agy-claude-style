@@ -6,7 +6,7 @@ const path = require('path');
 const { execFileSync, spawn } = require('child_process');
 
 const STYLE_ID = 'ag-claude-style-css';
-const PLUGIN_VERSION = '3.1.0';
+const PLUGIN_VERSION = '4.0.0';
 const SETTING_BINDING = '__agClaudeStyleSetting';
 const IS_MAC = process.platform === 'darwin';
 const IS_WIN = process.platform === 'win32';
@@ -58,7 +58,16 @@ const CONFIG_FILE = CONFIG_FILE_ENV
 const DEFAULT_CONFIG = {
   language: 'zh-CN',
   palette: 'obsidian',
+  customTheme: {},
   glassEffect: true,
+  wpMode: 'off',
+  wpFile: '',
+  wpOpacity: 35,
+  wpBlur: 0,
+  wpDim: 25,
+  wpSurfaceAlpha: 76,
+  wpRate: 100,
+  wpPauseBlur: true,
   homeLayout: 'studio',
   homeRipple: true,
   composerRestyle: true,
@@ -109,11 +118,26 @@ const DEFAULT_CONFIG = {
   pollIntervalMs: 2500,
 };
 
+const CUSTOM_THEME_BASE_IDS = new Set(['obsidian', 'claude', 'nord', 'catppuccin', 'rosepine', 'tokyo', 'dracula', 'emerald']);
+const CUSTOM_THEME_COLOR_KEYS = new Set(['accent', 'canvas', 'sidebar', 'composer', 'bubble', 'fg', 'mutedFg', 'border']);
+const CUSTOM_THEME_ALLOWED_KEYS = new Set(['base', 'mode', ...CUSTOM_THEME_COLOR_KEYS]);
+const HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/;
+const WP_FILE_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$/;
+
 // Shared declarative schema consumed by inject.js and sidecar config endpoints.
 const CONFIG_VALIDATORS = {
   language: ['zh-CN', 'zh-TW', 'yue', 'en', 'ja'],
-  palette: ['obsidian', 'claude', 'host'],
+  palette: ['obsidian', 'claude', 'nord', 'catppuccin', 'rosepine', 'tokyo', 'dracula', 'emerald', 'custom', 'host'],
+  customTheme: { type: 'customTheme' },
   glassEffect: 'boolean',
+  wpMode: ['off', 'global', 'home'],
+  wpFile: { type: 'string', maxLength: 120, kind: 'wpFile' },
+  wpOpacity: { type: 'integer', min: 5, max: 100 },
+  wpBlur: { type: 'integer', min: 0, max: 48 },
+  wpDim: { type: 'integer', min: -50, max: 85 },
+  wpSurfaceAlpha: { type: 'integer', min: 15, max: 100 },
+  wpRate: { type: 'integer', min: 25, max: 200 },
+  wpPauseBlur: 'boolean',
   homeLayout: ['studio', 'classic', 'off'],
   homeRipple: 'boolean',
   composerRestyle: 'boolean',
@@ -209,6 +233,26 @@ function validateConfigSetting(key, value) {
   if (rule === 'boolean') return typeof value === 'boolean';
   if (Array.isArray(rule)) return typeof value === 'string' && rule.includes(value);
   if (rule && typeof rule === 'object') {
+    if (rule.type === 'customTheme') {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+      const proto = Object.getPrototypeOf(value);
+      if (proto !== Object.prototype && proto !== null) return false;
+      const keys = Object.keys(value);
+      if (keys.length > 10) return false;
+      for (const k of keys) {
+        if (!CUSTOM_THEME_ALLOWED_KEYS.has(k)) return false;
+        const v = value[k];
+        if (typeof v !== 'string') return false;
+        if (k === 'base') {
+          if (v !== '' && !CUSTOM_THEME_BASE_IDS.has(v)) return false;
+        } else if (k === 'mode') {
+          if (v !== '' && v !== 'auto' && v !== 'dark' && v !== 'light') return false;
+        } else if (CUSTOM_THEME_COLOR_KEYS.has(k)) {
+          if (v !== '' && !HEX_COLOR_RE.test(v)) return false;
+        }
+      }
+      return true;
+    }
     if (rule.type === 'integer') {
       return Number.isInteger(value) && value >= rule.min && value <= rule.max;
     }
@@ -217,6 +261,10 @@ function validateConfigSetting(key, value) {
         return false;
       }
       const trimmed = value.trim();
+      if (rule.kind === 'wpFile') {
+        if (!trimmed) return true;
+        return !trimmed.includes('..') && WP_FILE_RE.test(trimmed);
+      }
       if (rule.kind === 'sshHost') {
         if (!trimmed) return true;
         return !trimmed.startsWith('-') && SSH_HOST_VALID_RE.test(trimmed);
@@ -434,7 +482,7 @@ function readCss() {
   return fs.readFileSync(path.join(__dirname, 'style.css'), 'utf8');
 }
 
-const RUNTIME_PARTS = ['i18n-locales.js', 'i18n-core.js', 'sidecar-core.js', 'usage-core.js', 'ripple-core.js', 'mascot-core.js', 'crab-assets.js', 'effort-core.js', 'perf-assets.js', 'ui-rewind.js', 'features/branch-edit.js', 'features/file-menu.js', 'features/task-progress.js', 'features/extensions-dock.js', 'features/hide-on-close.js', 'features/unread-title.js', 'features/stage-collapse.js', 'features/sidebar-polish.js', 'ui-runtime.js'];
+const RUNTIME_PARTS = ['i18n-locales.js', 'i18n-core.js', 'sidecar-core.js', 'usage-core.js', 'ripple-core.js', 'mascot-core.js', 'crab-assets.js', 'effort-core.js', 'perf-assets.js', 'ui-rewind.js', 'features/theme-engine.js', 'features/wallpaper.js', 'features/branch-edit.js', 'features/file-menu.js', 'features/task-progress.js', 'features/extensions-dock.js', 'features/hide-on-close.js', 'features/unread-title.js', 'features/stage-collapse.js', 'features/sidebar-polish.js', 'ui-runtime.js'];
 
 function readRuntimeBundle() {
   return RUNTIME_PARTS.map((f) => fs.readFileSync(path.join(__dirname, f), 'utf8')).join('\n');
@@ -515,12 +563,13 @@ function computeHash(str) {
   return (h >>> 0).toString(36);
 }
 
-function buildInjectExpression(customConfig) {
+function buildInjectExpression(customConfig, extraOpts = {}) {
   const config = customConfig || readConfig();
   const css = readCss();
   const bundle = readRuntimeBundle();
   const codeHash = computeHash(bundle);
   const sidecarLogos = readInstalledSidecarLogos();
+  const wallpaperMeta = extraOpts && extraOpts.wallpaperMeta ? extraOpts.wallpaperMeta : null;
   return `(() => {
     const css = ${JSON.stringify(css)};
     const applyStyle = () => {
@@ -552,6 +601,7 @@ function buildInjectExpression(customConfig) {
           else document.addEventListener('DOMContentLoaded', applyStyle, { once: true });
         }
         globalThis.__agCsSidecarLogos = ${JSON.stringify(sidecarLogos)};
+        globalThis.__agCsWallpaperMeta = ${JSON.stringify(wallpaperMeta)};
         ${bundle}
         if (typeof globalThis.__agCsUiMain === 'function') {
           const baseCfg = ${JSON.stringify({ ...sanitizeConfigForPage(config), binding: SETTING_BINDING, codeHash })};
@@ -597,23 +647,7 @@ function buildConfigScriptExpression(customConfig, expectedCodeHash) {
   const config = customConfig || readConfig();
   const expectedHash = expectedCodeHash || '';
   const payload = { ...sanitizeConfigForPage(config), binding: SETTING_BINDING, codeHash: expectedHash };
-  return `(() => {
-    const nextCfg = ${JSON.stringify(payload)};
-    globalThis.__agCsOverrideConfig = nextCfg;
-    if (
-      window.__agClaudeStyle &&
-      typeof window.__agClaudeStyle.refreshConfig === 'function' &&
-      (!${JSON.stringify(expectedHash)} || window.__agClaudeStyle.codeHash === ${JSON.stringify(expectedHash)})
-    ) {
-      window.__agClaudeStyle.refreshConfig(nextCfg);
-      return {
-        version: ${JSON.stringify(PLUGIN_VERSION)},
-        status: 'refreshed',
-        state: window.__agClaudeStyle.getState ? window.__agClaudeStyle.getState() : null,
-      };
-    }
-    return null;
-  })()`;
+  return `(()=>{const c=${JSON.stringify(payload)};globalThis.__agCsOverrideConfig=c;const a=window.__agClaudeStyle;if(a&&typeof a.refreshConfig==='function'&&(!c.codeHash||a.codeHash===c.codeHash)){a.refreshConfig(c);return{version:${JSON.stringify(PLUGIN_VERSION)},status: 'refreshed',state:a.getState?a.getState():null};}return null;})()`;
 }
 
 function buildRefreshExpression(customConfig, expectedCodeHash) {
@@ -633,7 +667,9 @@ const REMOVE_EXPRESSION = `(() => {
   delete globalThis.__agCsOverrideConfig;
   delete globalThis.__agCsEnsureStyle;
   delete globalThis.__agCsSidecarLogos;
+  delete globalThis.__agCsWallpaperMeta;
   delete window.__agCsFileActionReply;
+  delete window.__agCsWallpaperChunkReply;
   try {
     if (window.__agClaudeStyle && typeof window.__agClaudeStyle.destroy === 'function') {
       window.__agClaudeStyle.destroy();
@@ -654,10 +690,12 @@ const REMOVE_EXPRESSION = `(() => {
   delete globalThis.__agCsI18nCore;
   delete globalThis.__agCsSidecarCore;
   delete globalThis.__agCsLocales;
+  delete globalThis.__agCsThemeEngine;
   delete globalThis.__agCsFeatures;
   const root = document.documentElement;
   if (root) {
     root.removeAttribute('data-ag-cs-glass');
+    root.removeAttribute('data-ag-cs-wp');
     root.removeAttribute('data-ag-cs-effort-accent');
     root.removeAttribute('data-ag-cs-perf-backdrop');
     root.removeAttribute('data-ag-cs-lang');
@@ -669,6 +707,11 @@ const REMOVE_EXPRESSION = `(() => {
     root.removeAttribute('data-ag-cs-sidebar-compact');
     root.removeAttribute('data-ag-cs-sidebar-fold-empty');
     if (root.getAttribute('data-ag-cjk') === '1') root.removeAttribute('data-ag-cjk');
+    if (root.style && typeof root.style.removeProperty === 'function') {
+      for (const cssVar of ['--ag-cs-wp-opacity', '--ag-cs-wp-blur', '--ag-cs-wp-scrim', '--ag-cs-wp-surface-alpha']) {
+        root.style.removeProperty(cssVar);
+      }
+    }
   }
   document
     .querySelectorAll('[data-ag-cs-sb-group], [data-ag-cs-sb-header], [data-ag-cs-sb-children], [data-ag-cs-sb-empty], [data-ag-cs-sb-empty-row], [data-ag-cs-sb-empty-body], [data-ag-cs-sb-has-convos], [data-ag-cs-sb-has-active], [data-ag-cs-sb-active], [data-ag-cs-sb-peek], [data-ag-cs-sb-nav-active]')
@@ -678,7 +721,7 @@ const REMOVE_EXPRESSION = `(() => {
       }
     });
   const nodes = document.querySelectorAll(
-    'style#${STYLE_ID}, style#ag-token-hud-style, .ag-cs-home-panel-seat, .ag-cs-ripple-host, .ag-cs-ripple-canvas, .ag-cs-crab, .ag-cs-inline-stats, .ag-cs-quota-ring, .ag-cs-context-ring, .ag-cs-ctx-popover, .ag-cs-effort-popover, .ag-cs-perf-backdrop, .ag-cs-smooth-caret, .ag-cs-turn-bar, .ag-cs-hud-top-bar, .ag-cs-hud-bottom-bar, .ag-cs-hud-rim-progress, .ag-cs-hud-footer-chip, .ag-cs-rewind-bar, .ag-cs-rewind-notice, .ag-cs-rewind-backdrop, .ag-cs-branch-btn, .ag-cs-edit-btn, .ag-cs-inline-edit, .ag-cs-file-menu, .ag-cs-file-submenu, .ag-cs-progress-card, .ag-cs-action-toast, .ag-cs-ext-header-bar, .ag-cs-ext-menu-btn, .ag-cs-ext-sidebar-sec, .ag-cs-ext-popover, .ag-cs-native-pin-btn, .ag-cs-ext-tooltip, .ag-cs-stage-bar, .ag-cs-stage-badge, .ag-cs-stage-meta-inline, #ag-cs-settings-sec, .ag-th-top-bar, .ag-th-bottom-bar, .ag-th-rim-progress, .ag-th-footer-chip, .ag-th-popover, .ag-th-turn-bar, .ag-th-reopen-pill'
+    'style#${STYLE_ID}, style#ag-claude-style-theme-vars, style#ag-token-hud-style, .ag-cs-wallpaper-host, .ag-cs-home-panel-seat, .ag-cs-ripple-host, .ag-cs-ripple-canvas, .ag-cs-crab, .ag-cs-inline-stats, .ag-cs-quota-ring, .ag-cs-context-ring, .ag-cs-ctx-popover, .ag-cs-effort-popover, .ag-cs-perf-backdrop, .ag-cs-smooth-caret, .ag-cs-turn-bar, .ag-cs-hud-top-bar, .ag-cs-hud-bottom-bar, .ag-cs-hud-rim-progress, .ag-cs-hud-footer-chip, .ag-cs-rewind-bar, .ag-cs-rewind-notice, .ag-cs-rewind-backdrop, .ag-cs-branch-btn, .ag-cs-edit-btn, .ag-cs-inline-edit, .ag-cs-file-menu, .ag-cs-file-submenu, .ag-cs-progress-card, .ag-cs-action-toast, .ag-cs-ext-header-bar, .ag-cs-ext-menu-btn, .ag-cs-ext-sidebar-sec, .ag-cs-ext-popover, .ag-cs-native-pin-btn, .ag-cs-ext-tooltip, .ag-cs-stage-bar, .ag-cs-stage-badge, .ag-cs-stage-meta-inline, #ag-cs-settings-sec, .ag-th-top-bar, .ag-th-bottom-bar, .ag-th-rim-progress, .ag-th-footer-chip, .ag-th-popover, .ag-th-turn-bar, .ag-th-reopen-pill'
   );
   nodes.forEach((n) => n.remove());
   return { removed: nodes.length };

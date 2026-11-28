@@ -5,11 +5,11 @@ watch.log
 # Local user configuration (use config.example.json as template)
 config.json
 
-# Compiled Windows binaries (rebuild with `npm run build:installer`)
+# Packaged plugin archives (rebuild with `npm run build:package`)
 installer.exe
 *.exe
 
-# Compiled macOS bundles & disk images (rebuild with `npm run build:macos`)
+# Legacy bundles & build output
 *.app/
 *.dmg
 dist/

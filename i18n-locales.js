@@ -144,7 +144,18 @@
       'パレットを選択するかホストテーマに合わせます。',
     ],
     optObsidian: ['深邃蓝黑', '深邃藍黑', '深邃藍黑', 'Obsidian', 'オブシディアン'],
+    optCustom: ['自定义色板', '自訂色板', '自訂色板', 'Custom', 'カスタム'],
     optHost: ['跟随宿主', '跟隨宿主', '跟隨宿主', 'Host', 'ホスト連動'],
+    setWpModeTitle: ['动态壁纸', '動態桌布', '動態牆紙', 'Dynamic Wallpaper', '動的壁紙'],
+    setWpModeDesc: [
+      '支持在右侧「Claude Style」控制室导入本地视频或图片作为全局/首页背景。',
+      '支援於右側「Claude Style」控制室匯入本機影片或圖片作為全域/首頁背景。',
+      '支援喺右邊「Claude Style」控制室匯入本地影片或圖片做全域/首頁背景。',
+      'Render local video/image wallpaper behind the window or home canvas (import media in the Control Room).',
+      '右側の「Claude Style」パネルからローカル動画・画像を読み込み、全体またはホーム背景に表示します。',
+    ],
+    optWpGlobal: ['全局背景', '全域背景', '全域背景', 'Global', '全体背景'],
+    optWpHome: ['仅欢迎页', '僅歡迎頁', '只限歡迎頁', 'Home', 'ホームのみ'],
     setLogoInkTitle: ['Antigravity Logo 着色', 'Antigravity Logo 著色', 'Antigravity Logo 顏色', 'Logo Color', 'ロゴカラー'],
     setLogoInkDesc: [
       '保留反重力特色 Logo 并设置其色彩风格。',

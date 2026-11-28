@@ -4860,3 +4860,76 @@ html[data-ag-cs-style][data-ag-cs-compact-chat="on"] [data-testid="turn-cards-co
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
+
+/* ── 18. Dynamic Local Wallpaper System (Global & Home Scopes) ── */
+html[data-ag-cs-style][data-ag-cs-wp="global"] body {
+  position: relative !important;
+  isolation: isolate !important;
+}
+html[data-ag-cs-style][data-ag-cs-wp="global"] body > .ag-cs-wallpaper-host {
+  position: fixed !important;
+  inset: 0 !important;
+  z-index: 0 !important;
+  pointer-events: none !important;
+  overflow: hidden !important;
+}
+html[data-ag-cs-style][data-ag-cs-wp="global"] body > :not(.ag-cs-wallpaper-host):not(.ag-cs-perf-backdrop) {
+  position: relative;
+  z-index: 1;
+}
+html[data-ag-cs-style][data-ag-cs-wp="home"] .agy-home > .ag-cs-wallpaper-host {
+  position: absolute !important;
+  inset: 0 !important;
+  z-index: 0 !important;
+  pointer-events: none !important;
+  overflow: hidden !important;
+}
+html[data-ag-cs-style][data-ag-cs-wp="home"] .agy-home > :not(.ag-cs-wallpaper-host):not(.ag-cs-ripple-host) {
+  position: relative;
+  z-index: 1;
+}
+html[data-ag-cs-style][data-ag-cs-wp="home"] .agy-home > .ag-cs-ripple-host {
+  z-index: 0 !important;
+}
+.ag-cs-wallpaper-media {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  opacity: var(--ag-cs-wp-opacity, 0.35);
+  filter: blur(var(--ag-cs-wp-blur, 0px));
+  transform: scale(1);
+  transition: opacity 220ms ease, filter 220ms ease;
+  pointer-events: none;
+  user-select: none;
+}
+.ag-cs-wallpaper-host[data-wp-blurred="1"] .ag-cs-wallpaper-media {
+  transform: scale(1.06);
+}
+.ag-cs-wallpaper-scrim {
+  position: absolute;
+  inset: 0;
+  background: var(--ag-cs-wp-scrim, rgba(7, 9, 13, 0.25));
+  pointer-events: none;
+}
+
+/* Translucent surfaces in Global Wallpaper mode so media shows cleanly through */
+html[data-ag-cs-style][data-ag-cs-wp="global"]:not([data-ag-cs-palette="host"]) .agy-shell,
+html[data-ag-cs-style][data-ag-cs-wp="global"]:not([data-ag-cs-palette="host"]) .agy-sheet,
+html[data-ag-cs-style][data-ag-cs-wp="global"] [data-testid="conversation-view"] {
+  background-color: color-mix(in srgb, var(--ag-cs-canvas, var(--background)) var(--ag-cs-wp-surface-alpha, 76%), transparent) !important;
+  background-image: none !important;
+}
+html[data-ag-cs-style][data-ag-cs-wp="global"] [data-testid="sidebar-split"] > div:first-child,
+html[data-ag-cs-style][data-ag-cs-wp="global"] [data-testid="pane-titlebar"],
+html[data-ag-cs-style][data-ag-cs-wp="global"] [data-testid="title-menu-bar"] {
+  background-color: color-mix(in srgb, var(--ag-cs-sidebar, var(--sidebar)) var(--ag-cs-wp-surface-alpha, 76%), transparent) !important;
+}
+html[data-ag-cs-style][data-ag-cs-wp="global"][data-ag-cs-composer="on"] .surface-composer-card > div.relative.w-full {
+  background-color: color-mix(in srgb, var(--ag-cs-composer-bg, var(--card)) min(92%, calc(var(--ag-cs-wp-surface-alpha, 76%) + 10%)), transparent) !important;
+}
+html[data-ag-cs-style][data-ag-cs-wp="global"] .ag-cs-home-panel {
+  background-color: color-mix(in srgb, var(--ag-cs-canvas, var(--card)) min(90%, calc(var(--ag-cs-wp-surface-alpha, 76%) + 8%)), transparent) !important;
+}
+

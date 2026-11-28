@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag (e.g. v2.1.0). Leave empty to use v<package.json version>.'
+        description: 'Release tag (e.g. v4.0.0). Leave empty to use v<package.json version>.'
         required: false
         type: string
       prerelease:
@@ -65,7 +65,7 @@ jobs:
           fi
 
           if [[ ! "$TAG" =~ ^v[0-9A-Za-z._-]+$ ]]; then
-            echo "::error::Invalid release tag '$TAG'. Expected a tag starting with 'v' (e.g. v2.1.0)."
+            echo "::error::Invalid release tag '$TAG'. Expected a tag starting with 'v' (e.g. v4.0.0)."
             exit 1
           fi
 
@@ -90,10 +90,9 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "prerelease=$PRERELEASE" >> "$GITHUB_OUTPUT"
           echo "draft=$DRAFT" >> "$GITHUB_OUTPUT"
-          echo "Resolved release tag=$TAG version=$VERSION prerelease=$PRERELEASE draft=$DRAFT"
 
   build-and-test:
-    name: Test & Build Artifacts
+    name: Test & Build Package
     needs: prepare
     uses: ./.github/workflows/_build-and-test.yml
     with:
@@ -111,49 +110,51 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Download compiled release artifacts
+      - name: Download compiled release artifact
         uses: actions/download-artifact@v4
         with:
           path: release-assets
           merge-multiple: true
 
-      - name: Verify artifacts and generate SHA256 checksums
+      - name: Verify package and generate SHA256 checksums
         env:
-          WIN_FILE: ${{ needs.build-and-test.outputs.windows_file }}
-          MAC_FILE: ${{ needs.build-and-test.outputs.macos_file }}
+          PKG_FILE: ${{ needs.build-and-test.outputs.package_file }}
         run: |
           set -euo pipefail
           cd release-assets
-          test -f "$WIN_FILE" || { echo "::error::Missing Windows artifact: $WIN_FILE"; exit 1; }
-          test -f "$MAC_FILE" || { echo "::error::Missing macOS artifact: $MAC_FILE"; exit 1; }
-          ls -lh "$WIN_FILE" "$MAC_FILE"
-          sha256sum "$WIN_FILE" "$MAC_FILE" > SHA256SUMS.txt
+          test -f "$PKG_FILE" || { echo "::error::Missing package artifact: $PKG_FILE"; exit 1; }
+          ls -lh "$PKG_FILE"
+          sha256sum "$PKG_FILE" > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
       - name: Prepare Release notes
         env:
           TAG: ${{ needs.prepare.outputs.tag }}
-          WIN_FILE: ${{ needs.build-and-test.outputs.windows_file }}
-          MAC_FILE: ${{ needs.build-and-test.outputs.macos_file }}
+          PKG_FILE: ${{ needs.build-and-test.outputs.package_file }}
         run: |
           set -euo pipefail
           cat > release-notes.md <<EOF
-          ## 📦 开箱即用原生插件安装器 / Standalone Plugin Installers
+          ## ⚡ 一串命令极速安装 / One-Liner Install (Zero Dependencies)
 
-          **零后台守护进程、零外部依赖**：安装器仅负责将 `agy-claude-style` 原生插件包部署至 Antigravity Desktop 插件目录（`~/.gemini/config/plugins/agy-claude-style`）并自动启用，**安装器本身与磁盘上不包含任何外部 CDP 注入器或开机自启守护进程**。安装后由 Antigravity Desktop 原生插件宿主在内部自动完成 CDP 注入、热更新与右侧 `Claude Style` 控制室挂载（内置 Electron 运行时，目标机器无需安装 Node.js）：
+          从 \`v4.0.0\` 起全面弃用 \`.exe\` / \`.dmg\` 二进制安装器，采用**零外部依赖一键命令**直接部署 Antigravity 原生插件至 \`~/.gemini/config/plugins/agy-claude-style\` 并自动热启用（无需预装 Git 或外部 Node.js，升级自动保留 \`config.json\` 与动态壁纸库）：
 
-          - **Windows (x64 / Windows 10 & 11)**：下载 \`${WIN_FILE}\`，双击运行一键部署（或更新 / 卸载）Antigravity Desktop 原生插件；升级时自动迁移旧版 `config.json` 至 `~/.gemini/antigravity/plugin_data/agy-claude-style/` 并清理旧版外部 Watcher 与快捷方式残留。
-          - **macOS (Apple Silicon + Intel Universal)**：下载 \`${MAC_FILE}\`，打开后运行 `AGY Claude Style.app` 一键部署（或更新 / 卸载）Antigravity Desktop 原生插件；升级时自动迁移旧版 `config.json` 并清理旧版 `LaunchAgent` 与外部启动器残留。
-            > **macOS 首次打开提示说明**：本构建采用 Ad-hoc 签名；若 macOS 提示“无法验证开发者”，请**右键点击 App → 打开**，或在终端执行 \`xattr -cr "/Applications/AGY Claude Style.app"\` 后再次打开。
-          - **手动原生插件安装（全平台）**：亦可直接执行 \`git clone https://github.com/0DNANCY/agy-claude-style.git ~/.gemini/config/plugins/agy-claude-style\` 后在 Antigravity 插件管理中启用。
+          - **Windows (PowerShell)**：
+            \`\`\`powershell
+            irm https://raw.githubusercontent.com/0DNANCY/agy-claude-style/main/install.ps1 | iex
+            \`\`\`
+            卸载命令：\`& ([scriptblock]::Create((irm https://raw.githubusercontent.com/0DNANCY/agy-claude-style/main/install.ps1))) -Uninstall\`
+          - **macOS / Linux (Bash / Zsh)**：
+            \`\`\`bash
+            curl -fsSL https://raw.githubusercontent.com/0DNANCY/agy-claude-style/main/install.sh | bash
+            \`\`\`
+            卸载命令：\`curl -fsSL https://raw.githubusercontent.com/0DNANCY/agy-claude-style/main/install.sh | bash -s -- --uninstall\`
 
-          ### 🔐 SHA256 Checksums
+          ### 🔐 SHA256 Checksum (\`${PKG_FILE}\`)
           \`\`\`text
           EOF
           cat release-assets/SHA256SUMS.txt >> release-notes.md
           echo '```' >> release-notes.md
 
-          HAS_CHANGELOG=0
           if [ -f CHANGELOG.md ] && command -v python3 >/dev/null 2>&1; then
             if python3 - "$TAG" <<'PY' > changelog-section.md; then
           import re
@@ -185,10 +186,8 @@ jobs:
                 echo ""
                 cat changelog-section.md
               } >> release-notes.md
-              HAS_CHANGELOG=1
             fi
           fi
-          echo "HAS_CHANGELOG=$HAS_CHANGELOG" >> "$GITHUB_ENV"
 
       - name: Create or update GitHub Release
         env:
@@ -198,27 +197,12 @@ jobs:
           IS_DRAFT: ${{ needs.prepare.outputs.draft }}
         run: |
           set -euo pipefail
+          EXTRA_FLAGS=()
+          [ "$IS_PRERELEASE" = "true" ] && EXTRA_FLAGS+=(--prerelease)
+          [ "$IS_DRAFT" = "true" ] && EXTRA_FLAGS+=(--draft)
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release edit "$TAG" \
-              --title "$TAG" \
-              --notes-file release-notes.md \
-              --prerelease="$IS_PRERELEASE" \
-              --draft="$IS_DRAFT"
+            gh release edit "$TAG" --notes-file release-notes.md "${EXTRA_FLAGS[@]}"
             gh release upload "$TAG" release-assets/* --clobber
           else
-            CREATE_ARGS=(
-              --target "${{ github.sha }}"
-              --title "$TAG"
-              --notes-file release-notes.md
-            )
-            if [ "${HAS_CHANGELOG:-0}" != "1" ]; then
-              CREATE_ARGS+=(--generate-notes)
-            fi
-            if [ "$IS_PRERELEASE" = "true" ]; then
-              CREATE_ARGS+=(--prerelease)
-            fi
-            if [ "$IS_DRAFT" = "true" ]; then
-              CREATE_ARGS+=(--draft)
-            fi
-            gh release create "$TAG" release-assets/* "${CREATE_ARGS[@]}"
+            gh release create "$TAG" release-assets/* --title "$TAG" --notes-file release-notes.md "${EXTRA_FLAGS[@]}"
           fi

@@ -167,62 +167,55 @@ Clawd 是由 [crab-assets.js](crab-assets.js) 与 [mascot-core.js](mascot-core.j
 >   - 建议在启动脚本中添加 `set NODE_USE_ENV_PROXY=1` 与 `set NO_PROXY=localhost,127.0.0.1,::1`（让 Node 原生 `fetch()` 同样走代理且本地 CDP 直连），并在启动 `Antigravity.exe` 时附带 `%*` 以透传 `--remote-debugging-port=0`；
 >   - 插件执行带调试端口重启时会自动保留现有进程上的 `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` / `NODE_USE_ENV_PROXY` 等变量；
 >   - 如希望「带调试端口重启」始终通过你的自定义代理脚本拉起，可设置环境变量 `AGY_CLAUDE_STYLE_LAUNCH_CMD` 指向该脚本路径（支持 `.exe` / `.cmd` / `.bat` / `.ps1`）。
-- **零外部 Node.js 运行时依赖（桌面原生插件用户）**：安装 `.exe` / `.dmg` 后，控制室侧栏 (`sidecars/panel/main.mjs`) 与内部 CDP 注入引擎直接运行于 Antigravity Desktop 内置的 Electron Node 运行时，**目标机器无需安装外部 Node.js**，也没有任何外部 Watcher 常驻进程。
-- **Node.js >= 22**（仅运行自动化测试与从源码构建安装包时需要）：项目零第三方 npm 依赖，直接使用 Node.js 内置的 `fetch`、`WebSocket` 与 `node:test`。
-- **.NET Framework 4.x (`csc.exe`)**（仅在 Windows 上从源码构建安装包时需要，Windows 10/11 系统默认自带）。
-- **Xcode Command Line Tools (`swiftc`)**（仅在 macOS 上从源码构建 `.app` / `.dmg` 时需要，macOS 安装命令行工具后自带）。
+- **零外部 Node.js 运行时依赖（桌面原生插件用户）**：安装后，控制室侧栏 (`sidecars/panel/main.mjs`) 与内部 CDP 注入引擎直接运行于 Antigravity Desktop 内置的 Electron Node 运行时，**目标机器无需安装外部 Node.js 或 Git**，也没有任何外部 Watcher 常驻进程。
+- **Node.js >= 22**（仅运行自动化测试、本地开发者 CLI 或打包发布包时需要）：项目零第三方 npm 依赖，直接使用 Node.js 内置的 `fetch`、`WebSocket` 与 `node:test`。
 
 ---
 
 <a id="快速开始"></a>
-## 🚀 快速开始（Antigravity Desktop 原生插件）
+## 🚀 快速开始（一串命令部署 · 零安装器）
 
 > [!IMPORTANT]
-> **零后台进程 · 纯原生插件架构**：
-> - Windows (`.exe`) 与 macOS (`.dmg`) 安装器的唯一职责是**将完整的 Antigravity Desktop 原生插件部署并启用到 `~/.gemini/config/plugins/agy-claude-style`**，**不含任何外部 CDP 客户端或开机自启守护进程**。
-> - 安装完成后，直接正常打开原版 Antigravity Desktop 即可——由 Antigravity 原生插件宿主在内部自动完成 CDP 注入、`<2KB` 配置热更新、右侧 3 页签 `Claude Style` 控制室挂载，以及停用/卸载时的实时无痕还原。
-> - 若从旧版独立安装器升级，安装器会自动将旧 `config.json` 迁移至 `~/.gemini/antigravity/plugin_data/agy-claude-style/config.json`，并自动停止与清理旧版 `agy-claude-style-watcher`、开机自启项及启动器快捷方式。
+> **零后台进程 · 纯原生插件 · 一串命令秒级安装与升级**：
+> - 从 `v4.0.0` 起全面弃用 `.exe` / `.dmg` 二进制安装包，改为 **Windows PowerShell / macOS & Linux Shell 零依赖一键命令**直接部署至 `~/.gemini/config/plugins/agy-claude-style` 并自动启用。
+> - 安装与升级会自动保留 `~/.gemini/antigravity/plugin_data/agy-claude-style/config.json` 与 `wallpapers/` 动态壁纸库，同时自动迁移旧版配置并清理旧版外部 Watcher、开机自启与安装器残留。
 
-<a id="方式一windows-原生插件一键安装器exe"></a>
-### 🪟 方式一：Windows 原生插件一键安装器（`.exe`）
+### 🪟 Windows (PowerShell 一键安装 / 卸载)
 
-1. 前往 [Releases](https://github.com/0DNANCY/agy-claude-style/releases) 下载 `AGY-Claude-Style-v3.1.0-Windows-x64.exe`（或在源码根目录执行 `npm run build:installer` 本地构建）。
-2. 双击运行并点击 **「安装插件」**：
-   - 将完整原生插件包（`plugin.json`、`mcp_config.json`、`plugin/`、`sidecars/panel/`、`features/`、`style.css` 等）部署到 `%USERPROFILE%\.gemini\config\plugins\agy-claude-style`；
-   - 保留或迁移用户配置至 `%USERPROFILE%\.gemini\antigravity\plugin_data\agy-claude-style\config.json`；
-   - 若 Antigravity 正在运行则通过 Language Server 热启用（离线时原子写入 `~/.gemini/config/config.json`）；
-   - 注册 Windows「设置 → 应用」卸载项（卸载时自动通知停用插件并移除插件目录，同时保留 `plugin_data` 用户偏好）。
-3. 支持的命令行参数（CI / 静默自动化）：
-   ```text
-   AGY-Claude-Style-v3.1.0-Windows-x64.exe [--silent | /S | -s] [--uninstall] [--status]
-                                           [--install-dir <路径>] [--out <结果JSON路径>] [--popup]
-   ```
-
----
-
-<a id="方式二macos-原生插件一键安装应用dmg--app"></a>
-### 🍎 方式二：macOS 原生插件一键安装应用（`.dmg` / `.app`）
-
-1. 前往 [Releases](https://github.com/0DNANCY/agy-claude-style/releases) 下载 `AGY-Claude-Style-v3.1.0-macOS-universal.dmg`（或在 macOS 上执行 `npm run build:macos` 本地构建通用架构 `arm64` + `x86_64` 安装包）。
-2. 打开 `.dmg` 并运行 `AGY Claude Style.app`（首次打开若系统拦截 Ad-hoc 签名，请**右键点击 App → 打开**，或执行 `xattr -cr "/Applications/AGY Claude Style.app"`）：
-   - 点击 **「安装插件」**，将完整原生插件包部署到 `~/.gemini/config/plugins/agy-claude-style` 并启用；
-   - 保留或从旧版 `~/Library/Application Support/agy-claude-style/config.json` 迁移配置至 `~/.gemini/antigravity/plugin_data/agy-claude-style/config.json`，并自动清理旧版 `LaunchAgent`、`agy-claude-style-watcher` 与启动器 `.app`。
-3. 支持的命令行参数：
-   ```text
-   "/Applications/AGY Claude Style.app/Contents/MacOS/AGY Claude Style" \
-     [--silent | -s] [--uninstall] [--status] [--install-dir <路径>] [--out <结果JSON路径>]
-   ```
-
----
-
-<a id="方式三手动克隆--本地插件加载windows--macos--linux"></a>
-### 🔌 方式三：手动克隆 / 本地插件加载（Windows / macOS / Linux）
-
-```bash
-git clone https://github.com/0DNANCY/agy-claude-style.git ~/.gemini/config/plugins/agy-claude-style
+```powershell
+# 一键安装或升级到最新版（无需 Git / 无需外部 Node.js）
+irm https://raw.githubusercontent.com/0DNANCY/agy-claude-style/main/install.ps1 | iex
 ```
 
-随后在 Antigravity Desktop 的 **插件管理（Plugins）** 中启用 `agy-claude-style`（或在 `~/.gemini/config/config.json` 中设置 `plugins["agy-claude-style"].enabled = true`）即可生效。
+卸载插件（保留你的 `config.json` 与本地壁纸）：
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/0DNANCY/agy-claude-style/main/install.ps1))) -Uninstall
+```
+
+---
+
+### 🍎 macOS / 🐧 Linux (Shell 一键安装 / 卸载)
+
+```bash
+# 一键安装或升级到最新版（无需 Git / 无需外部 Node.js）
+curl -fsSL https://raw.githubusercontent.com/0DNANCY/agy-claude-style/main/install.sh | bash
+```
+
+卸载插件（保留你的 `config.json` 与本地壁纸）：
+```bash
+curl -fsSL https://raw.githubusercontent.com/0DNANCY/agy-claude-style/main/install.sh | bash -s -- --uninstall
+```
+
+---
+
+### 🧑‍💻 开发者本地 CLI / 手动克隆
+
+```bash
+git clone https://github.com/0DNANCY/agy-claude-style.git
+cd agy-claude-style
+npm run setup      # 部署并启用原生插件（npm run status 查看状态，npm run uninstall 卸载）
+```
+
 - 控制室侧栏清单：[sidecars/panel/sidecar.json](sidecars/panel/sidecar.json)（挂载于右侧 Aux Pane，监听本地随机端口，Fail-Closed 校验 Host 与 Origin）
 - MCP 生命周期宿主：[plugin/mcp-host.js](plugin/mcp-host.js)（0 工具定义，0 上下文 Token 占用，与侧栏共享 `.watch.pid` 协同锁）
 
@@ -238,8 +231,17 @@ git clone https://github.com/0DNANCY/agy-claude-style.git ~/.gemini/config/plugi
 | 配置键 | 可选值 / 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
 | `language` | `'zh-CN'` \| `'zh-TW'` \| `'yue'` \| `'en'` \| `'ja'` | `'zh-CN'` | 🌐 全局界面与控制室面板语言（简中/繁中/粤语/英文/日语） |
-| `palette` | `'obsidian'` \| `'claude'` \| `'host'` | `'obsidian'` | 🎨 配色方案（黑曜石蓝暗色 / Claude / 跟随宿主） |
+| `palette` | `'obsidian'` \| `'claude'` \| `'nord'` \| `'catppuccin'` \| `'rosepine'` \| `'tokyo'` \| `'dracula'` \| `'emerald'` \| `'custom'` \| `'host'` | `'obsidian'` | 🎨 主题配色方案（8 套内置精选预设 / 自定义色板 / 跟随宿主） |
+| `customTheme` | `object` (`{ base, mode, accent, canvas, sidebar, composer, bubble, fg, mutedFg, border }`) | `{}` | 🖌️ 自定义色板令牌（仅接受 `#RRGGBB` 十六进制色值，自动推导全套衍生变量） |
 | `glassEffect` | `boolean` | `true` | 🫧 为浮窗、卡片、输入胶囊与弹出菜单启用液态玻璃磨砂质感 |
+| `wpMode` | `'off'` \| `'global'` \| `'home'` | `'off'` | 🎬 动态壁纸渲染范围（关闭 / 全局窗口透出 / 仅欢迎首页） |
+| `wpFile` | `string` | `''` | 🖼️ 当前选中的本地壁纸文件名（位于 `plugin_data/agy-claude-style/wallpapers/`） |
+| `wpOpacity` | `integer` (`5`–`100`) | `35` | 🌫️ 壁纸不透明度（%） |
+| `wpBlur` | `integer` (`0`–`48`) | `0` | 🌀 壁纸背景高斯模糊半径（px） |
+| `wpDim` | `integer` (`-50`–`85`) | `25` | 🌗 可读性遮罩（正值为压暗遮罩，负值为柔亮雾化） |
+| `wpSurfaceAlpha` | `integer` (`15`–`100`) | `76` | 🪟 全局壁纸模式下对话画布与侧栏底色不透明度（%） |
+| `wpRate` | `integer` (`25`–`200`) | `100` | ⏩ MP4 / WebM 视频壁纸播放倍速（%） |
+| `wpPauseBlur` | `boolean` | `true` | 🔋 窗口失焦或隐藏时自动暂停视频壁纸解码以节省功耗 |
 | `homeLayout` | `'studio'` \| `'classic'` \| `'off'` | `'studio'` | 🏠 新会话首页布局模式 |
 | `homeRipple` | `boolean` | `true` | 🌊 首页交互式字符矩阵波纹背景 |
 | `composerRestyle` | `boolean` | `true` | 💊 极简胶囊工作区栏与输入框重排 |
@@ -314,13 +316,18 @@ agy-claude-style/
 ├── plugin.json                        # Antigravity 原生插件清单（MCP 宿主 + sidecars/panel 控制室）
 ├── mcp_config.json                    # MCP stdio 宿主配置
 ├── assets/                            # README 与插件插图 SVG 资源
+├── install.ps1                        # Windows PowerShell 零依赖一键安装/更新/卸载脚本
+├── install.sh                         # macOS / Linux Shell 零依赖一键安装/更新/卸载脚本
+├── wallpaper-server.js                # 回环 Range 流媒体壁纸服务与 Magic Bytes 媒体校验器
 ├── cdp.js                             # CDP 客户端、配置校验/原子写入、PID 归属校验与注入/轻量刷新表达式
-├── inject.js                          # 插件内部 CDP 注入、热更新控制器与代理/冷启动重启协同模块
+├── inject.js                          # 插件内部 CDP 注入、热更新控制器、壁纸流托管与代理重启协同模块
 ├── config.example.json                # 默认配置文件模板（与 DEFAULT_CONFIG 同步）
-├── style.css                          # 全套主题调色板、液态玻璃、首页 Studio、HUD、Powertools 与滑块样式
+├── style.css                          # 全套主题调色板、液态玻璃、动态壁纸透光层、首页 Studio、HUD 与滑块样式
 ├── ui-runtime.js                      # 主运行时：Store/Fiber 桥接、首页仪表盘、HUD 浮窗、设置面板集成与 features 编排
 ├── ui-rewind.js                       # 时间旅行撤销控制器（两步安全回退、异步 Diff 预览、Lexical 无损恢复）
-├── features/                          # Powertools 模块化功能套件（v2.2.0）
+├── features/                          # 模块化增强引擎与 Powertools 套件
+│   ├── theme-engine.js                # 8 套双态预设与 8 令牌自定义色板实时推导引擎
+│   ├── wallpaper.js                   # 本地视频/图片壁纸渲染器（全局/首页双模式 + 三重弹性加载 + 失焦省电）
 │   ├── branch-edit.js                 # 对话分叉（forkConversation）与历史消息双击原地编辑
 │   ├── extensions-dock.js             # 顶部/侧栏扩展坞快捷固定与弹出菜单
 │   ├── file-menu.js                   # 对话文件引用操作菜单、外部应用跳转与 @引用插入
@@ -332,11 +339,11 @@ agy-claude-style/
 ├── plugin/                            # Antigravity 原生插件 MCP 生命周期宿主
 │   ├── mcp-host.js                    # 零工具轻量 MCP stdio 宿主（跟随 IDE 生命周期，协调 .watch.pid）
 │   └── host-lifecycle.js              # 插件启停校验、LS 状态感知、孤儿防泄漏与无痕还原
-├── sidecars/panel/                    # 原生 Aux Pane 3 页签控制室与内建 Electron CDP 监督宿主（v2.2.0）
+├── sidecars/panel/                    # 原生 Aux Pane 3 页签控制室与内建 Electron CDP 监督宿主
 │   ├── sidecar.json                   # 侧栏 Aux Pane 注册清单（restart_policy: always）
-│   ├── main.mjs                       # 回环 HTTP/API 服务、内置 CDP 注入监督器与 LSP/代理协调
+│   ├── main.mjs                       # 回环 HTTP/API 服务、壁纸上传/路径导入接口与内置 CDP 监督器
 │   ├── index.html                     # 3 页签控制室前端框架（仪表盘 / 控制室 / 远程与代理）
-│   ├── lib/                           # 流式 JSONL 遥测、LiteLLM 定价、配额追踪、SSH 遥测、文件操作、独立代理
+│   ├── lib/                           # 流式 JSONL 遥测、wallpaper-store、LiteLLM 定价、配额追踪、SSH 遥测与独立代理
 │   └── ui/                            # control-tab.js / dashboard-tab.js / remote-tab.js / panel.css
 ├── i18n-core.js                       # 5 语言 DOM 翻译引擎（含保护区与无损还原）
 ├── i18n-locales.js                    # 简中 / 繁中 / 粤语 / 英文 / 日语多语言词典（含 Swarm、Plan 与 Powertools）
@@ -347,20 +354,11 @@ agy-claude-style/
 ├── ripple-core.js                     # 首页字符矩阵噪声与二维水波方程求解器
 ├── crab-assets.js                     # 内置 19 套像素螃蟹双层精灵图（body + ink PNG Data URI）
 ├── perf-assets.js                     # 内置 31 帧 320×320 WebP 人像序列
-├── installer/                         # Windows (C#) 与 macOS (Swift) 纯原生插件安装器源码（无外部守护）
-│   ├── common/
-│   │   └── MiniJson.cs                # 零依赖 JSON 解析与序列化
-│   ├── setup/
-│   │   ├── Program.cs                 # Windows 原生插件部署、旧版迁移清理与卸载 GUI/CLI 入口
-│   │   └── app.manifest               # Windows DPI 与清单配置
-│   └── macos/
-│       ├── Common/MiniJson.swift      # Swift 零依赖 JSON 解析与序列化
-│       └── Setup/main.swift           # macOS Cocoa GUI、payload 部署、旧版迁移清理与卸载入口
 ├── scripts/
-│   ├── build-common.mjs               # 共享构建工具（图标生成、原生插件 payload 收集、ZIP 打包）
-│   ├── build-installer.mjs            # 编译生成 Windows 原生插件单文件安装器 .exe
-│   └── build-macos.mjs                # 编译生成 macOS Universal 原生插件 .app 与 .dmg
-└── test/                              # 基于 node:test 的单元测试与安装器 E2E 测试套件
+│   ├── cli.mjs                        # 跨平台零依赖 Node CLI（install / uninstall / status）
+│   ├── build-common.mjs               # 共享构建工具（原生插件 payload 收集、ZIP 打包）
+│   └── build-package.mjs              # 打包生成跨平台 agy-claude-style-v<version>.zip 发布归档
+└── test/                              # 基于 node:test 的单元测试、一键安装与主题/壁纸 E2E 测试套件
 ```
 
 ---
@@ -369,23 +367,23 @@ agy-claude-style/
 ## 🧪 开发、测试与构建
 
 ```bash
-# 运行全部单元测试与对应平台的原生插件安装器端到端测试（Node.js >= 22）
+# 运行全部单元测试与一键命令沙盒 E2E 测试（Node.js >= 22）
 npm test
 
-# 在 Windows 上从源码编译生成原生插件安装器 AGY-Claude-Style-v<version>-Windows-x64.exe
-npm run build:installer
+# 打包跨平台轻量插件归档 dist/agy-claude-style-v<version>.zip
+npm run build:package
 
-# 在 macOS 上从源码编译生成 Universal .app 与 AGY-Claude-Style-v<version>-macOS-universal.dmg
-npm run build:macos
+# 本地一键部署 / 状态查看 / 卸载
+npm run setup
+npm run status
+npm run uninstall
 ```
 
 ### 🚀 自动构建与发布 Release
 
 仓库已配置 GitHub Actions 工作流（[_build-and-test.yml](.github/workflows/_build-and-test.yml)、[release.yml](.github/workflows/release.yml) 与 [ci.yml](.github/workflows/ci.yml)）：
-- **推送版本标签自动发布**：推送形如 `v3.1.0` 的标签（`git tag v3.1.0 && git push origin v3.1.0`），会自动在 `ubuntu-latest`、`windows-latest` 与 `macos-latest` 上完成测试、编译 `AGY-Claude-Style-v3.1.0-Windows-x64.exe` 与 `AGY-Claude-Style-v3.1.0-macOS-universal.dmg`（附带 `SHA256SUMS.txt`）并自动创建 GitHub Release（同时抽取 [CHANGELOG.md](CHANGELOG.md) 对应版本日志）。
-- **手动触发**：也可以在 GitHub 仓库 **Actions → Release → Run workflow** 手动触发编译并发布。
-
-测试套件包含对注入包语法、模拟 DOM 挂载/无损卸载（含未聚焦编辑器零强制重排验证）、5 语言翻译引擎、思考强度滑块数学模型、用量统计与配额匹配、二维波纹场、螃蟹状态机、Powertools 套件、3 页签控制室与遥测安全防护，以及 Windows `installer.exe` 与 macOS `.app` 编译/静默安装/CDP 注入/设置同步热更新/保留配置升级/卸载清理全流程的自动化验证。
+- **推送版本标签自动发布**：推送形如 `v4.0.0` 的标签（`git tag v4.0.0 && git push origin v4.0.0`），会自动在 `ubuntu-latest`、`windows-latest` 与 `macos-latest` 上完成全量测试、打包 `agy-claude-style-v4.0.0.zip`（附带 `SHA256SUMS.txt`）并自动创建 GitHub Release（同时抽取 [CHANGELOG.md](CHANGELOG.md) 对应版本日志）。
+- **手动触发**：也可以在 GitHub 仓库 **Actions → Release → Run workflow** 手动触发打包并发布。
 
 ---
 

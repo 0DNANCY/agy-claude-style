@@ -2,6 +2,50 @@
 
 All notable changes to **AGY Claude Style (`agy-claude-style`)** are documented in this file.
 
+## [v4.0.0] - 2026-11-28
+
+`v4.0.0` 为重大架构与视觉体验升级版本：**全面弃用 `.exe` / `.dmg` 二进制安装器并切换为零依赖一串命令极速部署体系**，同时新增 **主题高度自定义工作坊（6 套新双态预设 + 8 项核心令牌实时调色）** 与 **本地视频/图片动态壁纸系统**（基于最新 `main` 整合 Rewind 主题令牌修复 #27）。
+
+### 💥 Breaking Changes & 迁移指南
+- **全面移除二进制安装器**：彻底删除 `installer/`（Windows C# `.exe` 与 macOS Swift `.app`/`.dmg` 源码）、`scripts/build-installer.mjs`、`scripts/build-macos.mjs` 及对应的二进制打包测试；不再在 GitHub Release 发布 `.exe` 或 `.dmg`。
+- **老用户无损平滑升级**：通过新版 `install.ps1` / `install.sh` 一键安装或升级时，自动保留 `~/.gemini/antigravity/plugin_data/agy-claude-style/config.json` 与 `wallpapers/` 目录，自动迁移旧版遗留配置（并剔除已废弃的 `exitOnHostClose`），同时清理旧版 Windows `HKCU\...\Uninstall\AgyClaudeStyle` 注册表项、`agy-claude-style-uninstaller.exe`、旧版 `agy-claude-style-watcher`、快捷方式与 macOS `LaunchAgent` 残留。
+
+### ⚡ 一串命令极速部署 & 跨平台 CLI
+- **零外部依赖一键脚本（无需 Git / 无需外部 Node.js）**：
+  - **Windows (PowerShell)**：`install.ps1` 支持 `irm https://raw.githubusercontent.com/0DNANCY/agy-claude-style/main/install.ps1 | iex` 一键安装/升级，以及传入 `-Uninstall` / `-Status` / `-Version` / `-ArchivePath` 参数；兼容 PowerShell 5.1+ 与 PowerShell 7+，自动通过运行中的 Antigravity Language Server (`JetboxWriteState` / `DeletePlugin`) 热启用或热卸载。
+  - **macOS / Linux (Bash / Zsh)**：`install.sh` 支持 `curl -fsSL https://raw.githubusercontent.com/0DNANCY/agy-claude-style/main/install.sh | bash` 一键安装/升级及 `--uninstall` / `--status` 参数。
+- **跨平台 Node CLI & 轻量归档打包**：
+  - 新增 `scripts/cli.mjs`（支持 `npm run setup`、`npm run status`、`npm run uninstall` 与 `bin` 入口 `agy-claude-style`）及 `scripts/build-package.mjs`（`npm run build:package`）。
+  - 精简 `scripts/build-common.mjs`（移除 `.ico`/`.icns` 像素编码器），GitHub Actions 工作流（`.github/workflows/_build-and-test.yml` 与 `release.yml`）改为跨三平台验证后发布单一轻量归档包 `agy-claude-style-v4.0.0.zip` + `SHA256SUMS.txt`。
+
+### 🎨 主题高度自定义方案（`features/theme-engine.js`）
+- **新增 6 套精选双态（暗/亮）预设**：除 `obsidian`、`claude`、`host` 外，新增 `nord`（Nord 极夜）、`catppuccin`、`rosepine`（Rosé Pine）、`tokyo`（Tokyo Night）、`dracula` 与 `emerald`（翠影暗绿），每套预设均具备完整暗色与亮色双态色板。
+- **8 项核心色彩令牌实时定制（`palette = 'custom'`）**：
+  - 在右侧 `Claude Style` 控制室新增 **「主题调色工作坊」**（色板速选条、取色器 + `#RRGGBB` 输入框、明暗底色切换 `auto`/`dark`/`light`、从预设吸色与重置），并在原生「设置 → 外观」同步提供全部预设选项。
+  - 支持定制 `accent`（主强调色）、`canvas`（主画布）、`sidebar`（侧栏）、`composer`（输入框）、`bubble`（消息气泡）、`fg`（主文字）、`mutedFg`（次文字）与 `border`（边框线），通过色彩混合算法自动推导 40+ 衍生宿主/Onyx/VS Code CSS 变量、首页 ASCII 波纹水波色与 4 档思考强度色阶。
+  - 严格校验 `customTheme` 结构与 6 位十六进制色值，拦截一切非 hex CSS 注入载荷；满载配置仍严格保持 `<2KB` 轻量热更新预算。
+
+### 🎬 本地动态壁纸系统（`wallpaper-server.js` + `features/wallpaper.js`）
+- **本地视频与图片媒体库**：
+  - 支持在控制室点击选文件、拖拽分片上传（512KB/片，单文件上限 128MB）或输入本机路径秒级导入，支持 `.mp4`、`.webm`、`.gif`、`.webp`、`.png`、`.jpg`/`.jpeg`。
+  - 媒体文件独立持久化至 `~/.gemini/antigravity/plugin_data/agy-claude-style/wallpapers/`（`sidecars/panel/lib/wallpaper-store.mjs`），执行扩展名 + 文件头 Magic Bytes 双重校验，绝不占用 `config.json` 热更新载荷体积。
+- **双模式渲染、流媒体穿透与失焦省电**：
+  - 支持 `wpMode` 切换 `off`（关闭）、`global`（全局窗口背景，对话画布/侧栏/输入框以 `color-mix` 按 `wpSurfaceAlpha` 半透明穿透）与 `home`（仅欢迎首页背景，可与字符波纹叠加）。
+  - `inject.js` 集成绑定于 `127.0.0.1:0` 的随机 128-bit Token HTTP `206 Partial Content` `Range` 流媒体服务，前端实现 `vscode-file:` / 回环 Range HTTP / CDP `__wallpaperRead` 分片 Blob 三重弹性加载。
+  - 控制室提供壁纸不透明度（`wpOpacity`）、高斯模糊（`wpBlur`）、可读性压暗/柔亮遮罩（`wpDim`）、全局面板透光度（`wpSurfaceAlpha`）、视频倍速（`wpRate`）与 **失焦/隐藏自动暂停省电（`wpPauseBlur`）** 开关；停用或卸载插件时无痕清理全部 DOM、样式变量与 `ObjectURL`。
+
+### 🧪 自动化测试扩充
+- 新增 `test/cli-install.test.mjs`（覆盖 `scripts/cli.mjs`、`install.ps1`、`install.sh` 沙盒端到端安装/迁移/保留壁纸升级/状态查询/卸载清理及归档打包校验）与 `test/theme-wallpaper.test.mjs`（覆盖新预设、`customTheme` 校验防注入、满载配置 `<2KB` 热更新、Magic Bytes 校验、HTTP `206 Range` 流服务、双模式 DOM 挂载与失焦暂停/恢复）。
+- 同步更新 `test/cdp-watcher.test.mjs`、`test/powertools-suite.test.mjs` 与 5 语言词典（`i18n-locales.js`），全量自动化测试通过率 100%（Windows 下 146 项通过、1 项 POSIX `install.sh` 测试按平台跳过）。
+
+**Full Changelog**: https://github.com/0DNANCY/agy-claude-style/compare/v3.1.1...v4.0.0
+
+---
+
+## [v3.1.1] - 2026-11-28
+
+- **Sidecar 与监视器稳定性修复（#25，@NoFires）**：避免 `inject.js` 备用锁轮询阻塞事件循环，并兼容 `sidecar_sdk` 单参数 API 处理函数与路由守卫校验。
+
 ## [v3.1.0] - 2026-11-28
 
 `v3.1.0` 全面优化 **左侧选项卡（Left Sidebar）视觉层级、选中态与空项目折叠体验**，并同步完善原生外观设置面板与控制室的双向开关联动。
