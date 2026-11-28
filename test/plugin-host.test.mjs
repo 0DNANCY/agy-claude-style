@@ -221,4 +221,47 @@ test('Aux Pane sidecar guards origins and validates config updates', async () =>
   assert.equal(manifest.name, 'agy-claude-style');
   assert.equal(sidecar.has_web_ui, true);
   assert.equal(sidecar.ui_config.views[0].entrypoint, 'SIDECAR_UI_ENTRYPOINT_AUX_PANE');
+  assert.match(String(sidecar.env?.NO_PROXY || ''), /127\.0\.0\.1/);
+  assert.equal(cdp.CONFIG_VALIDATORS.autoCheckUpdate, 'boolean');
+
+  const panelStatus = await panel.getPanelStatus();
+  assert.equal(panelStatus.ok, true);
+  assert.ok(panelStatus.update && typeof panelStatus.update === 'object');
+});
+
+test('probeLsHealthz bypasses HTTP_PROXY and accepts loopback HTTP/HTTPS healthz responses', async () => {
+  const httpMod = await import('node:http');
+  const server = httpMod.default.createServer((req, res) => {
+    res.writeHead(req.url === '/healthz' ? 200 : 400);
+    res.end('ok');
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const port = server.address().port;
+  const prevHttpProxy = process.env.HTTP_PROXY;
+  const prevHttpsProxy = process.env.HTTPS_PROXY;
+
+  try {
+    process.env.HTTP_PROXY = 'http://127.0.0.1:9';
+    process.env.HTTPS_PROXY = 'http://127.0.0.1:9';
+
+    assert.equal(await lifecycle.probeLsHealthz(`http://127.0.0.1:${port}/healthz`, { timeoutMs: 800 }), true);
+    assert.equal(await lifecycle.probeLsHealthz('https://example.com/healthz', { timeoutMs: 300 }), false);
+    // Mock self-signed TLS response via custom requestImpl on loopback https
+    const fakeHttpsAlive = await lifecycle.probeLsHealthz('https://127.0.0.1:44444/healthz', {
+      timeoutMs: 500,
+      requestImpl: (opts, cb) => {
+        assert.equal(opts.agent, false);
+        assert.equal(opts.rejectUnauthorized, false);
+        queueMicrotask(() => cb({ statusCode: 400, resume() {} }));
+        return { on() {}, end() {}, destroy() {} };
+      },
+    });
+    assert.equal(fakeHttpsAlive, true);
+  } finally {
+    if (prevHttpProxy === undefined) delete process.env.HTTP_PROXY;
+    else process.env.HTTP_PROXY = prevHttpProxy;
+    if (prevHttpsProxy === undefined) delete process.env.HTTPS_PROXY;
+    else process.env.HTTPS_PROXY = prevHttpsProxy;
+    await new Promise((r) => server.close(r));
+  }
 });

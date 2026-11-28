@@ -16,7 +16,7 @@
 
   <!-- TAB 1: Control Room -->
   <div class="tab-pane is-active" id="pane-control">
-    <div class="header-card">
+    <div class="header-card is-compact">
       <div class="header-top">
         <div class="brand">
           <div class="brand-badge">
@@ -33,22 +33,42 @@
             </svg>
           </div>
           <div class="brand-info">
-            <div class="brand-title" id="brand-title">Claude Style</div>
+            <div class="brand-title-row">
+              <span class="brand-title" id="brand-title">Claude Style</span>
+              <span class="status-pill" id="status-pill">
+                <span class="dot" id="status-dot"></span>
+                <span id="status-text">检查中</span>
+              </span>
+            </div>
             <div class="brand-sub" id="meta-line">加载中…</div>
           </div>
         </div>
-        <div class="status-pill" id="status-pill">
-          <span class="dot" id="status-dot"></span>
-          <span id="status-text">检查中</span>
+        <div class="header-actions-inline actions">
+          <button type="button" class="btn-check-pill" id="btn-check-update">检查更新</button>
+          <button type="button" class="btn-icon-mini" id="btn-reinject" title="立即应用并刷新">↻</button>
+          <div class="header-more-wrap">
+            <button type="button" class="btn-icon-mini" id="btn-more-menu" title="更多操作" aria-expanded="false">⋯</button>
+            <div class="header-more-popover" id="header-more-popover" hidden>
+              <button type="button" id="btn-refresh">刷新连接状态</button>
+              <button type="button" id="btn-remove">还原原生界面</button>
+              <div class="more-divider"></div>
+              <button type="button" class="is-danger-item" id="btn-reset">↺ 恢复全部默认设置</button>
+            </div>
+          </div>
         </div>
       </div>
       <div class="companion-strip" id="header-companions" style="display:none;"></div>
-      <div class="actions">
-        <button type="button" class="primary" id="btn-reinject">✦ 立即应用并刷新</button>
-        <div class="actions-secondary">
-          <button type="button" id="btn-remove">还原原生</button>
-          <button type="button" id="btn-reset">恢复默认</button>
-          <button type="button" id="btn-refresh">刷新状态</button>
+    </div>
+
+    <div class="banner is-update" id="update-banner">
+      <div class="banner-title" id="update-banner-title">发现新版本</div>
+      <div class="banner-desc update-notes" id="update-banner-notes"></div>
+      <div class="update-actions">
+        <button type="button" class="primary" id="btn-update-apply">✦ 一键升级并热重载</button>
+        <div class="update-actions-sub">
+          <button type="button" id="btn-update-copy">复制升级命令</button>
+          <button type="button" id="btn-update-open">查看 Release</button>
+          <button type="button" id="btn-update-dismiss">稍后</button>
         </div>
       </div>
     </div>
@@ -71,9 +91,11 @@
     </div>
 
     <div class="ctrl-toolbar">
-      <input type="text" id="ctrl-search" placeholder="搜索设置项…" />
-      <button type="button" class="ctrl-fold-btn" id="btn-ctrl-fold" title="全部展开或收起分组">展开全部</button>
+      <input type="text" id="ctrl-search" placeholder="搜索全部设置项…" />
+      <button type="button" class="ctrl-fold-btn" id="btn-ctrl-fold" hidden title="清除搜索">清除</button>
     </div>
+
+    <div class="ctrl-cat-bar" id="ctrl-cat-bar"></div>
 
     <div id="sections"></div>
   </div>
@@ -382,6 +404,9 @@
             lastRenderedConfigJson = nextCfgJson;
           }
           remoteTab.syncForm(currentConfig, { preserveDirty: preserveInteractive });
+          if (st.pendingNav) {
+            navigateToTarget(st.pendingNav);
+          }
         } catch (err) {
           document.getElementById('status-text').textContent = 'Error';
           document.getElementById('meta-line').textContent = err.message;
@@ -412,19 +437,32 @@
     dashboardTab = window.AGYPanelDashboard(app);
     remoteTab = window.AGYPanelRemote(app);
 
+    function activateTopTab(tabName) {
+      activeTab = tabName || 'control';
+      document.querySelectorAll('.tab-btn').forEach((b) => b.classList.toggle('is-active', b.getAttribute('data-tab') === activeTab));
+      document.querySelectorAll('.tab-pane').forEach((p) => p.classList.toggle('is-active', p.id === `pane-${activeTab}`));
+      if (activeTab === 'dashboard') dashboardTab.onActivate();
+      if (activeTab === 'remote') remoteTab.onActivate();
+    }
+
+    function navigateToTarget(nav) {
+      if (!nav || typeof nav !== 'object') return;
+      const target = String(nav.target || 'control');
+      activateTopTab(target);
+      if (target === 'control' && typeof controlTab.navigateToSection === 'function') {
+        controlTab.navigateToSection(String(nav.section || 'theme'));
+      }
+    }
+
     document.querySelectorAll('.tab-btn').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        activeTab = btn.getAttribute('data-tab');
-        document.querySelectorAll('.tab-btn').forEach((b) => b.classList.toggle('is-active', b === btn));
-        document.querySelectorAll('.tab-pane').forEach((p) => p.classList.toggle('is-active', p.id === `pane-${activeTab}`));
-        if (activeTab === 'dashboard') dashboardTab.onActivate();
-        if (activeTab === 'remote') remoteTab.onActivate();
-      });
+      btn.addEventListener('click', () => activateTopTab(btn.getAttribute('data-tab')));
     });
 
     window.addEventListener('message', (ev) => {
       if (ev.data?.type === 'theme-change') {
         syncHostThemeAttr(ev.data?.payload?.cssVariables?.['--background']);
+      } else if (ev.data?.type === 'ag-cs-navigate') {
+        navigateToTarget(ev.data);
       }
     });
     if (typeof window.matchMedia === 'function') {

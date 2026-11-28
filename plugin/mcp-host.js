@@ -5,11 +5,12 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const cdpApi = require('../cdp');
-const { createWatchController } = require('../inject');
+let cdpApi = require('../cdp');
+let { createWatchController } = require('../inject');
 const {
   isBrokenPipeError,
   normalizeLsHealthzUrl,
+  probeLsHealthz,
   startHostWatchdog,
   registerMcpHost,
   listAliveMcpHosts,
@@ -113,12 +114,7 @@ function handleMcpJsonRpcMessage(msg, serverVersion = '3.0.0') {
 async function isHostStillAlive(reason, healthzUrl) {
   if (reason === 'ls-dead' || reason === 'parent-dead') return false;
   if (!healthzUrl) return false;
-  try {
-    await fetch(healthzUrl, { signal: AbortSignal.timeout(450) });
-    return true;
-  } catch {
-    return false;
-  }
+  return await probeLsHealthz(healthzUrl, { timeoutMs: 450 });
 }
 
 async function shouldRemoveUiOnShutdown({
@@ -274,6 +270,21 @@ function startMcpPluginHost() {
         duplicateWaitMs: 0,
         quietDuplicateLog: true,
         logFile,
+        onSelfChanged: () => {
+          if (shuttingDown || !controller) return;
+          const old = controller;
+          controller = null;
+          void old
+            .stop({ removeFromPages: false, reason: 'inject-self-reload' })
+            .catch(() => {})
+            .finally(() => {
+              try { delete require.cache[require.resolve('../cdp')]; } catch {}
+              try { delete require.cache[require.resolve('../inject')]; } catch {}
+              try { cdpApi = require('../cdp'); } catch {}
+              try { ({ createWatchController } = require('../inject')); } catch {}
+              scheduleReconcile();
+            });
+        },
       });
 
       if (!ctrl) {
@@ -448,7 +459,7 @@ function startMcpPluginHost() {
     lsAddress: process.env.ANTIGRAVITY_LS_ADDRESS,
     watchStdin: true,
     checkIntervalMs: 3000,
-    maxLsFailures: 2,
+    maxLsFailures: 3,
     onShutdown: (reason) => {
       void shutdownHost(reason);
     },

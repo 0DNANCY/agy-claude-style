@@ -2,7 +2,9 @@
   "command": "node",
   "args": ["--max-old-space-size=192", "main.mjs"],
   "env": {
-    "NODE_USE_ENV_PROXY": "1"
+    "NODE_USE_ENV_PROXY": "1",
+    "NO_PROXY": "localhost,127.0.0.1,::1,[::1]",
+    "no_proxy": "localhost,127.0.0.1,::1,[::1]"
   },
   "restart_policy": "always",
   "display_name": "Claude Style",

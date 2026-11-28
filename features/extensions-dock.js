@@ -1316,7 +1316,37 @@
       return false;
     }
 
+    function postNavToMountedPanel(target, section) {
+      try {
+        const slots = document.querySelectorAll('[data-testid="sidecar-iframe-slot"][data-sidecar-id="agy-claude-style/panel"] iframe');
+        for (const frame of slots) {
+          try {
+            frame.contentWindow?.postMessage({ type: 'ag-cs-navigate', target, section }, '*');
+          } catch {}
+        }
+      } catch {}
+    }
+
+    function openControlRoomAux({ target = 'control', section = '' } = {}) {
+      const exts = getExtensions();
+      const ext =
+        exts.find((e) => e.sidecarId === 'agy-claude-style/panel') ||
+        FALLBACK_EXTENSIONS[0];
+      const ok = openInAuxPane(ext, { toggleIfActive: false });
+      postNavToMountedPanel(target, section);
+      setTimeout(() => postNavToMountedPanel(target, section), 180);
+      setTimeout(() => postNavToMountedPanel(target, section), 500);
+      return ok;
+    }
+
+    if (typeof globalThis !== 'undefined') {
+      globalThis.__agCsOpenControlRoom = openControlRoomAux;
+    }
+
     function destroy() {
+      if (typeof globalThis !== 'undefined' && globalThis.__agCsOpenControlRoom === openControlRoomAux) {
+        delete globalThis.__agCsOpenControlRoom;
+      }
       hideTooltip();
       unmountHeader();
       unmountSidebar();

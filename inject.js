@@ -2,12 +2,36 @@
 // Invoked exclusively by native Antigravity Desktop plugin hosts (sidecars/panel/main.mjs and plugin/mcp-host.js).
 const fs = require('fs');
 const path = require('path');
+const { pathToFileURL } = require('url');
 let cdpApi = require('./cdp');
 const { createWallpaperMediaServer, isSafeWallpaperFileName } = require('./wallpaper-server');
 const {
   PID_FILE,
   SETTING_BINDING,
 } = cdpApi;
+
+let updaterModulePromise = null;
+let sharedInjectUpdateManager = null;
+
+async function getUpdaterModule() {
+  if (!updaterModulePromise) {
+    updaterModulePromise = import(pathToFileURL(path.join(__dirname, 'sidecars', 'panel', 'lib', 'updater.mjs')).href);
+  }
+  return await updaterModulePromise;
+}
+
+async function getInjectUpdateManager() {
+  const m = await getUpdaterModule();
+  if (!sharedInjectUpdateManager) {
+    sharedInjectUpdateManager = m.createUpdateManager({
+      getCurrentVersion: () => m.resolveInstalledVersion(__dirname, cdpApi.PLUGIN_VERSION),
+      installDir: __dirname,
+      stateDir: cdpApi.STATE_DIR,
+      readConfigFn: () => cdpApi.readConfig(),
+    });
+  }
+  return { mod: m, mgr: sharedInjectUpdateManager };
+}
 
 function getWallpapersDir() {
   return path.join(cdpApi.STATE_DIR || __dirname, 'wallpapers');
@@ -282,6 +306,7 @@ async function createWatchController({
   logFile = LOG_FILE,
   duplicateWaitMs = 0,
   quietDuplicateLog = true,
+  onSelfChanged = null,
 } = {}) {
   consoleLoggingEnabled = Boolean(enableConsole);
   if (logFile) activeLogFile = logFile;
@@ -468,6 +493,115 @@ async function createWatchController({
                 })
                 .catch(() => {});
             }
+            return;
+          }
+          if (key === '__updateAction' && value && typeof value === 'object') {
+            const reqId = typeof value.reqId === 'string' && value.reqId ? value.reqId : '';
+            const action = String(value.action || 'status');
+            (async () => {
+              const { mod, mgr } = await getInjectUpdateManager();
+              if (action === 'openUrl') {
+                return await mod.openExternalReleaseUrl(value.url || '');
+              }
+              if (action === 'check') {
+                return await mgr.check({ force: value.force !== false });
+              }
+              if (action === 'apply') {
+                const res = await mgr.apply({
+                  targetVersion: String(value.targetVersion || ''),
+                  downloadUrl: String(value.downloadUrl || ''),
+                });
+                if (res?.ok && !res.alreadyLatest) {
+                  const t = setTimeout(() => {
+                    void mod
+                      .triggerHotReloadAfterUpdate({
+                        injectOnceFn: injectOnce,
+                        installDir: __dirname,
+                        stateDir: cdpApi.STATE_DIR,
+                        cdpModule: cdpApi,
+                      })
+                      .catch(() => {});
+                  }, 350);
+                  if (typeof t.unref === 'function') t.unref();
+                  return { ...res, reloadScheduled: true };
+                }
+                return res;
+              }
+              const snap = mgr.getStatusSnapshot();
+              if (
+                cdpApi.readConfig().autoCheckUpdate !== false &&
+                (!snap.checkedAtMs || Date.now() - snap.checkedAtMs >= mod.DEFAULT_UPDATE_TTL_MS)
+              ) {
+                return await mgr.check({ force: false });
+              }
+              return { ok: true, ...snap };
+            })()
+              .then((res) => {
+                if (reqId) {
+                  session
+                    .send('Runtime.evaluate', {
+                      expression: `window.__agCsUpdateActionReply?.(${JSON.stringify(reqId)}, ${JSON.stringify(res || { ok: true })})`,
+                    })
+                    .catch(() => {});
+                }
+              })
+              .catch((err) => {
+                const msg = err && err.message ? err.message : String(err);
+                if (reqId) {
+                  session
+                    .send('Runtime.evaluate', {
+                      expression: `window.__agCsUpdateActionReply?.(${JSON.stringify(reqId)}, ${JSON.stringify({ ok: false, error: msg })})`,
+                    })
+                    .catch(() => {});
+                }
+              });
+            return;
+          }
+          if (key === '__resetConfig' && value && typeof value === 'object') {
+            const reqId = typeof value.reqId === 'string' && value.reqId ? value.reqId : '';
+            try {
+              const cfgDir = path.dirname(cdpApi.CONFIG_FILE);
+              if (!fs.existsSync(cfgDir)) fs.mkdirSync(cfgDir, { recursive: true });
+              cdpApi.writeFileAtomic(cdpApi.CONFIG_FILE, JSON.stringify(cdpApi.DEFAULT_CONFIG, null, 2) + '\n');
+              currentConfig = cdpApi.readConfig();
+              proxyMismatchCheckedSig = '';
+              proxyMismatchLastCheckAt = 0;
+              const resetExpr = cdpApi.buildResetExpression(currentConfig, currentCodeHash);
+              for (const entryItem of attached.values()) {
+                if (entryItem && entryItem.session) {
+                  entryItem.session.evaluate(resetExpr).catch(() => {});
+                }
+              }
+              log('[↺] 已通过控制交互全量恢复默认配置并清空本地缓存');
+              if (reqId) {
+                session
+                  .send('Runtime.evaluate', {
+                    expression: `window.__agCsUpdateActionReply?.(${JSON.stringify(reqId)}, ${JSON.stringify({ ok: true, config: currentConfig })})`,
+                  })
+                  .catch(() => {});
+              }
+            } catch (err) {
+              if (reqId) {
+                session
+                  .send('Runtime.evaluate', {
+                    expression: `window.__agCsUpdateActionReply?.(${JSON.stringify(reqId)}, ${JSON.stringify({ ok: false, error: err?.message || String(err) })})`,
+                  })
+                  .catch(() => {});
+              }
+            }
+            return;
+          }
+          if (key === '__panelNavigate' && value && typeof value === 'object') {
+            try {
+              cdpApi.writeFileAtomic(
+                path.join(cdpApi.STATE_DIR, '.panel-nav.json'),
+                JSON.stringify({
+                  target: String(value.target || 'control'),
+                  section: String(value.section || ''),
+                  ts: Date.now(),
+                })
+              );
+            } catch {}
             return;
           }
           if (key === '__windowAction' && value === 'hide') {
@@ -750,6 +884,13 @@ async function createWatchController({
 
   watcher = fs.watch(__dirname, (_, filename) => {
     if (!filename || !/\.(css|js|json)$/i.test(filename) || filename.startsWith('.')) return;
+    if (filename === 'inject.js' && typeof onSelfChanged === 'function') {
+      clearTimeout(reloadTimer);
+      reloadTimer = setTimeout(() => {
+        if (!shuttingDown) onSelfChanged();
+      }, 150);
+      return;
+    }
     scheduleHotReload(filename);
   });
 

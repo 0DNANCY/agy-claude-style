@@ -6,8 +6,14 @@
       tabControl: '⚙ 控制室', tabDashboard: '📊 用量看板', tabRemote: '🌐 代理与远程',
       connected: (p, n) => `CDP :${p} · ${n} 目标`,
       waitingPort: '等待 CDP', disconnected: '未连接',
-      btnReinject: '✦ 立即应用并刷新', btnRemove: '还原原生', btnReset: '恢复默认', btnRefresh: '刷新状态',
+      btnReinject: '✦ 立即应用并刷新', btnRemove: '还原原生界面', btnReset: '↺ 恢复全部默认设置', btnResetConfirm: '确认还原全部设置？', btnRefresh: '刷新连接状态',
       btnRelaunch: '立即重启启用', relaunching: '正在重启 Antigravity…',
+      catTheme: '🎨 主题', catWallpaper: '🎬 壁纸', catInteraction: '🎛 交互', catTelemetry: '📊 HUD', catPowertools: '⚡ 效率',
+      wpParamsTitle: '壁纸与波纹参数',
+      wpOffHint: '开启「全局窗口背景」或「仅欢迎首页」并选择媒体后，即可精细调节壁纸与波纹透明度。',
+      wpRippleOff: '关闭 0%', wpRippleRec: '推荐 35%',
+      subBlockRewind: '会话回退与编辑', subBlockProgress: '阶段折叠与提醒', subBlockSystem: '扩展坞与系统守护',
+      clearSearch: '清除',
       cdpTitle: '未检测到 Antigravity 调试端口',
       cdpDesc: '正常打开原版 Antigravity 时可开启「冷启动自动重启启用」，或点击下方按钮立即带参安全重启。',
       cdpTrippedDesc: '冷启动自动重启连续 2 次未能连上调试端口，已触发熔断保护。请点击下方按钮手动重启启用。',
@@ -31,6 +37,23 @@
       savedToast: (k) => `已更新 ${k} 并实时同步`,
       saveErrToast: (e) => `保存失败: ${e}`,
       actionOk: (a) => `${a} 完成`, actionFail: (a, e) => `${a} 失败: ${e}`,
+      btnCheckUpdate: '检查更新',
+      checkingUpdate: '检查中…',
+      upToDate: '已是最新',
+      updateFoundChip: (v) => `发现 v${v}`,
+      updateBannerTitle: (cur, next) => `发现新版本 v${next}（当前 v${cur}）`,
+      updateBannerNoNotes: '已准备好官方 Release 压缩包，升级过程会完整保留你的配置与本地壁纸。',
+      updateBannerGitHint: '检测到当前目录为 Git 仓库，建议点击复制命令或在仓库内执行 git pull && npm run setup。',
+      btnUpdateApply: '✦ 一键升级并热重载',
+      updatingNow: '正在下载并覆盖更新…',
+      updateReloading: '正在热重载新版本…',
+      btnCopyCmd: '复制升级命令',
+      copiedCmdToast: '已复制一键升级命令到剪贴板',
+      btnOpenRelease: '查看 Release',
+      btnUpdateDismiss: '稍后',
+      updateSuccessToast: (v) => `已升级到 v${v} 并完成热重载`,
+      updateUpToDateToast: (v) => `当前 v${v} 已是最新版本`,
+      updateErrToast: (e) => `更新检查/升级失败: ${e}`,
       themeStudioTitle: '主题调色工作坊',
       themeStudioHint: '速选预设或切换至「自定义色板」精细调色',
       themeModeAuto: '跟随宿主明暗', themeModeDark: '强制暗色底色', themeModeLight: '强制亮色底色',
@@ -54,6 +77,7 @@
         palette: ['配色方案', '选择内置精选主题、自定义色板或跟随宿主主题'],
         glassEffect: ['全局毛玻璃材质', '为顶栏、输入框、弹层与侧栏启用细腻磨砂玻璃效果'],
         wpMode: ['动态壁纸范围', '关闭、作为全局窗口背景（对话区+侧栏透出）或仅欢迎首页'],
+        wpRippleOpacity: ['壁纸下字符波纹透明度', '开启壁纸后调节首页字符矩阵波纹强度（推荐 35%，设为 0% 直接关闭省电）'],
         wpOpacity: ['壁纸不透明度', '调节动态壁纸本身的不透明程度'],
         wpBlur: ['壁纸背景模糊', '为动态壁纸叠加高斯模糊，减少画面杂讯'],
         wpDim: ['壁纸可读性遮罩', '正值为暗色压暗遮罩，负值为柔亮雾化遮罩'],
@@ -96,6 +120,7 @@
         sidebarExtensionsSection: ['左侧栏「扩展」收藏区', '默认收起，已收藏扩展常驻显示并可直达主面板'],
         hideOnClose: ['关闭窗口挂后台', '仅拦截关闭窗口行为并隐藏至后台免重载，绝不劫持 Cmd+W/Ctrl+W 关闭标签页（Cmd+Q / Alt+F4 正常退出）'],
         autoRelaunchWithCdp: ['冷启动自动重启启用', '直接打开原版 Antigravity 未检测到 CDP 时，自动带调试端口与代理重启一次（120s 冷却 + 2 次失败熔断）'],
+        autoCheckUpdate: ['自动检查插件更新', '打开面板时按 6 小时周期静默检查 GitHub 最新 Release 版本，发现更新时给出温和提示'],
       },
       options: {
         language: [['zh-CN', '简体中文'], ['zh-TW', '繁體中文'], ['yue', '粵語'], ['en', 'English'], ['ja', '日本語']],
@@ -120,8 +145,14 @@
       tabControl: '⚙ Studio', tabDashboard: '📊 Dashboard', tabRemote: '🌐 Proxy & SSH',
       connected: (p, n) => `CDP :${p} · ${n} targets`,
       waitingPort: 'Waiting for CDP', disconnected: 'Disconnected',
-      btnReinject: '✦ Apply & Refresh Now', btnRemove: 'Restore Native', btnReset: 'Reset Defaults', btnRefresh: 'Refresh',
+      btnReinject: 'Apply & Refresh Now', btnRemove: 'Restore Native UI', btnReset: '↺ Reset All Settings', btnResetConfirm: 'Click Again to Reset All', btnRefresh: 'Refresh Connection',
       btnRelaunch: 'Relaunch Now', relaunching: 'Relaunching Antigravity…',
+      catTheme: '🎨 Theme', catWallpaper: '🎬 Wallpaper', catInteraction: '🎛 Input', catTelemetry: '📊 HUD', catPowertools: '⚡ Tools',
+      wpParamsTitle: 'Wallpaper & Ripple Tuning',
+      wpOffHint: 'Select Global Window or Home Only above to fine-tune wallpaper opacity, blur, and ripple strength.',
+      wpRippleOff: 'Off 0%', wpRippleRec: 'Rec 35%',
+      subBlockRewind: 'Rewind & Editing', subBlockProgress: 'Stages & Alerts', subBlockSystem: 'Extensions & System',
+      clearSearch: 'Clear',
       cdpTitle: 'Antigravity Debug Port Not Detected',
       cdpDesc: 'Enable Cold-Start Auto-Relaunch below or click to relaunch Antigravity with CDP safely.',
       cdpTrippedDesc: 'Cold-start auto-relaunch hit 2 consecutive failures (circuit breaker active). Click below to relaunch manually.',
@@ -144,6 +175,23 @@
       chipTargets: (w, s) => `Win ${w}${s ? ` · Swarm ${s}` : ''}`,
       savedToast: (k) => `Updated ${k}`, saveErrToast: (e) => `Save failed: ${e}`,
       actionOk: (a) => `${a} succeeded`, actionFail: (a, e) => `${a} failed: ${e}`,
+      btnCheckUpdate: 'Check Updates',
+      checkingUpdate: 'Checking…',
+      upToDate: 'Up to Date',
+      updateFoundChip: (v) => `v${v} available`,
+      updateBannerTitle: (cur, next) => `Update Available: v${next} (current v${cur})`,
+      updateBannerNoNotes: 'Official Release archive ready. Your config.json and local wallpapers will be preserved.',
+      updateBannerGitHint: 'Git checkout detected. Copy the command or run git pull && npm run setup in your repository.',
+      btnUpdateApply: '✦ Upgrade & Hot Reload',
+      updatingNow: 'Downloading & applying update…',
+      updateReloading: 'Hot reloading new version…',
+      btnCopyCmd: 'Copy Command',
+      copiedCmdToast: 'Upgrade command copied to clipboard',
+      btnOpenRelease: 'View Release',
+      btnUpdateDismiss: 'Later',
+      updateSuccessToast: (v) => `Upgraded to v${v} and reloaded`,
+      updateUpToDateToast: (v) => `v${v} is already up to date`,
+      updateErrToast: (e) => `Update error: ${e}`,
       themeStudioTitle: 'Theme Color Studio',
       themeStudioHint: 'Quick-pick a preset or switch to Custom to fine-tune tokens',
       themeModeAuto: 'Follow Host Mode', themeModeDark: 'Force Dark', themeModeLight: 'Force Light',
@@ -167,6 +215,7 @@
         palette: ['Color Palette', 'Pick a built-in theme preset, customize your own palette, or follow host'],
         glassEffect: ['Frosted Glass Material', 'Subtle frosted glass blur for bars, composer and menus'],
         wpMode: ['Dynamic Wallpaper Scope', 'Off, full-window translucent backdrop, or welcome home view only'],
+        wpRippleOpacity: ['Home Ripple Opacity (Wallpaper)', 'Control home matrix ripple opacity over wallpaper (35% recommended; 0% turns it off)'],
         wpOpacity: ['Wallpaper Opacity', 'Opacity of the rendered background video or image'],
         wpBlur: ['Wallpaper Blur', 'Gaussian blur radius applied to the wallpaper media'],
         wpDim: ['Readability Scrim', 'Positive dims dark overlay; negative adds soft light mist'],
@@ -209,6 +258,7 @@
         sidebarExtensionsSection: ['Sidebar Extensions & Favorites', 'Collapsed by default; ★ favorites stay visible for main panel'],
         hideOnClose: ['Hide to Background on Close', 'Intercepts window close only (never hijacks Cmd+W/Ctrl+W tab closing; Cmd+Q / Alt+F4 quits)'],
         autoRelaunchWithCdp: ['Cold-Start Auto-Relaunch', 'Auto-relaunch stock Antigravity once with CDP (+ proxy) if debug port is missing (120s cooldown & 2-fail breaker)'],
+        autoCheckUpdate: ['Auto-Check for Updates', 'Silently check GitHub Releases every 6 hours and show an upgrade banner when a newer release is available'],
       },
       options: {
         language: [['zh-CN', '简体中文'], ['zh-TW', '繁體中文'], ['yue', '粵語'], ['en', 'English'], ['ja', '日本語']],
@@ -239,7 +289,7 @@
       defaultOpen: true,
       keys: [
         'language', 'homeLayout', 'palette', 'glassEffect',
-        'wpMode', 'wpOpacity', 'wpBlur', 'wpDim', 'wpSurfaceAlpha', 'wpRate', 'wpPauseBlur',
+        'wpMode', 'wpRippleOpacity', 'wpOpacity', 'wpBlur', 'wpDim', 'wpSurfaceAlpha', 'wpRate', 'wpPauseBlur',
         'logoInk', 'sidebarRestyle', 'sidebarCompact', 'sidebarFoldEmpty',
         'composerRestyle', 'placeholderStyle', 'compactChatLayout',
       ],
@@ -264,11 +314,12 @@
       icon: '⚡',
       titleKey: 'grpPowertools',
       defaultOpen: true,
-      keys: ['taskProgressCard', 'stageCollapse', 'stagePromptInjection', 'windowUnreadTitle', 'branchSession', 'messageEdit', 'fileContextMenu', 'rewindPanel', 'undoConfirmMode', 'headerExtensionsBar', 'sidebarExtensionsSection', 'hideOnClose', 'autoRelaunchWithCdp'],
+      keys: ['taskProgressCard', 'stageCollapse', 'stagePromptInjection', 'windowUnreadTitle', 'branchSession', 'messageEdit', 'fileContextMenu', 'rewindPanel', 'undoConfirmMode', 'headerExtensionsBar', 'sidebarExtensionsSection', 'hideOnClose', 'autoRelaunchWithCdp', 'autoCheckUpdate'],
     },
   ];
 
   const SLIDER_SPECS = {
+    wpRippleOpacity: { min: 0, max: 100, step: 5, unit: '%', def: 35, presets: [[0, 'wpRippleOff'], [35, 'wpRippleRec']] },
     wpOpacity: { min: 5, max: 100, step: 1, unit: '%', def: 35 },
     wpBlur: { min: 0, max: 48, step: 1, unit: 'px', def: 0 },
     wpDim: { min: -50, max: 85, step: 1, unit: '%', def: 25 },
@@ -277,6 +328,7 @@
   };
 
   const SUBROW_RULES = {
+    wpRippleOpacity: { dim: (cfg) => !cfg.wpMode || cfg.wpMode === 'off' },
     wpOpacity: { dim: (cfg) => !cfg.wpMode || cfg.wpMode === 'off' },
     wpBlur: { dim: (cfg) => !cfg.wpMode || cfg.wpMode === 'off' },
     wpDim: { dim: (cfg) => !cfg.wpMode || cfg.wpMode === 'off' },
@@ -332,6 +384,7 @@
     'sidebarExtensionsSection',
     'hideOnClose',
     'autoRelaunchWithCdp',
+    'autoCheckUpdate',
     'rewindPanel',
   ]);
 
@@ -360,11 +413,28 @@
 
   root.AGYPanelControl = function initControlTab(app) {
     const collapsedGroups = new Set(GROUPS.filter((g) => !g.defaultOpen).map((g) => g.id));
+    let activeCategory = 'theme';
     let hudDetailsOpen = false;
     let searchQuery = '';
     let wallpaperItems = [];
     let wallpaperLoaded = false;
     let wpUploading = false;
+    let updateCheckBusy = false;
+    let updateApplyBusy = false;
+    let dismissedUpdateVer = '';
+    let latestUpdateState = null;
+    let resetConfirmTimer = null;
+    let resetArmed = false;
+
+    const CATEGORIES = [
+      { id: 'theme', labelKey: 'catTheme' },
+      { id: 'wallpaper', labelKey: 'catWallpaper' },
+      { id: 'interaction', labelKey: 'catInteraction' },
+      { id: 'telemetry', labelKey: 'catTelemetry' },
+      { id: 'powertools', labelKey: 'catPowertools' },
+    ];
+    const WALLPAPER_PARAM_KEYS = ['wpRippleOpacity', 'wpOpacity', 'wpBlur', 'wpDim', 'wpSurfaceAlpha', 'wpRate', 'wpPauseBlur'];
+    const THEME_KEYS = ['palette', 'language', 'homeLayout', 'glassEffect', 'logoInk', 'sidebarRestyle', 'sidebarCompact', 'sidebarFoldEmpty', 'composerRestyle', 'placeholderStyle', 'compactChatLayout'];
 
     function getT() {
       const lang = app.getConfig().language || 'zh-CN';
@@ -440,8 +510,31 @@
       const btn = document.getElementById('btn-ctrl-fold');
       if (!btn) return;
       const t = getT();
-      const allOpen = collapsedGroups.size === 0;
-      btn.textContent = allOpen ? t.collapseAll : t.expandAll;
+      const hasSearch = Boolean(searchQuery.trim());
+      btn.hidden = !hasSearch;
+      btn.textContent = t.clearSearch;
+    }
+
+    function renderCategoryBar(t) {
+      const bar = document.getElementById('ctrl-cat-bar');
+      if (!bar) return;
+      const hasSearch = Boolean(searchQuery.trim());
+      bar.hidden = hasSearch;
+      if (hasSearch) return;
+      bar.innerHTML = '';
+      for (const cat of CATEGORIES) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'ctrl-cat-pill' + (activeCategory === cat.id ? ' is-active' : '');
+        btn.setAttribute('data-cat', cat.id);
+        btn.textContent = t[cat.labelKey];
+        btn.addEventListener('click', () => {
+          activeCategory = cat.id;
+          renderCategoryBar(getT());
+          renderForm(app.getConfig());
+        });
+        bar.appendChild(btn);
+      }
     }
 
     function renderCompanions(lastStatus, t) {
@@ -477,9 +570,17 @@
       document.getElementById('tab-control').textContent = t.tabControl;
       document.getElementById('tab-dashboard').textContent = t.tabDashboard;
       document.getElementById('tab-remote').textContent = t.tabRemote;
-      document.getElementById('btn-reinject').textContent = t.btnReinject;
+      const reinjectBtn = document.getElementById('btn-reinject');
+      if (reinjectBtn) {
+        reinjectBtn.textContent = '↻';
+        reinjectBtn.title = t.btnReinject;
+      }
       document.getElementById('btn-remove').textContent = t.btnRemove;
-      document.getElementById('btn-reset').textContent = t.btnReset;
+      const resetBtn = document.getElementById('btn-reset');
+      if (resetBtn) {
+        resetBtn.textContent = resetArmed ? t.btnResetConfirm : t.btnReset;
+        resetBtn.classList.toggle('is-confirming', resetArmed);
+      }
       document.getElementById('btn-refresh').textContent = t.btnRefresh;
       document.getElementById('cdp-banner-title').textContent = t.cdpTitle;
       document.getElementById('cdp-banner-desc').textContent = t.cdpDesc;
@@ -487,6 +588,7 @@
       const searchEl = document.getElementById('ctrl-search');
       if (searchEl) searchEl.placeholder = t.searchPlaceholder;
       syncFoldButton();
+      renderCategoryBar(t);
 
       if (lastStatus) {
         const pill = document.getElementById('status-pill');
@@ -538,12 +640,179 @@
           }
         }
         renderCompanions(lastStatus, t);
+        renderUpdateSection(lastStatus.update || latestUpdateState, t);
+      } else {
+        renderUpdateSection(latestUpdateState, t);
+      }
+    }
+
+    function renderUpdateSection(upd, t) {
+      if (upd) latestUpdateState = upd;
+      const state = upd || latestUpdateState;
+      const checkBtn = document.getElementById('btn-check-update');
+      if (checkBtn) {
+        checkBtn.disabled = updateCheckBusy || updateApplyBusy;
+        checkBtn.classList.toggle('is-has-update', Boolean(state?.hasUpdate));
+        if (updateCheckBusy) {
+          checkBtn.textContent = t.checkingUpdate;
+        } else if (state?.hasUpdate && state.latestVersion) {
+          checkBtn.textContent = t.updateFoundChip(state.latestVersion);
+        } else if (state?.checkedAtMs && state?.ok !== false) {
+          checkBtn.textContent = t.upToDate;
+        } else {
+          checkBtn.textContent = t.btnCheckUpdate;
+        }
+      }
+
+      const banner = document.getElementById('update-banner');
+      if (!banner) return;
+      const showBanner = Boolean(state?.hasUpdate && state?.latestVersion && dismissedUpdateVer !== state.latestVersion);
+      banner.classList.toggle('show', showBanner);
+      if (!showBanner) return;
+
+      const titleEl = document.getElementById('update-banner-title');
+      if (titleEl) {
+        titleEl.textContent = t.updateBannerTitle(state.currentVersion || '4.0.0', state.latestVersion);
+      }
+      const notesEl = document.getElementById('update-banner-notes');
+      if (notesEl) {
+        if (state.isGitRepo) {
+          notesEl.textContent = t.updateBannerGitHint;
+        } else {
+          notesEl.textContent = state.releaseNotes || t.updateBannerNoNotes;
+        }
+      }
+      const applyBtn = document.getElementById('btn-update-apply');
+      if (applyBtn) {
+        applyBtn.style.display = state.isGitRepo ? 'none' : '';
+        applyBtn.disabled = updateApplyBusy || updateCheckBusy;
+        applyBtn.textContent = updateApplyBusy ? t.updatingNow : t.btnUpdateApply;
+      }
+      const copyBtn = document.getElementById('btn-update-copy');
+      if (copyBtn) copyBtn.textContent = t.btnCopyCmd;
+      const openBtn = document.getElementById('btn-update-open');
+      if (openBtn) openBtn.textContent = t.btnOpenRelease;
+      const dismissBtn = document.getElementById('btn-update-dismiss');
+      if (dismissBtn) dismissBtn.textContent = t.btnUpdateDismiss;
+    }
+
+    async function copyTextSafe(text) {
+      if (!text) return false;
+      try {
+        if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+          await navigator.clipboard.writeText(text);
+          return true;
+        }
+      } catch {}
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        const ok = document.execCommand('copy');
+        ta.remove();
+        return ok;
+      } catch {
+        return false;
+      }
+    }
+
+    async function handleCheckUpdates() {
+      if (updateCheckBusy || updateApplyBusy) return;
+      const t = getT();
+      updateCheckBusy = true;
+      renderUpdateSection(latestUpdateState, t);
+      try {
+        const res = await app.apiFetch('/api/update/check', {
+          method: 'POST',
+          body: JSON.stringify({ force: true }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || data.ok === false) {
+          throw new Error(data.error || `HTTP ${res.status}`);
+        }
+        dismissedUpdateVer = '';
+        latestUpdateState = data;
+        renderUpdateSection(data, getT());
+        if (data.hasUpdate) {
+          app.showToast(getT().updateBannerTitle(data.currentVersion, data.latestVersion));
+        } else {
+          app.showToast(getT().updateUpToDateToast(data.currentVersion));
+        }
+      } catch (err) {
+        app.showToast(getT().updateErrToast(err?.message || String(err)));
+      } finally {
+        updateCheckBusy = false;
+        renderUpdateSection(latestUpdateState, getT());
+      }
+    }
+
+    async function pollUntilUpgraded(targetVer) {
+      const deadline = Date.now() + 12000;
+      while (Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 800));
+        try {
+          const res = await app.apiFetch('/api/status', { method: 'GET' });
+          if (!res.ok) continue;
+          const st = await res.json();
+          if (st?.ok) {
+            await app.refreshStatus();
+            if (!targetVer || st.version === targetVer || !st.update?.hasUpdate) {
+              return true;
+            }
+          }
+        } catch {}
+      }
+      return false;
+    }
+
+    async function handleApplyUpdate() {
+      if (updateApplyBusy || updateCheckBusy) return;
+      const t = getT();
+      const applyBtn = document.getElementById('btn-update-apply');
+      updateApplyBusy = true;
+      renderUpdateSection(latestUpdateState, t);
+      try {
+        const targetVersion = latestUpdateState?.latestVersion || '';
+        const downloadUrl = latestUpdateState?.downloadUrl || '';
+        const res = await app.apiFetch('/api/update/apply', {
+          method: 'POST',
+          body: JSON.stringify({ targetVersion, downloadUrl }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data.ok) {
+          throw new Error(data.error || `HTTP ${res.status}`);
+        }
+        if (data.alreadyLatest) {
+          app.showToast(getT().updateUpToDateToast(data.updatedVersion || targetVersion));
+          await app.refreshStatus();
+          return;
+        }
+        if (applyBtn) applyBtn.textContent = getT().updateReloading;
+        const upgradedVer = data.updatedVersion || targetVersion;
+        latestUpdateState = {
+          ...(latestUpdateState || {}),
+          currentVersion: upgradedVer,
+          latestVersion: upgradedVer,
+          hasUpdate: false,
+        };
+        await pollUntilUpgraded(upgradedVer);
+        app.showToast(getT().updateSuccessToast(upgradedVer));
+        renderUpdateSection(latestUpdateState, getT());
+      } catch (err) {
+        app.showToast(getT().updateErrToast(err?.message || String(err)));
+      } finally {
+        updateApplyBusy = false;
+        renderUpdateSection(latestUpdateState, getT());
       }
     }
 
     function buildThemeStudioCard(cfg, t) {
       const card = document.createElement('div');
       card.className = 'studio-subcard';
+      card.id = 'card-theme-studio';
       const head = document.createElement('div');
       head.className = 'studio-subcard-head';
       head.innerHTML = `<span>🎨 ${t.themeStudioTitle}</span><span style="font-size:10px;color:var(--muted-fg);font-weight:400;">${t.themeStudioHint}</span>`;
@@ -677,6 +946,7 @@
       }
       const card = document.createElement('div');
       card.className = 'studio-subcard';
+      card.id = 'card-wallpaper-studio';
 
       const head = document.createElement('div');
       head.className = 'studio-subcard-head';
@@ -840,6 +1110,22 @@
       if (sliderSpec) {
         const wrap = document.createElement('div');
         wrap.className = 'range-ctl';
+        if (Array.isArray(sliderSpec.presets)) {
+          wrap.style.width = 'auto';
+          const presetsDiv = document.createElement('div');
+          presetsDiv.className = 'range-presets';
+          for (const [pVal, pKey] of sliderSpec.presets) {
+            const curNum = Number.isFinite(Number(cfg[key])) ? Number(cfg[key]) : sliderSpec.def;
+            const pb = document.createElement('button');
+            pb.type = 'button';
+            pb.className = 'range-preset-btn' + (curNum === pVal ? ' is-active' : '');
+            pb.textContent = t[pKey] || `${pVal}${sliderSpec.unit}`;
+            pb.disabled = dimmed;
+            pb.addEventListener('click', () => app.saveOne(key, pVal));
+            presetsDiv.appendChild(pb);
+          }
+          wrap.appendChild(presetsDiv);
+        }
         const range = document.createElement('input');
         range.type = 'range';
         range.min = String(sliderSpec.min);
@@ -889,95 +1175,191 @@
       return row;
     }
 
+    function renderPowertoolsBlocks(body, keys, cfg, t) {
+      const blocks = [
+        { titleKey: 'subBlockRewind', keys: ['rewindPanel', 'undoConfirmMode', 'branchSession', 'messageEdit', 'fileContextMenu'] },
+        { titleKey: 'subBlockProgress', keys: ['taskProgressCard', 'stageCollapse', 'stagePromptInjection', 'windowUnreadTitle'] },
+        { titleKey: 'subBlockSystem', keys: ['headerExtensionsBar', 'sidebarExtensionsSection', 'hideOnClose', 'autoRelaunchWithCdp', 'autoCheckUpdate'] },
+      ];
+      const keySet = new Set(keys);
+      for (const blk of blocks) {
+        const matching = blk.keys.filter((k) => keySet.has(k));
+        if (matching.length === 0) continue;
+        const subTitle = document.createElement('div');
+        subTitle.className = 'ctrl-subblock-title';
+        subTitle.textContent = t[blk.titleKey] || blk.titleKey;
+        body.appendChild(subTitle);
+        for (const k of matching) {
+          body.appendChild(buildSettingRow(k, cfg, t));
+        }
+      }
+    }
+
     function renderForm(cfg) {
       const t = getT();
       const container = document.getElementById('sections');
       const q = searchQuery.trim().toLowerCase();
       container.innerHTML = '';
-      let matchedGroups = 0;
+      renderCategoryBar(t);
+      syncFoldButton();
 
       const matchesKey = (key) => {
         const [name, desc] = t.labels[key] || [key, ''];
         return `${key} ${name} ${desc}`.toLowerCase().includes(q);
       };
 
-      for (const group of GROUPS) {
-        const groupTitle = String(t[group.titleKey] || '');
-        const groupMatches = q && groupTitle.toLowerCase().includes(q);
-        const visibleMainKeys = q
-          ? group.keys.filter((key) => groupMatches || matchesKey(key))
-          : group.keys;
-        const visibleHudKeys = Array.isArray(group.hudKeys)
-          ? q
+      if (q) {
+        let matchedGroups = 0;
+        for (const group of GROUPS) {
+          const groupTitle = String(t[group.titleKey] || '');
+          const groupMatches = groupTitle.toLowerCase().includes(q);
+          const visibleMainKeys = group.keys.filter((key) => groupMatches || matchesKey(key));
+          const visibleHudKeys = Array.isArray(group.hudKeys)
             ? group.hudKeys.filter((key) => groupMatches || matchesKey(key))
-            : group.hudKeys
-          : [];
-        if (visibleMainKeys.length === 0 && visibleHudKeys.length === 0) continue;
-        matchedGroups++;
+            : [];
+          if (visibleMainKeys.length === 0 && visibleHudKeys.length === 0) continue;
+          matchedGroups++;
+          const sec = document.createElement('div');
+          sec.className = 'section';
+          const head = document.createElement('div');
+          head.className = 'section-head';
+          head.innerHTML = `<span class="section-title"><span>${group.icon}</span><span>${groupTitle}</span></span><span class="section-badge">${visibleMainKeys.length + visibleHudKeys.length}</span>`;
+          sec.appendChild(head);
+          const body = document.createElement('div');
+          body.className = 'section-body';
+          for (const key of visibleMainKeys) body.appendChild(buildSettingRow(key, cfg, t));
+          for (const key of visibleHudKeys) body.appendChild(buildSettingRow(key, cfg, t));
+          sec.appendChild(body);
+          container.appendChild(sec);
+        }
+        if (matchedGroups === 0) {
+          const empty = document.createElement('div');
+          empty.className = 'ctrl-empty';
+          empty.textContent = t.emptySearch;
+          container.appendChild(empty);
+        }
+        return;
+      }
 
-        const isCollapsed = !q && collapsedGroups.has(group.id);
+      if (activeCategory === 'theme') {
         const sec = document.createElement('div');
-        sec.className = 'section' + (isCollapsed ? ' collapsed' : '');
-
-        const head = document.createElement('button');
-        head.type = 'button';
-        head.className = 'section-head';
-        const badgeText = q
-          ? `${visibleMainKeys.length + visibleHudKeys.length}`
-          : countEnabledInGroup(group, cfg, t.options);
-        head.innerHTML = `<span class="section-title"><span>${group.icon}</span><span>${groupTitle}</span></span><span style="display:inline-flex;align-items:center;gap:6px;"><span class="section-badge">${badgeText}</span><span class="section-chev">▾</span></span>`;
-        head.addEventListener('click', () => {
-          if (collapsedGroups.has(group.id)) collapsedGroups.delete(group.id);
-          else collapsedGroups.add(group.id);
-          sec.classList.toggle('collapsed');
-          syncFoldButton();
-        });
-        sec.appendChild(head);
-
+        sec.className = 'section';
         const body = document.createElement('div');
         body.className = 'section-body';
-        for (const key of visibleMainKeys) {
+        for (const key of THEME_KEYS) {
+          if (key === 'sidebarCompact' || key === 'sidebarFoldEmpty') {
+            if (cfg.sidebarRestyle === false) continue;
+          }
+          if (key === 'placeholderStyle' && !cfg.composerRestyle) continue;
           body.appendChild(buildSettingRow(key, cfg, t));
-          if (key === 'palette' && !q) {
+          if (key === 'palette') {
             body.appendChild(buildThemeStudioCard(cfg, t));
           }
-          if (key === 'wpMode' && !q) {
-            body.appendChild(buildWallpaperStudioCard(cfg, t));
-          }
         }
-
-        if (visibleHudKeys.length > 0) {
-          const details = document.createElement('details');
-          details.className = 'ctrl-subdetails';
-          details.open = Boolean(q) || hudDetailsOpen;
-          details.addEventListener('toggle', () => {
-            if (!q) hudDetailsOpen = details.open;
-          });
-          const toggleHudKeys = visibleHudKeys.filter((k) => !t.options[k]);
-          const enabledHud = toggleHudKeys.filter((k) => isSwitchChecked(k, cfg)).length;
-          const summary = document.createElement('summary');
-          summary.innerHTML = `<span>${t.hudDetailsLabel}</span><span class="section-badge">${enabledHud}/${toggleHudKeys.length}</span>`;
-          details.appendChild(summary);
-          const subList = document.createElement('div');
-          subList.className = 'ctrl-subdetails-body';
-          for (const key of visibleHudKeys) {
-            subList.appendChild(buildSettingRow(key, cfg, t));
-          }
-          details.appendChild(subList);
-          body.appendChild(details);
-        }
-
         sec.appendChild(body);
         container.appendChild(sec);
+        return;
       }
 
-      if (matchedGroups === 0) {
-        const empty = document.createElement('div');
-        empty.className = 'ctrl-empty';
-        empty.textContent = t.emptySearch;
-        container.appendChild(empty);
+      if (activeCategory === 'wallpaper') {
+        const sec = document.createElement('div');
+        sec.className = 'section';
+        const body = document.createElement('div');
+        body.className = 'section-body';
+        body.appendChild(buildSettingRow('wpMode', cfg, t));
+        body.appendChild(buildWallpaperStudioCard(cfg, t));
+        const wpActive = cfg.wpMode === 'global' || cfg.wpMode === 'home';
+        if (!wpActive) {
+          const hint = document.createElement('div');
+          hint.className = 'wp-off-hint';
+          hint.textContent = t.wpOffHint;
+          body.appendChild(hint);
+        } else {
+          const paramsTitle = document.createElement('div');
+          paramsTitle.className = 'ctrl-subblock-title';
+          paramsTitle.textContent = t.wpParamsTitle;
+          body.appendChild(paramsTitle);
+          for (const key of WALLPAPER_PARAM_KEYS) {
+            if (key === 'wpSurfaceAlpha' && cfg.wpMode !== 'global') continue;
+            body.appendChild(buildSettingRow(key, cfg, t));
+          }
+        }
+        sec.appendChild(body);
+        container.appendChild(sec);
+        return;
       }
-      syncFoldButton();
+
+      const targetGroupId = activeCategory;
+      const group = GROUPS.find((g) => g.id === targetGroupId) || GROUPS[0];
+      const sec = document.createElement('div');
+      sec.className = 'section';
+      const body = document.createElement('div');
+      body.className = 'section-body';
+
+      if (group.id === 'powertools') {
+        renderPowertoolsBlocks(body, group.keys, cfg, t);
+      } else {
+        for (const key of group.keys) {
+          if (key === 'effortAccent' && (cfg.effortSliderStyle || 'claude') !== 'claude') continue;
+          if (key === 'performanceBackdrop' && cfg.effortSliderStyle !== 'liangwufeng') continue;
+          body.appendChild(buildSettingRow(key, cfg, t));
+        }
+      }
+
+      if (Array.isArray(group.hudKeys) && group.hudKeys.length > 0) {
+        const details = document.createElement('details');
+        details.className = 'ctrl-subdetails';
+        details.open = hudDetailsOpen || group.hudKeys.some((k) => cfg[k] === true);
+        details.addEventListener('toggle', () => {
+          hudDetailsOpen = details.open;
+        });
+        const toggleHudKeys = group.hudKeys.filter((k) => !t.options[k]);
+        const enabledHud = toggleHudKeys.filter((k) => isSwitchChecked(k, cfg)).length;
+        const summary = document.createElement('summary');
+        summary.innerHTML = `<span>${t.hudDetailsLabel}</span><span class="section-badge">${enabledHud}/${toggleHudKeys.length}</span>`;
+        details.appendChild(summary);
+        const subList = document.createElement('div');
+        subList.className = 'ctrl-subdetails-body';
+        for (const key of group.hudKeys) {
+          subList.appendChild(buildSettingRow(key, cfg, t));
+        }
+        details.appendChild(subList);
+        body.appendChild(details);
+      }
+
+      sec.appendChild(body);
+      container.appendChild(sec);
+    }
+
+    function navigateToSection(section) {
+      const map = {
+        appearance: 'theme',
+        theme: 'theme',
+        wallpaper: 'wallpaper',
+        interaction: 'interaction',
+        telemetry: 'telemetry',
+        powertools: 'powertools',
+      };
+      activeCategory = map[String(section || '').toLowerCase()] || 'theme';
+      searchQuery = '';
+      const searchEl = document.getElementById('ctrl-search');
+      if (searchEl) searchEl.value = '';
+      renderCategoryBar(getT());
+      renderForm(app.getConfig());
+      const focusTarget =
+        activeCategory === 'theme'
+          ? document.getElementById('card-theme-studio')
+          : activeCategory === 'wallpaper'
+          ? document.getElementById('card-wallpaper-studio')
+          : document.querySelector('#sections .section');
+      if (focusTarget) {
+        focusTarget.classList.remove('is-nav-highlight');
+        void focusTarget.offsetWidth;
+        focusTarget.classList.add('is-nav-highlight');
+        if (typeof focusTarget.scrollIntoView === 'function') {
+          focusTarget.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }
+      }
     }
 
     const searchInput = document.getElementById('ctrl-search');
@@ -990,19 +1372,55 @@
     const foldBtn = document.getElementById('btn-ctrl-fold');
     if (foldBtn) {
       foldBtn.addEventListener('click', () => {
-        if (collapsedGroups.size === 0) {
-          for (const g of GROUPS) collapsedGroups.add(g.id);
-        } else {
-          collapsedGroups.clear();
-        }
+        searchQuery = '';
+        if (searchInput) searchInput.value = '';
         renderForm(app.getConfig());
       });
     }
 
+    const moreBtn = document.getElementById('btn-more-menu');
+    const morePop = document.getElementById('header-more-popover');
+    const closeMoreMenu = () => {
+      if (morePop) morePop.hidden = true;
+      if (moreBtn) moreBtn.setAttribute('aria-expanded', 'false');
+    };
+    if (moreBtn && morePop) {
+      moreBtn.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        const nextOpen = morePop.hidden;
+        morePop.hidden = !nextOpen;
+        moreBtn.setAttribute('aria-expanded', String(nextOpen));
+      });
+      document.addEventListener('click', (ev) => {
+        if (!morePop.hidden && !morePop.contains(ev.target) && ev.target !== moreBtn) {
+          closeMoreMenu();
+        }
+      });
+    }
+
     document.getElementById('btn-reinject').addEventListener('click', () => app.postAction('/api/reinject', 'btnReinject'));
-    document.getElementById('btn-remove').addEventListener('click', () => app.postAction('/api/remove', 'btnRemove'));
-    document.getElementById('btn-reset').addEventListener('click', () => app.postAction('/api/reset', 'btnReset'));
+    document.getElementById('btn-remove').addEventListener('click', () => {
+      closeMoreMenu();
+      void app.postAction('/api/remove', 'btnRemove');
+    });
+    document.getElementById('btn-reset').addEventListener('click', async () => {
+      if (!resetArmed) {
+        resetArmed = true;
+        renderStaticChrome();
+        clearTimeout(resetConfirmTimer);
+        resetConfirmTimer = setTimeout(() => {
+          resetArmed = false;
+          renderStaticChrome();
+        }, 3500);
+        return;
+      }
+      clearTimeout(resetConfirmTimer);
+      resetArmed = false;
+      closeMoreMenu();
+      await app.postAction('/api/reset', 'btnReset');
+    });
     document.getElementById('btn-refresh').addEventListener('click', () => {
+      closeMoreMenu();
       wallpaperLoaded = false;
       void app.refreshStatus();
     });
@@ -1011,7 +1429,47 @@
     if (proxyColdBtn) {
       proxyColdBtn.addEventListener('click', () => app.postAction('/api/relaunch', 'btnRelaunch'));
     }
+    const checkUpdBtn = document.getElementById('btn-check-update');
+    if (checkUpdBtn) {
+      checkUpdBtn.addEventListener('click', () => void handleCheckUpdates());
+    }
+    const applyUpdBtn = document.getElementById('btn-update-apply');
+    if (applyUpdBtn) {
+      applyUpdBtn.addEventListener('click', () => void handleApplyUpdate());
+    }
+    const copyUpdBtn = document.getElementById('btn-update-copy');
+    if (copyUpdBtn) {
+      copyUpdBtn.addEventListener('click', async () => {
+        const cmd = latestUpdateState?.installCommand || '';
+        const ok = await copyTextSafe(cmd);
+        app.showToast(ok ? getT().copiedCmdToast : getT().updateErrToast('clipboard unavailable'));
+      });
+    }
+    const openUpdBtn = document.getElementById('btn-update-open');
+    if (openUpdBtn) {
+      openUpdBtn.addEventListener('click', async () => {
+        try {
+          const res = await app.apiFetch('/api/update/open-url', {
+            method: 'POST',
+            body: JSON.stringify({ url: latestUpdateState?.releaseUrl || '' }),
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+        } catch (err) {
+          app.showToast(getT().updateErrToast(err?.message || String(err)));
+        }
+      });
+    }
+    const dismissUpdBtn = document.getElementById('btn-update-dismiss');
+    if (dismissUpdBtn) {
+      dismissUpdBtn.addEventListener('click', () => {
+        if (latestUpdateState?.latestVersion) {
+          dismissedUpdateVer = latestUpdateState.latestVersion;
+        }
+        renderUpdateSection(latestUpdateState, getT());
+      });
+    }
 
-    return { getT, renderStaticChrome, renderForm };
+    return { getT, renderStaticChrome, renderForm, navigateToSection };
   };
 })(typeof window !== 'undefined' ? window : globalThis);

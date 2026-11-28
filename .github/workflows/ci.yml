@@ -17,8 +17,24 @@ permissions:
   contents: read
 
 jobs:
-  build-and-test:
-    name: CI
-    uses: ./.github/workflows/_build-and-test.yml
-    with:
-      artifact_retention_days: 7
+  verify:
+    name: Test & Verify Source Package
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+
+      - name: Run test suite
+        run: npm test
+
+      - name: Build cross-platform source package
+        run: |
+          set -euo pipefail
+          npm run build:package
+          ls -lh dist/agy-claude-style-v*.zip

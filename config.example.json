@@ -5,6 +5,7 @@
   "glassEffect": true,
   "wpMode": "off",
   "wpFile": "",
+  "wpRippleOpacity": 35,
   "wpOpacity": 35,
   "wpBlur": 0,
   "wpDim": 25,
@@ -58,5 +59,6 @@
   "proxyForceHttp1": true,
   "proxyColdStartAlert": true,
   "autoRelaunchWithCdp": true,
+  "autoCheckUpdate": true,
   "pollIntervalMs": 2500
 }

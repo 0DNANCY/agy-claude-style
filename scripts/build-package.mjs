@@ -9,13 +9,38 @@ import {
   normalizeVersion,
 } from './build-common.mjs';
 
+function stampEntryVersion(entries, cleanVersion) {
+  return entries.map((entry) => {
+    if (entry.name === 'plugin.json' || entry.name === 'package.json') {
+      const parsed = JSON.parse(entry.data.toString('utf8'));
+      parsed.version = cleanVersion;
+      return {
+        ...entry,
+        data: Buffer.from(`${JSON.stringify(parsed, null, 2)}\n`, 'utf8'),
+      };
+    }
+    if (entry.name === 'cdp.js') {
+      const src = entry.data.toString('utf8');
+      const next = src.replace(
+        /^(const PLUGIN_VERSION\s*=\s*['"])[^'"]+(['"];)/m,
+        `$1${cleanVersion}$2`
+      );
+      return {
+        ...entry,
+        data: Buffer.from(next, 'utf8'),
+      };
+    }
+    return entry;
+  });
+}
+
 function buildPackage({ rootDir = ROOT_DIR, outputPath, version } = {}) {
   const cleanVersion = normalizeVersion(version);
   const names = getArtifactNames(cleanVersion);
   const outZip = path.resolve(rootDir, outputPath || path.join('dist', names.pluginZip));
   fs.mkdirSync(path.dirname(outZip), { recursive: true });
 
-  const entries = collectPluginPayloadFiles(rootDir);
+  const entries = stampEntryVersion(collectPluginPayloadFiles(rootDir), cleanVersion);
   const zipBuf = buildZip(entries);
   fs.writeFileSync(outZip, zipBuf);
 

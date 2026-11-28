@@ -1,11 +1,25 @@
 #!/usr/bin/env node
 // Cross-platform zero-dependency CLI for AGY Claude Style (install / uninstall / status).
 import fs from 'node:fs';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
 import { ROOT_DIR, collectPluginPayloadFiles } from './build-common.mjs';
+import {
+  applyPluginUpdate,
+  checkForUpdates,
+  cleanupLegacyExternalArtifacts,
+  isGitCheckoutDir,
+  pruneStalePluginFiles,
+  resolveInstalledVersion,
+  terminateStaleOwnedMcpHosts,
+} from '../sidecars/panel/lib/updater.mjs';
+
+const require = createRequire(import.meta.url);
+const cdpApi = require('../cdp.js');
 
 const PLUGIN_NAME = 'agy-claude-style';
 const SIDECAR_NAME = 'agy-claude-style/panel';
@@ -111,24 +125,37 @@ function discoverRunningLanguageServers(env = process.env) {
   return out;
 }
 
-async function callLsRpc(daemon, method, body, timeoutMs = 2500) {
-  try {
-    const url = `http://127.0.0.1:${daemon.httpPort}/exa.language_server_pb.LanguageServerService/${method}`;
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Connect-Protocol-Version': '1',
-        'x-codeium-csrf-token': daemon.csrfToken,
-        'x-antigravity-csrf-token': daemon.csrfToken,
+function callLsRpc(daemon, method, body, timeoutMs = 2500) {
+  return new Promise((resolvePromise) => {
+    const payload = JSON.stringify(body || {});
+    const req = http.request(
+      {
+        hostname: '127.0.0.1',
+        port: Number(daemon.httpPort),
+        path: `/exa.language_server_pb.LanguageServerService/${method}`,
+        method: 'POST',
+        agent: false,
+        timeout: timeoutMs,
+        headers: {
+          'Content-Type': 'application/json',
+          'Connect-Protocol-Version': '1',
+          'x-codeium-csrf-token': daemon.csrfToken,
+          'x-antigravity-csrf-token': daemon.csrfToken,
+          'Content-Length': Buffer.byteLength(payload),
+        },
       },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(timeoutMs),
+      (res) => {
+        try { res.resume(); } catch {}
+        resolvePromise(res.statusCode >= 200 && res.statusCode < 300);
+      }
+    );
+    req.on('timeout', () => {
+      try { req.destroy(); } catch {}
+      resolvePromise(false);
     });
-    return res.ok;
-  } catch {
-    return false;
-  }
+    req.on('error', () => resolvePromise(false));
+    req.end(payload);
+  });
 }
 
 async function setLsPluginState(daemons, enabled) {
@@ -306,10 +333,13 @@ async function runInstall(opts = {}, env = process.env) {
     await new Promise((r) => setTimeout(r, 350));
   }
 
-  const legacyCleaned = cleanupLegacyArtifacts(installDir, env);
+  const legacyCleaned =
+    cleanupLegacyExternalArtifacts({ installDir, stateDir: pluginDataDir, env }).cleaned ||
+    cleanupLegacyArtifacts(installDir, env);
 
   const payload = collectPluginPayloadFiles(sourceDir);
   const fullInstallRoot = path.resolve(installDir) + path.sep;
+  const validRelPaths = new Set();
   for (const entry of payload) {
     const destPath = path.resolve(installDir, entry.name);
     if (!destPath.startsWith(fullInstallRoot)) {
@@ -317,7 +347,9 @@ async function runInstall(opts = {}, env = process.env) {
     }
     fs.mkdirSync(path.dirname(destPath), { recursive: true });
     fs.writeFileSync(destPath, entry.data);
+    validRelPaths.add(entry.name);
   }
+  const pruneRes = pruneStalePluginFiles(installDir, validRelPaths);
 
   if (!fs.existsSync(activeCfgPath)) {
     const exampleCfg = path.join(installDir, 'config.example.json');
@@ -326,6 +358,7 @@ async function runInstall(opts = {}, env = process.env) {
     }
   }
 
+  terminateStaleOwnedMcpHosts({ installDir, stateDir: pluginDataDir, cdpModule: cdpApi });
   setPluginEnabledInConfigFile(true, env);
   const lsHotReloaded = await setLsPluginState(daemons, true);
 
@@ -339,6 +372,7 @@ async function runInstall(opts = {}, env = process.env) {
     preservedExistingConfig,
     migratedLegacyConfig,
     legacyCleaned,
+    prunedCount: pruneRes.prunedCount,
     pluginEnabled: readPluginEnabledState(env),
     lsHotReloaded,
     fileCount: payload.length,
@@ -393,16 +427,119 @@ function getStatus(opts = {}, env = process.env) {
   };
 }
 
+function readProxyConfigFromDataDir(pluginDataDir) {
+  try {
+    const cfgPath = path.join(pluginDataDir, 'config.json');
+    if (fs.existsSync(cfgPath)) {
+      return JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+    }
+  } catch {}
+  return null;
+}
+
+async function runCheckUpdate(opts = {}, env = process.env) {
+  const installDir = path.resolve(opts.installDir || getDefaultInstallDir(env));
+  const pluginDataDir = getPluginDataDir(env);
+  const currentVersion =
+    readInstalledVersion(installDir) || resolveInstalledVersion(ROOT_DIR, '4.0.0');
+  const proxyConfig = readProxyConfigFromDataDir(pluginDataDir);
+  const res = await checkForUpdates({
+    currentVersion,
+    installDir,
+    stateDir: pluginDataDir,
+    force: opts.force !== false,
+    proxyConfig,
+    ...(opts.apiUrl ? { apiUrl: opts.apiUrl, allowCustomUrlForTest: true } : {}),
+  });
+  return {
+    ...res,
+    mode: 'check-update',
+    installed: fs.existsSync(path.join(installDir, 'plugin.json')),
+    installDir,
+    pluginDataDir,
+  };
+}
+
+async function runUpdate(opts = {}, env = process.env) {
+  const installDir = path.resolve(opts.installDir || getDefaultInstallDir(env));
+  const pluginDataDir = getPluginDataDir(env);
+  const proxyConfig = readProxyConfigFromDataDir(pluginDataDir);
+
+  if (isGitCheckoutDir(installDir) && !opts.allowGitOverwrite) {
+    return {
+      ok: false,
+      mode: 'update',
+      isGitRepo: true,
+      installDir,
+      error: 'Installed directory is a Git checkout; please run git pull && npm run setup.',
+    };
+  }
+
+  const checkRes = await runCheckUpdate({ ...opts, force: true }, env);
+  if (!checkRes.ok) {
+    return { ...checkRes, mode: 'update' };
+  }
+  if (!checkRes.hasUpdate && !opts.force) {
+    return {
+      ok: true,
+      mode: 'update',
+      alreadyLatest: true,
+      previousVersion: checkRes.currentVersion,
+      updatedVersion: checkRes.currentVersion,
+      installDir,
+      pluginDataDir,
+      lsHotReloaded: false,
+    };
+  }
+
+  const daemons = discoverRunningLanguageServers(env);
+  if (await setLsPluginState(daemons, false)) {
+    await new Promise((r) => setTimeout(r, 350));
+  }
+
+  const applyRes = await applyPluginUpdate({
+    installDir,
+    stateDir: pluginDataDir,
+    downloadUrl: opts.downloadUrl || checkRes.downloadUrl,
+    targetVersion: checkRes.latestVersion,
+    allowGitOverwrite: Boolean(opts.allowGitOverwrite),
+    proxyConfig,
+    allowCustomUrlForTest: Boolean(opts.downloadUrl || opts.apiUrl),
+    env,
+  });
+  if (!applyRes.ok) {
+    await setLsPluginState(daemons, true);
+    return { ...applyRes, mode: 'update' };
+  }
+
+  terminateStaleOwnedMcpHosts({ installDir, stateDir: pluginDataDir, cdpModule: cdpApi });
+  setPluginEnabledInConfigFile(true, env);
+  const lsHotReloaded = await setLsPluginState(daemons, true);
+  return {
+    ...applyRes,
+    mode: 'update',
+    pluginDataDir,
+    pluginEnabled: readPluginEnabledState(env),
+    lsHotReloaded,
+  };
+}
+
 function parseCliArgs(argv) {
-  const opts = { command: 'install', json: false, silent: false };
+  const opts = { command: 'install', json: false, silent: false, force: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (a === 'install' || a === 'uninstall' || a === 'status') {
+    if (a === 'install' || a === 'uninstall' || a === 'status' || a === 'check-update' || a === 'update') {
       opts.command = a;
     } else if (a === '--uninstall') {
       opts.command = 'uninstall';
     } else if (a === '--status') {
       opts.command = 'status';
+    } else if (a === '--check-update') {
+      opts.command = 'check-update';
+    } else if (a === '--update') {
+      opts.command = 'update';
+    } else if (a === '--force') {
+      opts.force = true;
     } else if (a === '--install-dir' && argv[i + 1]) {
       opts.installDir = argv[++i];
     } else if (a === '--source-dir' && argv[i + 1]) {
@@ -425,6 +562,10 @@ async function main() {
     res = getStatus(opts);
   } else if (opts.command === 'uninstall') {
     res = await runUninstall(opts);
+  } else if (opts.command === 'check-update') {
+    res = await runCheckUpdate(opts);
+  } else if (opts.command === 'update') {
+    res = await runUpdate(opts);
   } else {
     res = await runInstall(opts);
   }
@@ -438,6 +579,29 @@ async function main() {
       console.log(`AGY Claude Style: ${res.installed ? `v${res.installedVersion || '?'} (enabled=${res.pluginEnabled})` : 'not installed'}`);
       console.log(`  Plugin Dir: ${res.installDir}`);
       console.log(`  Data Dir:   ${res.pluginDataDir}`);
+    } else if (opts.command === 'check-update') {
+      if (!res.ok) {
+        console.error(`[!] Update check failed: ${res.error || 'unknown error'}`);
+        process.exitCode = 1;
+      } else if (res.hasUpdate) {
+        console.log(`[!] Update available: v${res.currentVersion} -> v${res.latestVersion}`);
+        console.log(`    Release: ${res.releaseUrl}`);
+        console.log(`    Upgrade: npm run update  (or ${res.installCommand})`);
+      } else {
+        console.log(`[✓] AGY Claude Style v${res.currentVersion} is up to date.`);
+      }
+    } else if (opts.command === 'update') {
+      if (!res.ok) {
+        console.error(`[!] Update failed: ${res.error || 'unknown error'}`);
+        process.exitCode = 1;
+      } else if (res.alreadyLatest) {
+        console.log(`[✓] AGY Claude Style v${res.updatedVersion} is already up to date.`);
+      } else {
+        console.log(`[✓] Updated AGY Claude Style v${res.previousVersion} -> v${res.updatedVersion} (${res.fileCount} files)`);
+        console.log(res.lsHotReloaded
+          ? '    Hot-reloaded via running Antigravity Language Server.'
+          : '    Updated on disk (takes effect on Antigravity launch).');
+      }
     } else if (opts.command === 'uninstall') {
       console.log(`[✓] Uninstalled AGY Claude Style from ${res.installDir}`);
       console.log(`    User data preserved at ${res.pluginDataDir}`);
@@ -467,4 +631,6 @@ export {
   runInstall,
   runUninstall,
   getStatus,
+  runCheckUpdate,
+  runUpdate,
 };
