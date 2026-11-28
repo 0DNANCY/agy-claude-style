@@ -11,6 +11,7 @@ import { createQuotaTracker } from './lib/quota-tracker.mjs';
 import { fetchSshRemoteRequests, listConfiguredSshHosts } from './lib/ssh-remote.mjs';
 import { fetchSubagentTree } from './lib/subagent-tree.mjs';
 import { SidecarOwner } from './lib/sidecar-owner.mjs';
+import { createWallpaperStore } from './lib/wallpaper-store.mjs';
 import {
   buildProxyLaunchOptions,
   detectHostProxyRuntime,
@@ -23,6 +24,7 @@ const require = createRequire(import.meta.url);
 const cdp = require('../../cdp.js');
 const { injectOnce, createWatchController } = require('../../inject.js');
 const lifecycle = require('../../plugin/host-lifecycle.js');
+const { createWallpaperMediaServer } = require('../../wallpaper-server.js');
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const HTML_PATH = join(__dirname, 'index.html');
@@ -612,6 +614,85 @@ async function startPanelSidecar() {
     }
   }), 'POST');
 
+  const wallpaperDir = join(cdp.STATE_DIR, 'wallpapers');
+  const wallpaperStore = createWallpaperStore({ wallpapersDir: wallpaperDir });
+  const panelWallpaperServer = createWallpaperMediaServer({ wallpapersDir: wallpaperDir });
+
+  async function attachWallpaperPreviews(items) {
+    if (!items.length) return [];
+    let srvInfo = null;
+    try {
+      srvInfo = await panelWallpaperServer.ensureStarted();
+    } catch {}
+    return items.map((it) => {
+      const meta = panelWallpaperServer.resolveActiveMeta(it.name);
+      return {
+        ...it,
+        previewUrl: srvInfo && meta ? meta.httpUrl : '',
+      };
+    });
+  }
+
+  app.api('/api/wallpaper/list', guardApi(async () => {
+    const items = await attachWallpaperPreviews(wallpaperStore.list());
+    return { ok: true, items, activeFile: cdp.readConfig().wpFile || '' };
+  }), 'GET');
+
+  app.api('/api/wallpaper/upload-chunk', guardApi(async (data) => {
+    try {
+      const result = wallpaperStore.uploadChunk(data || {});
+      if (!result.done) return result;
+      const cur = cdp.readConfig();
+      const updates = { wpFile: result.item.name };
+      if (cur.wpMode === 'off') updates.wpMode = 'global';
+      const cfgRes = await applyConfigUpdate({ updates });
+      const items = await attachWallpaperPreviews(wallpaperStore.list());
+      return { ok: true, done: true, item: result.item, items, config: cfgRes.config };
+    } catch (err) {
+      return new Response(JSON.stringify({ ok: false, error: err?.message || String(err) }), {
+        status: 400,
+        contentType: 'application/json',
+      });
+    }
+  }), 'POST');
+
+  app.api('/api/wallpaper/import-path', guardApi(async (data) => {
+    try {
+      const result = wallpaperStore.importFromPath(data?.filePath || '');
+      const cur = cdp.readConfig();
+      const updates = { wpFile: result.item.name };
+      if (cur.wpMode === 'off') updates.wpMode = 'global';
+      const cfgRes = await applyConfigUpdate({ updates });
+      const items = await attachWallpaperPreviews(wallpaperStore.list());
+      return { ok: true, item: result.item, items, config: cfgRes.config };
+    } catch (err) {
+      return new Response(JSON.stringify({ ok: false, error: err?.message || String(err) }), {
+        status: 400,
+        contentType: 'application/json',
+      });
+    }
+  }), 'POST');
+
+  app.api('/api/wallpaper/delete', guardApi(async (data) => {
+    try {
+      const fileName = String(data?.name || '').trim();
+      const delRes = wallpaperStore.remove(fileName);
+      const cur = cdp.readConfig();
+      if (cur.wpFile === fileName) {
+        const nextFile = delRes.remaining?.[0]?.name || '';
+        const updates = nextFile ? { wpFile: nextFile } : { wpFile: '', wpMode: 'off' };
+        await applyConfigUpdate({ updates });
+      }
+      const items = await attachWallpaperPreviews(wallpaperStore.list());
+      return { ok: true, items, config: cdp.readConfig() };
+    } catch (err) {
+      return new Response(JSON.stringify({ ok: false, error: err?.message || String(err) }), {
+        status: 400,
+        contentType: 'application/json',
+      });
+    }
+  }), 'POST');
+
   app.api('/api/proxy/test', guardApi(async (data) => {
     const cfg = cdp.readConfig();
     const rawUrl = String(data?.proxyUrl || cfg.proxyUrl || '').trim();
@@ -802,6 +883,7 @@ async function startPanelSidecar() {
           }
         }
       }
+      await panelWallpaperServer.close().catch(() => {});
       await app.close();
     } catch {
       // ignore close errors

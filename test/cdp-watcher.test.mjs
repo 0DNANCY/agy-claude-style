@@ -168,6 +168,7 @@ function stageTempRuntimeDir() {
   const files = [
     'cdp.js',
     'inject.js',
+    'wallpaper-server.js',
     'style.css',
     'config.example.json',
     ...cdp.RUNTIME_PARTS,
@@ -420,7 +421,7 @@ test('createWatchController attaches to mock CDP, creates .watch.pid, and cleans
   }
 });
 
-test('obsolete external scripts and removed CLI scripts are absent from repository', () => {
+test('obsolete external scripts and legacy binary installers are absent from repository', () => {
   const obsolete = [
     'remove.js',
     'launch.bat',
@@ -434,16 +435,17 @@ test('obsolete external scripts and removed CLI scripts are absent from reposito
     'remove.sh',
     'autostart-on.bat',
     'autostart-off.bat',
-    'installer/watcher/Program.cs',
-    'installer/common/CdpClient.cs',
-    'installer/macos/Watcher/main.swift',
-    'installer/macos/Common/CdpClient.swift',
+    'installer',
+    'scripts/build-installer.mjs',
+    'scripts/build-macos.mjs',
+    'test/installer.test.mjs',
+    'test/macos-installer.test.mjs',
   ];
   for (const rel of obsolete) {
     assert.equal(fs.existsSync(path.join(ROOT_DIR, rel)), false, `${rel} must be deleted`);
   }
   const pkg = JSON.parse(fs.readFileSync(path.join(ROOT_DIR, 'package.json'), 'utf8'));
-  assert.deepEqual(Object.keys(pkg.scripts).sort(), ['build:installer', 'build:macos', 'test']);
+  assert.deepEqual(Object.keys(pkg.scripts).sort(), ['build:package', 'setup', 'status', 'test', 'uninstall']);
 });
 
 test('buildRefreshExpression produces lightweight config refresh payload matching codeHash', () => {

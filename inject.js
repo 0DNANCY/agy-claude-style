@@ -3,10 +3,54 @@
 const fs = require('fs');
 const path = require('path');
 let cdpApi = require('./cdp');
+const { createWallpaperMediaServer, isSafeWallpaperFileName } = require('./wallpaper-server');
 const {
   PID_FILE,
   SETTING_BINDING,
 } = cdpApi;
+
+function getWallpapersDir() {
+  return path.join(cdpApi.STATE_DIR || __dirname, 'wallpapers');
+}
+
+function readWallpaperChunkForCdp(fileName, offset = 0, length = 524288) {
+  const wallpapersDir = getWallpapersDir();
+  if (!isSafeWallpaperFileName(fileName) || !fs.existsSync(wallpapersDir)) {
+    return { ok: false, error: 'Wallpaper not found' };
+  }
+  const realRoot = fs.realpathSync(wallpapersDir);
+  const abs = path.resolve(realRoot, fileName);
+  if (!abs.startsWith(realRoot + path.sep) || !fs.existsSync(abs)) {
+    return { ok: false, error: 'Wallpaper not found' };
+  }
+  const st = fs.statSync(abs);
+  const safeOffset = Math.max(0, Math.min(st.size, Number(offset) || 0));
+  const safeLen = Math.max(1, Math.min(524288, Number(length) || 524288));
+  const toRead = Math.max(0, Math.min(safeLen, st.size - safeOffset));
+  const ext = path.extname(fileName).toLowerCase();
+  const { WALLPAPER_MIME_BY_EXT } = require('./wallpaper-server');
+  const mime = WALLPAPER_MIME_BY_EXT[ext] || 'application/octet-stream';
+  if (toRead === 0) {
+    return { ok: true, base64: '', offset: safeOffset, nextOffset: safeOffset, totalSize: st.size, mime, eof: true };
+  }
+  const fd = fs.openSync(abs, 'r');
+  try {
+    const buf = Buffer.alloc(toRead);
+    const bytesRead = fs.readSync(fd, buf, 0, toRead, safeOffset);
+    const nextOffset = safeOffset + bytesRead;
+    return {
+      ok: true,
+      base64: buf.subarray(0, bytesRead).toString('base64'),
+      offset: safeOffset,
+      nextOffset,
+      totalSize: st.size,
+      mime,
+      eof: nextOffset >= st.size,
+    };
+  } finally {
+    fs.closeSync(fd);
+  }
+}
 
 const LOG_FILE = path.join(cdpApi.STATE_DIR || __dirname, 'watch.log');
 const POLL_INTERVAL_MS = Math.max(
@@ -65,7 +109,12 @@ async function injectOnce() {
     typeof cdpApi.buildConfigScriptExpression === 'function'
       ? cdpApi.buildConfigScriptExpression(cfg, codeHash)
       : null;
-  const expr = cdpApi.buildInjectExpression(cfg);
+  let wallpaperMeta = null;
+  if (cfg.wpMode && cfg.wpMode !== 'off' && cfg.wpFile) {
+    const tmpSrv = createWallpaperMediaServer({ wallpapersDir: getWallpapersDir() });
+    wallpaperMeta = tmpSrv.resolveActiveMeta(cfg.wpFile);
+  }
+  const expr = cdpApi.buildInjectExpression(cfg, { wallpaperMeta });
   for (const page of pages) {
     const session = await cdpApi.CdpSession.connect(page.webSocketDebuggerUrl);
     try {
@@ -273,7 +322,19 @@ async function createWatchController({
   let currentConfig = cdpApi.readConfig();
   let currentCodeHash = cdpApi.computeHash(cdpApi.readRuntimeBundle());
   let currentCssHash = cdpApi.computeHash(cdpApi.readCss());
-  let expr = cdpApi.buildInjectExpression(currentConfig);
+  const wpMediaServer = createWallpaperMediaServer({ wallpapersDir: getWallpapersDir() });
+  async function resolveCurrentWallpaperMeta(cfgObj) {
+    const targetCfg = cfgObj || currentConfig;
+    if (!targetCfg || targetCfg.wpMode === 'off' || !targetCfg.wpFile) return null;
+    if (!wpMediaServer.getPort()) {
+      try {
+        await wpMediaServer.ensureStarted();
+      } catch {}
+    }
+    return wpMediaServer.resolveActiveMeta(targetCfg.wpFile);
+  }
+  let currentWpMeta = await resolveCurrentWallpaperMeta(currentConfig);
+  let expr = cdpApi.buildInjectExpression(currentConfig, { wallpaperMeta: currentWpMeta });
   let configExpr = cdpApi.buildConfigScriptExpression(currentConfig, currentCodeHash);
   let shuttingDown = false;
   let tickTimer = null;
@@ -325,12 +386,18 @@ async function createWatchController({
           .map((entry) => entry.session.evaluate(cdpApi.REMOVE_EXPRESSION).catch(() => {}))
       );
     }
+    await wpMediaServer.close().catch(() => {});
     closeAllSessions();
     releasePidFile();
     process.removeListener('exit', releasePidFile);
   }
 
   async function apply(entry, opts = {}) {
+    if (opts.wpMeta !== undefined) {
+      await entry.session
+        .evaluate(`window.__agClaudeStyle?.setWallpaperMeta?.(${JSON.stringify(opts.wpMeta)})`)
+        .catch(() => {});
+    }
     return applyPageScripts(entry, { expr, configExpr, refreshOnly: opts.refreshOnly });
   }
 
@@ -383,6 +450,24 @@ async function createWatchController({
                     .catch(() => {});
                 }
               });
+            return;
+          }
+          if (key === '__wallpaperRead' && value && typeof value === 'object') {
+            const reqId = typeof value.reqId === 'string' ? value.reqId : '';
+            const reply = (() => {
+              try {
+                return readWallpaperChunkForCdp(value.file, value.offset, value.length);
+              } catch (err) {
+                return { ok: false, error: err?.message || String(err) };
+              }
+            })();
+            if (reqId) {
+              session
+                .send('Runtime.evaluate', {
+                  expression: `window.__agCsWallpaperChunkReply?.(${JSON.stringify(reqId)}, ${JSON.stringify(reply)})`,
+                })
+                .catch(() => {});
+            }
             return;
           }
           if (key === '__windowAction' && value === 'hide') {
@@ -642,8 +727,9 @@ async function createWatchController({
           nextCssHash === currentCssHash;
         currentCodeHash = nextCodeHash;
         currentCssHash = nextCssHash;
+        currentWpMeta = await resolveCurrentWallpaperMeta(currentConfig);
         if (!refreshOnly) {
-          expr = cdpApi.buildInjectExpression(currentConfig);
+          expr = cdpApi.buildInjectExpression(currentConfig, { wallpaperMeta: currentWpMeta });
         }
         configExpr = cdpApi.buildConfigScriptExpression(currentConfig, currentCodeHash);
       } catch (err) {
@@ -654,7 +740,7 @@ async function createWatchController({
       for (const entry of attached.values()) {
         if (!entry) continue;
         try {
-          await apply(entry, { refreshOnly });
+          await apply(entry, { refreshOnly, wpMeta: currentWpMeta });
           n++;
         } catch {}
       }

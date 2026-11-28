@@ -1948,12 +1948,12 @@ test('v2.2.0 powertools fixes: cdp validator, extensions-dock XSS-free render, s
   });
   assert.match(String(sshRes.error || ''), /ENOENT ssh/);
 
-  // macOS installer & build script recursive features/ support
+  // Cross-platform one-liner & package builder alignment
   const repoRoot = path.dirname(require.resolve('../cdp.js'));
-  const buildMacosSrc = fs.readFileSync(path.join(repoRoot, 'scripts', 'build-macos.mjs'), 'utf8');
-  const swiftSetupSrc = fs.readFileSync(path.join(repoRoot, 'installer', 'macos', 'Setup', 'main.swift'), 'utf8');
-  assert.match(buildMacosSrc, /mkdirSync\(path\.dirname\(destPath\), \{ recursive: true \}\)/);
-  assert.match(swiftSetupSrc, /func copyPayloadDirectory\(/);
+  const buildCommonSrc = fs.readFileSync(path.join(repoRoot, 'scripts', 'build-common.mjs'), 'utf8');
+  const cliSrc = fs.readFileSync(path.join(repoRoot, 'scripts', 'cli.mjs'), 'utf8');
+  assert.match(buildCommonSrc, /collectPluginPayloadFiles/);
+  assert.match(cliSrc, /runInstall/);
 });
 
 test('sidebar-polish: tags tree hierarchy, links active parent, folds empty projects on demand, and cleans up on destroy', () => {

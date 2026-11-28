@@ -66,6 +66,7 @@
   const crabAssets = globalThis.__agCsCrabAssets;
   const effortCore = globalThis.__agCsEffortCore;
   const perfAssets = globalThis.__agCsPerfAssets;
+  const themeEngine = globalThis.__agCsThemeEngine;
   const i18nCore = globalThis.__agCsI18nCore;
   const i18nLocales = globalThis.__agCsLocales;
   const domTranslator =
@@ -206,7 +207,8 @@
   function applyRootAttrs() {
     const html = document.documentElement;
     if (!html) return;
-    const palette = cfg.palette === 'claude' ? 'claude' : cfg.palette === 'host' ? 'host' : 'obsidian';
+    const allowedPalettes = themeEngine?.ALL_PALETTE_IDS || ['obsidian', 'claude', 'nord', 'catppuccin', 'rosepine', 'tokyo', 'dracula', 'emerald', 'custom', 'host'];
+    const palette = allowedPalettes.includes(cfg.palette) ? cfg.palette : 'obsidian';
     const lang = getLang();
     setAttrIfChanged(html, 'data-ag-cs-style', '1');
     setAttrIfChanged(html, 'data-ag-cs-palette', palette);
@@ -247,9 +249,16 @@
     if (perfBd !== 'page' || effortCore.normalizeEffortStyle(cfg.effortSliderStyle) !== 'liangwufeng') {
       unmountPerfBackdrop();
     }
-    const dark = isDarkTheme();
+    const hostDark = isDarkTheme();
+    const dark = themeEngine && typeof themeEngine.resolveEffectiveDark === 'function'
+      ? themeEngine.resolveEffectiveDark(cfg, hostDark)
+      : hostDark;
     setAttrIfChanged(html, 'data-ag-cs-theme', dark ? 'dark' : 'light');
-    const themeKey = `${palette}|${dark ? 'd' : 'l'}`;
+    if (themeEngine && typeof themeEngine.syncThemeStyle === 'function') {
+      themeEngine.syncThemeStyle(document, { ...cfg, palette }, hostDark);
+    }
+    const customSig = palette === 'custom' && cfg.customTheme ? JSON.stringify(cfg.customTheme) : '';
+    const themeKey = `${palette}|${dark ? 'd' : 'l'}|${customSig}`;
     if (themeKey !== lastThemeKey) {
       lastThemeKey = themeKey;
       if (rippleMount && typeof rippleMount.refreshTheme === 'function') {
@@ -5186,11 +5195,28 @@
       palette: {
         key: 'palette',
         title: ui.setPaletteTitle || 'Color Palette',
-        desc: ui.setPaletteDesc || 'Pick Studio palette or follow host.',
+        desc: ui.setPaletteDesc || 'Pick a built-in theme preset, customize your own palette in the Control Room, or follow host.',
         opts: [
           ['obsidian', ui.optObsidian || 'Obsidian'],
           ['claude', 'Claude'],
+          ['nord', 'Nord'],
+          ['catppuccin', 'Catppuccin'],
+          ['rosepine', 'Rosé Pine'],
+          ['tokyo', 'Tokyo Night'],
+          ['dracula', 'Dracula'],
+          ['emerald', 'Emerald'],
+          ['custom', ui.optCustom || 'Custom'],
           ['host', ui.optHost || 'Host'],
+        ],
+      },
+      wpMode: {
+        key: 'wpMode',
+        title: ui.setWpModeTitle || 'Dynamic Wallpaper',
+        desc: ui.setWpModeDesc || 'Render local video/image wallpaper behind the window or home page (manage media in Claude Style Control Room).',
+        opts: [
+          ['off', ui.offLabel || 'Off'],
+          ['global', ui.optWpGlobal || 'Global'],
+          ['home', ui.optWpHome || 'Home'],
         ],
       },
       logoInk: {
@@ -5543,7 +5569,7 @@
       {
         id: 'appearance',
         title: ui.grpAppearance || 'Appearance & Layout',
-        keys: ['language', 'homeLayout', 'palette', 'glassEffect', 'logoInk', 'sidebarRestyle', 'sidebarCompact', 'sidebarFoldEmpty', 'composerRestyle', 'compactChatLayout'],
+        keys: ['language', 'homeLayout', 'palette', 'glassEffect', 'wpMode', 'logoInk', 'sidebarRestyle', 'sidebarCompact', 'sidebarFoldEmpty', 'composerRestyle', 'compactChatLayout'],
       },
       {
         id: 'interaction',
@@ -5710,7 +5736,7 @@
   // Self-contained features live in ui-<feature>.js and register on
   // globalThis.__agCsFeatures.<name> = { create(ctx) }. Each instance may expose
   // sync(), onClick(ev), onKeyDown(ev) -> boolean (consumed), onEscape(ev, info), destroy().
-  const FEATURE_ORDER = ['rewind', 'branchEdit', 'fileMenu', 'taskProgress', 'extensionsDock', 'hideOnClose', 'unreadTitle', 'stageCollapse', 'sidebarPolish'];
+  const FEATURE_ORDER = ['wallpaper', 'rewind', 'branchEdit', 'fileMenu', 'taskProgress', 'extensionsDock', 'hideOnClose', 'unreadTitle', 'stageCollapse', 'sidebarPolish'];
   const featureCtx = {
     getCfg: () => cfg,
     getUi: () => uiText(getLang()),
@@ -5755,7 +5781,7 @@
       el.closest(
         '.ag-cs-home-panel-seat, .ag-cs-ripple-host, .ag-cs-crab, .ag-cs-inline-stats, .ag-cs-quota-ring, .ag-cs-context-ring, .ag-cs-ctx-popover, .ag-cs-effort-popover, .ag-cs-perf-backdrop, .ag-cs-smooth-caret, .ag-cs-turn-bar, .ag-cs-hud-top-bar, .ag-cs-hud-bottom-bar, .ag-cs-hud-footer-chip, #' +
           SETTINGS_SEC_ID +
-          ', #ag-claude-style-css' +
+          ', #ag-claude-style-css, #ag-claude-style-theme-vars, .ag-cs-wallpaper-host' +
           (FEATURE_OWN_SELECTORS.length ? ', ' + FEATURE_OWN_SELECTORS.join(', ') : '')
       )
     );
@@ -6597,6 +6623,11 @@
       const data = (cid && activeTrajCache.get(cid)?.data) || card?._agCsLastData || null;
       if (a) openContextPopover(a, data, tab || 'breakdown');
     },
+    setWallpaperMeta(meta) {
+      globalThis.__agCsWallpaperMeta = meta || null;
+      forEachFeature('onWallpaperMeta', meta || null);
+      scheduleSync();
+    },
     getState() {
       return {
         cfg: { ...cfg },
@@ -6620,6 +6651,7 @@
         unmountPanelSeat,
         unmountCrab,
         restoreGreetings,
+        () => themeEngine && typeof themeEngine.removeThemeStyle === 'function' && themeEngine.removeThemeStyle(document),
         () => forEachFeature('destroy'),
         () => domTranslator && typeof domTranslator.destroy === 'function' && domTranslator.destroy(),
       ]) {
@@ -6643,7 +6675,7 @@
       });
       document
         .querySelectorAll(
-          '.ag-cs-inline-stats, .ag-cs-quota-ring, .ag-cs-context-ring, .ag-cs-hud-top-bar, .ag-cs-hud-bottom-bar, .ag-cs-hud-rim-progress, .ag-cs-hud-footer-chip, .ag-cs-perf-backdrop, .ag-cs-rewind-bar, .ag-cs-rewind-notice, .ag-cs-rewind-backdrop, .ag-cs-branch-btn, .ag-cs-edit-btn, .ag-cs-inline-edit, .ag-cs-file-menu, .ag-cs-file-submenu, .ag-cs-progress-card, .ag-cs-action-toast, .ag-cs-stage-bar, .ag-cs-stage-badge, .ag-cs-stage-meta-inline, .ag-cs-ext-header-bar, .ag-cs-ext-sidebar-sec, .ag-cs-ext-popover, .ag-cs-ext-tooltip, #' + SETTINGS_SEC_ID
+          '.ag-cs-wallpaper-host, #ag-claude-style-theme-vars, .ag-cs-inline-stats, .ag-cs-quota-ring, .ag-cs-context-ring, .ag-cs-hud-top-bar, .ag-cs-hud-bottom-bar, .ag-cs-hud-rim-progress, .ag-cs-hud-footer-chip, .ag-cs-perf-backdrop, .ag-cs-rewind-bar, .ag-cs-rewind-notice, .ag-cs-rewind-backdrop, .ag-cs-branch-btn, .ag-cs-edit-btn, .ag-cs-inline-edit, .ag-cs-file-menu, .ag-cs-file-submenu, .ag-cs-progress-card, .ag-cs-action-toast, .ag-cs-stage-bar, .ag-cs-stage-badge, .ag-cs-stage-meta-inline, .ag-cs-ext-header-bar, .ag-cs-ext-sidebar-sec, .ag-cs-ext-popover, .ag-cs-ext-tooltip, #' + SETTINGS_SEC_ID
         )
         .forEach((el) => el.remove());
       const html = document.documentElement;
@@ -6653,6 +6685,7 @@
           'data-ag-cs-palette',
           'data-ag-cs-theme',
           'data-ag-cs-glass',
+          'data-ag-cs-wp',
           'data-ag-cs-crab',
           'data-ag-cs-home',
           'data-ag-cs-composer',
@@ -6668,6 +6701,11 @@
           'data-ag-cs-cjk',
         ]) {
           html.removeAttribute(attr);
+        }
+        if (html.style && typeof html.style.removeProperty === 'function') {
+          for (const cssVar of ['--ag-cs-wp-opacity', '--ag-cs-wp-blur', '--ag-cs-wp-scrim', '--ag-cs-wp-surface-alpha']) {
+            html.style.removeProperty(cssVar);
+          }
         }
       }
     },
