@@ -56,6 +56,10 @@ test('cdp.js validates all new palettes, customTheme hex tokens, wallpaper setti
   assert.equal(cdp.validateConfigSetting('wpFile', '../secret.mp4'), false);
   assert.equal(cdp.validateConfigSetting('wpFile', 'sub/demo.mp4'), false);
 
+  assert.equal(cdp.DEFAULT_CONFIG.wpRippleOpacity, 35);
+  assert.equal(cdp.validateConfigSetting('wpRippleOpacity', 0), true);
+  assert.equal(cdp.validateConfigSetting('wpRippleOpacity', 35), true);
+  assert.equal(cdp.validateConfigSetting('wpRippleOpacity', 101), false);
   assert.equal(cdp.validateConfigSetting('wpOpacity', 50), true);
   assert.equal(cdp.validateConfigSetting('wpOpacity', 200), false);
   assert.equal(cdp.validateConfigSetting('wpBlur', 16), true);
@@ -63,6 +67,9 @@ test('cdp.js validates all new palettes, customTheme hex tokens, wallpaper setti
   assert.equal(cdp.validateConfigSetting('wpSurfaceAlpha', 72), true);
   assert.equal(cdp.validateConfigSetting('wpRate', 125), true);
   assert.equal(cdp.validateConfigSetting('wpPauseBlur', false), true);
+  const resetExpr = cdp.buildResetExpression(cdp.DEFAULT_CONFIG, 'abc');
+  assert.ok(resetExpr.includes('resetLocalOverrides'));
+  assert.ok(resetExpr.includes('agClaudeStyle.settings.v1'));
 
   const hash = cdp.computeHash(cdp.readRuntimeBundle());
   const defaultRefresh = cdp.buildRefreshExpression(cdp.DEFAULT_CONFIG, hash);
@@ -295,6 +302,7 @@ test('wallpaper feature mounts global/home scopes, pauses video on blur, resumes
   const cfg = {
     wpMode: 'global',
     wpFile: 'wp-demo.mp4',
+    wpRippleOpacity: 35,
     wpOpacity: 40,
     wpBlur: 6,
     wpDim: 20,
@@ -318,6 +326,7 @@ test('wallpaper feature mounts global/home scopes, pauses video on blur, resumes
   inst.sync();
   assert.equal(html.getAttribute('data-ag-cs-wp'), 'global');
   assert.equal(html.style._p['--ag-cs-wp-surface-alpha'], '72%');
+  assert.equal(html.style._p['--ag-cs-wp-ripple-opacity'], '0.35');
   assert.equal(body.children[0].className, 'ag-cs-wallpaper-host');
   const videoEl = body.children[0].children[0];
   assert.equal(videoEl.tagName, 'VIDEO');

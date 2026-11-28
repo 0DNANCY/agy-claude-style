@@ -294,6 +294,7 @@ npm run setup      # 部署并启用原生插件（npm run status 查看状态�
 | `proxyForceHttp1` | `boolean` | `true` | 🔌 注入 `GODEBUG=http2client=0` 避免部分代理链路下的 HTTP/2 断流 |
 | `proxyColdStartAlert` | `boolean` | `true` | 🚨 代理未就绪导致连接异常时给出冷启动提醒 |
 | `autoRelaunchWithCdp` | `boolean` | `true` | 🔄 Antigravity 2.33.0+ 运行中未开 CDP 时自动温和重启并附加 `--remote-debugging-port=0` |
+| `autoCheckUpdate` | `boolean` | `true` | 🆕 打开控制室或外观设置时按 6 小时周期静默检查 GitHub 最新 Release（支持面板内一键热升级，CLI 可运行 `npm run check-update` / `npm run update`） |
 | `pollIntervalMs` | `integer`（`250`–`60000`，UI 下限 `1000`） | `2500` | ⏱️ UI 遥测轮询间隔（毫秒） |
 
 ### 🛡️ 热更新、配置合并与宿主协同安全机制
@@ -381,9 +382,10 @@ npm run uninstall
 
 ### 🚀 自动构建与发布 Release
 
-仓库已配置 GitHub Actions 工作流（[_build-and-test.yml](.github/workflows/_build-and-test.yml)、[release.yml](.github/workflows/release.yml) 与 [ci.yml](.github/workflows/ci.yml)）：
-- **推送版本标签自动发布**：推送形如 `v4.0.0` 的标签（`git tag v4.0.0 && git push origin v4.0.0`），会自动在 `ubuntu-latest`、`windows-latest` 与 `macos-latest` 上完成全量测试、打包 `agy-claude-style-v4.0.0.zip`（附带 `SHA256SUMS.txt`）并自动创建 GitHub Release（同时抽取 [CHANGELOG.md](CHANGELOG.md) 对应版本日志）。
-- **手动触发**：也可以在 GitHub 仓库 **Actions → Release → Run workflow** 手动触发打包并发布。
+仓库已配置极简纯源码 GitHub Actions 工作流（[ci.yml](.github/workflows/ci.yml) 与 [release.yml](.github/workflows/release.yml)）：
+- **PR / 主分支 CI**：在 `ubuntu-latest` 上运行全量 `npm test` 并校验源码包 `npm run build:package` 打包通过。
+- **推送版本标签自动发布**：推送形如 `v4.1.0` 的标签（`git tag v4.1.0 && git push origin v4.1.0`），会在单台 `ubuntu-latest` 上跑通测试后直接打包纯源码归档 `agy-claude-style-v4.1.0.zip`（附带 `SHA256SUMS.txt`）并自动创建 GitHub Release（同时抽取 [CHANGELOG.md](CHANGELOG.md) 对应版本日志）。
+- **手动触发**：也可以在 GitHub 仓库 **Actions → Release → Run workflow** 手动触发源码打包并发布。
 
 ---
 

@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag (e.g. v4.0.0). Leave empty to use v<package.json version>.'
+        description: 'Release tag (e.g. v4.1.0). Leave empty to use v<package.json version>.'
         required: false
         type: string
       prerelease:
@@ -26,28 +26,23 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  prepare:
-    name: Resolve Release Metadata
+  release:
+    name: Pack Source & Publish Release
     runs-on: ubuntu-latest
-    timeout-minutes: 5
-    outputs:
-      tag: ${{ steps.meta.outputs.tag }}
-      version: ${{ steps.meta.outputs.version }}
-      prerelease: ${{ steps.meta.outputs.prerelease }}
-      draft: ${{ steps.meta.outputs.draft }}
+    timeout-minutes: 8
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: '22'
 
-      - name: Determine release tag and flags
+      - name: Resolve release metadata
         id: meta
         env:
           INPUT_TAG: ${{ inputs.tag }}
@@ -55,88 +50,68 @@ jobs:
           INPUT_DRAFT: ${{ inputs.draft }}
         run: |
           set -euo pipefail
-          PKG_VER=$(node -p "require('./package.json').version")
-          if [ "${{ github.event_name }}" = "push" ]; then
-            TAG="${{ github.ref_name }}"
-          elif [ -n "$INPUT_TAG" ]; then
-            TAG="$INPUT_TAG"
-          else
-            TAG="v${PKG_VER}"
-          fi
+          eval "$(node --input-type=module -e "
+            import { createRequire } from 'node:module';
+            import { normalizeVersion, getArtifactNames } from './scripts/build-common.mjs';
+            const require = createRequire(import.meta.url);
+            const pkg = require('./package.json');
+            const eventName = process.env.GITHUB_EVENT_NAME || '';
+            const refName = process.env.GITHUB_REF_NAME || '';
+            const inputTag = (process.env.INPUT_TAG || '').trim();
+            const tag = eventName === 'push' ? refName : (inputTag || ('v' + pkg.version));
+            if (!/^v[0-9A-Za-z._-]+$/.test(tag)) {
+              console.error('::error::Invalid release tag: ' + tag);
+              process.exit(1);
+            }
+            const ver = normalizeVersion(tag);
+            const names = getArtifactNames(ver);
+            if (ver !== pkg.version) {
+              console.error('::warning::Release version (' + ver + ') differs from package.json version (' + pkg.version + ').');
+            }
+            const prerelease = process.env.INPUT_PRERELEASE === 'true' || tag.includes('-') ? 'true' : 'false';
+            const draft = process.env.INPUT_DRAFT === 'true' ? 'true' : 'false';
+            console.log('TAG=' + JSON.stringify(tag));
+            console.log('VERSION=' + JSON.stringify(names.version));
+            console.log('PKG_FILE=' + JSON.stringify(names.pluginZip));
+            console.log('PRERELEASE=' + JSON.stringify(prerelease));
+            console.log('DRAFT=' + JSON.stringify(draft));
+          ")"
+          {
+            echo "tag=$TAG"
+            echo "version=$VERSION"
+            echo "package_file=$PKG_FILE"
+            echo "prerelease=$PRERELEASE"
+            echo "draft=$DRAFT"
+          } >> "$GITHUB_OUTPUT"
+          echo "Release tag=$TAG version=$VERSION package_file=$PKG_FILE prerelease=$PRERELEASE draft=$DRAFT"
 
-          if [[ ! "$TAG" =~ ^v[0-9A-Za-z._-]+$ ]]; then
-            echo "::error::Invalid release tag '$TAG'. Expected a tag starting with 'v' (e.g. v4.0.0)."
-            exit 1
-          fi
+      - name: Run test suite
+        run: npm test
 
-          VERSION="${TAG#v}"
-          if [ "$VERSION" != "$PKG_VER" ]; then
-            echo "::warning::Release version ($VERSION) differs from package.json version ($PKG_VER)."
-          fi
-
-          if [ "$INPUT_PRERELEASE" = "true" ] || [[ "$TAG" == *-* ]]; then
-            PRERELEASE="true"
-          else
-            PRERELEASE="false"
-          fi
-
-          if [ "$INPUT_DRAFT" = "true" ]; then
-            DRAFT="true"
-          else
-            DRAFT="false"
-          fi
-
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "prerelease=$PRERELEASE" >> "$GITHUB_OUTPUT"
-          echo "draft=$DRAFT" >> "$GITHUB_OUTPUT"
-
-  build-and-test:
-    name: Test & Build Package
-    needs: prepare
-    uses: ./.github/workflows/_build-and-test.yml
-    with:
-      version: ${{ needs.prepare.outputs.version }}
-      artifact_retention_days: 14
-
-  release:
-    name: Publish GitHub Release
-    needs: [prepare, build-and-test]
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      contents: write
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Download compiled release artifact
-        uses: actions/download-artifact@v4
-        with:
-          path: release-assets
-          merge-multiple: true
-
-      - name: Verify package and generate SHA256 checksums
+      - name: Pack plugin source zip & SHA256
         env:
-          PKG_FILE: ${{ needs.build-and-test.outputs.package_file }}
+          VERSION: ${{ steps.meta.outputs.version }}
+          PKG_FILE: ${{ steps.meta.outputs.package_file }}
         run: |
           set -euo pipefail
+          mkdir -p release-assets
+          node scripts/build-package.mjs --version "$VERSION" --out "release-assets/$PKG_FILE"
           cd release-assets
-          test -f "$PKG_FILE" || { echo "::error::Missing package artifact: $PKG_FILE"; exit 1; }
-          ls -lh "$PKG_FILE"
+          test -f "$PKG_FILE" || { echo "::error::Missing package archive: $PKG_FILE"; exit 1; }
           sha256sum "$PKG_FILE" > SHA256SUMS.txt
+          ls -lh "$PKG_FILE"
           cat SHA256SUMS.txt
 
       - name: Prepare Release notes
         env:
-          TAG: ${{ needs.prepare.outputs.tag }}
-          PKG_FILE: ${{ needs.build-and-test.outputs.package_file }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          PKG_FILE: ${{ steps.meta.outputs.package_file }}
         run: |
           set -euo pipefail
           cat > release-notes.md <<EOF
           ## ⚡ 一串命令极速安装 / One-Liner Install (Zero Dependencies)
 
-          从 \`v4.0.0\` 起全面弃用 \`.exe\` / \`.dmg\` 二进制安装器，采用**零外部依赖一键命令**直接部署 Antigravity 原生插件至 \`~/.gemini/config/plugins/agy-claude-style\` 并自动热启用（无需预装 Git 或外部 Node.js，升级自动保留 \`config.json\` 与动态壁纸库）：
+          纯源码轻量归档包，通过零外部依赖一键命令直接部署 Antigravity 原生插件至 \`~/.gemini/config/plugins/agy-claude-style\` 并自动热启用（升级自动保留 \`config.json\` 与动态壁纸库）：
 
           - **Windows (PowerShell)**：
             \`\`\`powershell
@@ -155,29 +130,22 @@ jobs:
           cat release-assets/SHA256SUMS.txt >> release-notes.md
           echo '```' >> release-notes.md
 
-          if [ -f CHANGELOG.md ] && command -v python3 >/dev/null 2>&1; then
-            if python3 - "$TAG" <<'PY' > changelog-section.md; then
-          import re
-          import sys
-
-          tag = sys.argv[1].strip()
-          with open('CHANGELOG.md', 'r', encoding='utf-8') as f:
-              text = f.read().replace('\r\n', '\n')
-
-          pattern = re.compile(r'^##\s+\[?' + re.escape(tag) + r'\]?(?:\s+-\s+.*|\s*)$', re.MULTILINE)
-          m = pattern.search(text)
-          if not m:
-              sys.exit(1)
-
-          start = m.end()
-          nxt = re.search(r'^##\s+', text[start:], re.MULTILINE)
-          body = text[start:start + nxt.start()] if nxt else text[start:]
-          body = re.sub(r'\n+---\s*$', '', body.strip())
-          if not body:
-              sys.exit(1)
-
-          print(body)
-          PY
+          if [ -f CHANGELOG.md ]; then
+            if node --input-type=module - "$TAG" <<'JS' > changelog-section.md; then
+              import fs from 'node:fs';
+              const tag = String(process.argv[2] || '').trim();
+              const raw = fs.readFileSync('CHANGELOG.md', 'utf8').replace(/\r\n/g, '\n');
+              const esc = tag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+              const startRe = new RegExp(`^##\\s+\\[?${esc}\\]?(?:\\s+-\\s+.*|\\s*)$`, 'm');
+              const m = startRe.exec(raw);
+              if (!m) process.exit(1);
+              const start = m.index + m[0].length;
+              const rest = raw.slice(start);
+              const nxt = /^##\s+/m.exec(rest);
+              const body = (nxt ? rest.slice(0, nxt.index) : rest).replace(/\n+---\s*$/, '').trim();
+              if (!body) process.exit(1);
+              process.stdout.write(body + '\n');
+          JS
               {
                 echo ""
                 echo "---"
@@ -192,17 +160,32 @@ jobs:
       - name: Create or update GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ needs.prepare.outputs.tag }}
-          IS_PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
-          IS_DRAFT: ${{ needs.prepare.outputs.draft }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          IS_PRERELEASE: ${{ steps.meta.outputs.prerelease }}
+          IS_DRAFT: ${{ steps.meta.outputs.draft }}
         run: |
           set -euo pipefail
-          EXTRA_FLAGS=()
-          [ "$IS_PRERELEASE" = "true" ] && EXTRA_FLAGS+=(--prerelease)
-          [ "$IS_DRAFT" = "true" ] && EXTRA_FLAGS+=(--draft)
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release edit "$TAG" --notes-file release-notes.md "${EXTRA_FLAGS[@]}"
-            gh release upload "$TAG" release-assets/* --clobber
+          CREATE_FLAGS=()
+          EDIT_FLAGS=()
+          if [ "$IS_PRERELEASE" = "true" ]; then
+            CREATE_FLAGS+=(--prerelease)
+            EDIT_FLAGS+=(--prerelease=true)
           else
-            gh release create "$TAG" release-assets/* --title "$TAG" --notes-file release-notes.md "${EXTRA_FLAGS[@]}"
+            EDIT_FLAGS+=(--prerelease=false)
+          fi
+          if [ "$IS_DRAFT" = "true" ]; then
+            CREATE_FLAGS+=(--draft)
+            EDIT_FLAGS+=(--draft=true)
+          else
+            EDIT_FLAGS+=(--draft=false)
+            if [ "$IS_PRERELEASE" != "true" ]; then
+              CREATE_FLAGS+=(--latest)
+              EDIT_FLAGS+=(--latest)
+            fi
+          fi
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" release-assets/* --clobber
+            gh release edit "$TAG" --notes-file release-notes.md "${EDIT_FLAGS[@]}"
+          else
+            gh release create "$TAG" release-assets/* --title "$TAG" --notes-file release-notes.md "${CREATE_FLAGS[@]}"
           fi

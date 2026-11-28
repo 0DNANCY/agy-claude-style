@@ -1,6 +1,8 @@
 // Lifecycle helpers for native Antigravity plugin host & Aux Pane sidecar.
 // Zero external dependencies (Node >= 22).
 const fs = require('fs');
+const http = require('http');
+const https = require('https');
 const os = require('os');
 const path = require('path');
 
@@ -31,12 +33,79 @@ function normalizeLsHealthzUrl(lsAddress) {
   return `http://${raw.replace(/\/+$/, '')}/healthz`;
 }
 
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1', '0:0:0:0:0:0:0:1']);
+
+function isLoopbackHostname(hostname) {
+  const clean = String(hostname || '').trim().toLowerCase().replace(/^\[|\]$/g, '');
+  return LOOPBACK_HOSTS.has(clean);
+}
+
+/**
+ * Direct loopback-only /healthz probe bypassing proxy env vars and allowing
+ * self-signed TLS certs on verified 127.0.0.1/localhost/::1 Language Server ports.
+ */
+function probeLsHealthz(healthzUrl, { timeoutMs = 1500, requestImpl = null } = {}) {
+  const raw = String(healthzUrl || '').trim();
+  if (!raw) return Promise.resolve(false);
+  let url;
+  try {
+    url = new URL(raw);
+  } catch {
+    return Promise.resolve(false);
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') return Promise.resolve(false);
+  if (!isLoopbackHostname(url.hostname)) return Promise.resolve(false);
+
+  const isHttps = url.protocol === 'https:';
+  const runner = requestImpl || (isHttps ? https.request : http.request);
+  const cleanHost = String(url.hostname || '').replace(/^\[|\]$/g, '');
+  const port = Number(url.port) || (isHttps ? 443 : 80);
+  const timeout = Math.max(150, Number(timeoutMs) || 1500);
+
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (ok) => {
+      if (settled) return;
+      settled = true;
+      resolve(ok);
+    };
+    try {
+      const req = runner(
+        {
+          hostname: cleanHost,
+          port,
+          path: `${url.pathname || '/healthz'}${url.search || ''}`,
+          method: 'GET',
+          agent: false,
+          ...(isHttps ? { rejectUnauthorized: false } : {}),
+          timeout,
+        },
+        (res) => {
+          try { res.resume(); } catch {}
+          const code = Number(res?.statusCode || 0);
+          finish(code >= 100 && code < 600);
+        }
+      );
+      req.on('timeout', () => {
+        try { req.destroy(); } catch {}
+        finish(false);
+      });
+      req.on('error', () => {
+        finish(false);
+      });
+      req.end();
+    } catch {
+      finish(false);
+    }
+  });
+}
+
 function startHostWatchdog({
   lsAddress = process.env.ANTIGRAVITY_LS_ADDRESS,
   parentPid = 0,
   watchStdin = false,
   checkIntervalMs = 3000,
-  maxLsFailures = 2,
+  maxLsFailures = 3,
   onShutdown,
 } = {}) {
   const healthzUrl = normalizeLsHealthzUrl(lsAddress);
@@ -109,8 +178,15 @@ function startHostWatchdog({
     if (!healthzUrl || polling) return;
     polling = true;
     try {
-      await fetch(healthzUrl, { signal: AbortSignal.timeout(1500) });
-      lsFailures = 0;
+      const alive = await probeLsHealthz(healthzUrl, { timeoutMs: 1500 });
+      if (alive) {
+        lsFailures = 0;
+      } else {
+        lsFailures += 1;
+        if (lsFailures >= Math.max(1, maxLsFailures)) {
+          trigger('ls-dead');
+        }
+      }
     } catch {
       lsFailures += 1;
       if (lsFailures >= Math.max(1, maxLsFailures)) {
@@ -263,6 +339,7 @@ module.exports = {
   isBrokenPipeError,
   isPidAlive,
   normalizeLsHealthzUrl,
+  probeLsHealthz,
   startHostWatchdog,
   getMcpHostsDir,
   registerMcpHost,

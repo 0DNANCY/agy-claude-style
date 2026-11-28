@@ -1,12 +1,13 @@
 // Chrome DevTools Protocol (CDP) helpers for AGY Claude Style (agy-claude-style).
 // Node >= 22: uses built-in fetch and WebSocket (zero external dependencies).
 const fs = require('fs');
+const http = require('http');
 const os = require('os');
 const path = require('path');
 const { execFileSync, spawn } = require('child_process');
 
 const STYLE_ID = 'ag-claude-style-css';
-const PLUGIN_VERSION = '4.0.0';
+const PLUGIN_VERSION = '4.1.0';
 const SETTING_BINDING = '__agClaudeStyleSetting';
 const IS_MAC = process.platform === 'darwin';
 const IS_WIN = process.platform === 'win32';
@@ -62,6 +63,7 @@ const DEFAULT_CONFIG = {
   glassEffect: true,
   wpMode: 'off',
   wpFile: '',
+  wpRippleOpacity: 35,
   wpOpacity: 35,
   wpBlur: 0,
   wpDim: 25,
@@ -115,6 +117,7 @@ const DEFAULT_CONFIG = {
   proxyForceHttp1: true,
   proxyColdStartAlert: true,
   autoRelaunchWithCdp: true,
+  autoCheckUpdate: true,
   pollIntervalMs: 2500,
 };
 
@@ -132,6 +135,7 @@ const CONFIG_VALIDATORS = {
   glassEffect: 'boolean',
   wpMode: ['off', 'global', 'home'],
   wpFile: { type: 'string', maxLength: 120, kind: 'wpFile' },
+  wpRippleOpacity: { type: 'integer', min: 0, max: 100 },
   wpOpacity: { type: 'integer', min: 5, max: 100 },
   wpBlur: { type: 'integer', min: 0, max: 48 },
   wpDim: { type: 'integer', min: -50, max: 85 },
@@ -185,6 +189,7 @@ const CONFIG_VALIDATORS = {
   proxyForceHttp1: 'boolean',
   proxyColdStartAlert: 'boolean',
   autoRelaunchWithCdp: 'boolean',
+  autoCheckUpdate: 'boolean',
   pollIntervalMs: { type: 'integer', min: 250, max: 60000 },
 };
 
@@ -369,12 +374,39 @@ function isInjectableTarget(t) {
   return false;
 }
 
-async function listPages(port) {
-  const res = await fetch(`http://127.0.0.1:${port}/json/list`, {
-    signal: AbortSignal.timeout(2000),
+function listPages(port) {
+  return new Promise((resolve, reject) => {
+    const req = http.get(
+      {
+        hostname: '127.0.0.1',
+        port: Number(port),
+        path: '/json/list',
+        agent: false,
+        timeout: 2000,
+      },
+      (res) => {
+        const chunks = [];
+        res.on('data', (c) => chunks.push(c));
+        res.on('end', () => {
+          if (res.statusCode < 200 || res.statusCode >= 300) {
+            reject(new Error(`CDP HTTP ${res.statusCode}`));
+            return;
+          }
+          try {
+            const targets = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+            resolve(Array.isArray(targets) ? targets.filter(isInjectableTarget) : []);
+          } catch (err) {
+            reject(err);
+          }
+        });
+        res.on('error', reject);
+      }
+    );
+    req.on('timeout', () => {
+      req.destroy(new Error('CDP /json/list timeout'));
+    });
+    req.on('error', reject);
   });
-  const targets = await res.json();
-  return targets.filter(isInjectableTarget);
 }
 
 class CdpSession {
@@ -654,6 +686,13 @@ function buildRefreshExpression(customConfig, expectedCodeHash) {
   return buildConfigScriptExpression(customConfig, expectedCodeHash);
 }
 
+function buildResetExpression(customConfig, expectedCodeHash) {
+  const config = customConfig || { ...DEFAULT_CONFIG };
+  const expectedHash = expectedCodeHash || '';
+  const payload = { ...sanitizeConfigForPage(config), binding: SETTING_BINDING, codeHash: expectedHash };
+  return `(()=>{const c=${JSON.stringify(payload)};globalThis.__agCsOverrideConfig=c;try{localStorage.removeItem('agClaudeStyle.settings.v1');localStorage.removeItem('agClaudeStyle.lastFileConfig.v1');localStorage.removeItem('agCsPinnedHeaderExtensions');localStorage.removeItem('agCsPinnedSidebarExtensions');localStorage.removeItem('agCsSidebarExtExpanded');}catch(e){}const a=window.__agClaudeStyle;if(a&&typeof a.resetLocalOverrides==='function'){a.resetLocalOverrides(c);return{version:${JSON.stringify(PLUGIN_VERSION)},status:'reset',state:a.getState?a.getState():null};}if(a&&typeof a.refreshConfig==='function'&&(!c.codeHash||a.codeHash===c.codeHash)){a.refreshConfig(c);return{version:${JSON.stringify(PLUGIN_VERSION)},status:'refreshed',state:a.getState?a.getState():null};}return null;})()`;
+}
+
 const REMOVE_EXPRESSION = `(() => {
   if (Array.isArray(globalThis.__agCsCleanups)) {
     while (globalThis.__agCsCleanups.length) {
@@ -668,8 +707,10 @@ const REMOVE_EXPRESSION = `(() => {
   delete globalThis.__agCsEnsureStyle;
   delete globalThis.__agCsSidecarLogos;
   delete globalThis.__agCsWallpaperMeta;
+  delete globalThis.__agCsOpenControlRoom;
   delete window.__agCsFileActionReply;
   delete window.__agCsWallpaperChunkReply;
+  delete window.__agCsUpdateActionReply;
   try {
     if (window.__agClaudeStyle && typeof window.__agClaudeStyle.destroy === 'function') {
       window.__agClaudeStyle.destroy();
@@ -2443,5 +2484,6 @@ module.exports = {
   buildInjectExpression,
   buildConfigScriptExpression,
   buildRefreshExpression,
+  buildResetExpression,
   REMOVE_EXPRESSION,
 };

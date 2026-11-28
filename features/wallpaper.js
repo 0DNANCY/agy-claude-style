@@ -177,7 +177,7 @@
       if (!html) return;
       html.removeAttribute('data-ag-cs-wp');
       if (html.style && typeof html.style.removeProperty === 'function') {
-        for (const k of ['--ag-cs-wp-opacity', '--ag-cs-wp-blur', '--ag-cs-wp-scrim', '--ag-cs-wp-surface-alpha']) {
+        for (const k of ['--ag-cs-wp-opacity', '--ag-cs-wp-blur', '--ag-cs-wp-scrim', '--ag-cs-wp-surface-alpha', '--ag-cs-wp-ripple-opacity']) {
           html.style.removeProperty(k);
         }
       }
@@ -212,6 +212,7 @@
       const blur = clampNum(cfg.wpBlur, 0, 48, 0);
       const dim = clampNum(cfg.wpDim, -50, 85, 25);
       const surfaceAlpha = clampNum(cfg.wpSurfaceAlpha, 15, 100, 76);
+      const rippleOpacity = clampNum(cfg.wpRippleOpacity, 0, 100, 35) / 100;
       const scrim = dim >= 0
         ? `rgba(7, 9, 13, ${(dim / 100).toFixed(3)})`
         : `rgba(255, 255, 255, ${(Math.abs(dim) / 100).toFixed(3)})`;
@@ -220,6 +221,7 @@
       html.style.setProperty('--ag-cs-wp-blur', `${blur}px`);
       html.style.setProperty('--ag-cs-wp-scrim', scrim);
       html.style.setProperty('--ag-cs-wp-surface-alpha', `${surfaceAlpha}%`);
+      html.style.setProperty('--ag-cs-wp-ripple-opacity', rippleOpacity.toFixed(2));
       if (hostEl) {
         hostEl.setAttribute('data-wp-blurred', blur > 0 ? '1' : '0');
       }

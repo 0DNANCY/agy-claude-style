@@ -445,7 +445,7 @@ test('obsolete external scripts and legacy binary installers are absent from rep
     assert.equal(fs.existsSync(path.join(ROOT_DIR, rel)), false, `${rel} must be deleted`);
   }
   const pkg = JSON.parse(fs.readFileSync(path.join(ROOT_DIR, 'package.json'), 'utf8'));
-  assert.deepEqual(Object.keys(pkg.scripts).sort(), ['build:package', 'setup', 'status', 'test', 'uninstall']);
+  assert.deepEqual(Object.keys(pkg.scripts).sort(), ['build:package', 'check-update', 'setup', 'status', 'test', 'uninstall', 'update']);
 });
 
 test('buildRefreshExpression produces lightweight config refresh payload matching codeHash', () => {

@@ -8,6 +8,7 @@ import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { collectPluginPayloadFiles, getArtifactNames, normalizeVersion } from '../scripts/build-common.mjs';
 import { buildPackage } from '../scripts/build-package.mjs';
+import { extractZipBufferSafe } from '../sidecars/panel/lib/updater.mjs';
 
 const require = createRequire(import.meta.url);
 const cdp = require('../cdp.js');
@@ -50,6 +51,15 @@ test('package builder and payload collection align with cdp.js and exclude binar
     assert.ok(fs.existsSync(outZip));
     assert.ok(built.fileCount >= 30);
     assert.ok(built.sizeBytes > 1024);
+
+    const stampedZip = path.join(tmpDir, 'stamped.zip');
+    buildPackage({ rootDir: ROOT_DIR, outputPath: stampedZip, version: '9.8.7' });
+    const extracted = extractZipBufferSafe(fs.readFileSync(stampedZip));
+    assert.equal(extracted.manifest.version, '9.8.7');
+    const pkgEntry = JSON.parse(extracted.files.find((f) => f.name === 'package.json').data.toString('utf8'));
+    assert.equal(pkgEntry.version, '9.8.7');
+    const cdpEntry = extracted.files.find((f) => f.name === 'cdp.js').data.toString('utf8');
+    assert.match(cdpEntry, /const PLUGIN_VERSION = '9\.8\.7';/);
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
@@ -139,7 +149,7 @@ test(
     const legacyDir = path.join(tmpRoot, 'LegacyLocalAppData', 'agy-claude-style');
 
     try {
-      buildPackage({ rootDir: ROOT_DIR, outputPath: zipPath, version: '4.0.0' });
+      buildPackage({ rootDir: ROOT_DIR, outputPath: zipPath, version: cdp.PLUGIN_VERSION });
       fs.mkdirSync(legacyDir, { recursive: true });
       fs.writeFileSync(path.join(legacyDir, 'config.json'), JSON.stringify({ palette: 'tokyo', exitOnHostClose: true }), 'utf8');
 
@@ -227,7 +237,7 @@ test(
     const dataDir = path.join(tmpRoot, '.gemini', 'antigravity', 'plugin_data', 'agy-claude-style');
 
     try {
-      buildPackage({ rootDir: ROOT_DIR, outputPath: zipPath, version: '4.0.0' });
+      buildPackage({ rootDir: ROOT_DIR, outputPath: zipPath, version: cdp.PLUGIN_VERSION });
       execFileSync(
         'bash',
         [path.join(ROOT_DIR, 'install.sh'), '--archive', zipPath, '--out', outInstall, '--silent'],

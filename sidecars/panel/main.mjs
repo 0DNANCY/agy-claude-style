@@ -1,6 +1,6 @@
 // Aux Pane Sidecar UI server for AGY Claude Style (agy-claude-style).
 // Uses Antigravity built-in sidecar_sdk and exits cleanly via host /healthz watchdog.
-import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, watch } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, unlinkSync, watch } from 'node:fs';
 import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -13,6 +13,12 @@ import { fetchSubagentTree } from './lib/subagent-tree.mjs';
 import { SidecarOwner } from './lib/sidecar-owner.mjs';
 import { createWallpaperStore } from './lib/wallpaper-store.mjs';
 import {
+  createUpdateManager,
+  openExternalReleaseUrl,
+  resolveInstalledVersion,
+  triggerHotReloadAfterUpdate,
+} from './lib/updater.mjs';
+import {
   buildProxyLaunchOptions,
   detectHostProxyRuntime,
   maskProxyUrl,
@@ -21,8 +27,8 @@ import {
 } from './lib/proxy.mjs';
 
 const require = createRequire(import.meta.url);
-const cdp = require('../../cdp.js');
-const { injectOnce, createWatchController } = require('../../inject.js');
+let cdp = require('../../cdp.js');
+let { injectOnce, createWatchController } = require('../../inject.js');
 const lifecycle = require('../../plugin/host-lifecycle.js');
 const { createWallpaperMediaServer } = require('../../wallpaper-server.js');
 
@@ -194,10 +200,31 @@ function getCachedProxyRuntime(config) {
   return value;
 }
 
-async function getPanelStatus() {
-  const config = cdp.readConfig();
-  const watcher = readWatcherStatus();
-  const port = cdp.readPort();
+const PLUGIN_INSTALL_DIR = resolve(__dirname, '..', '..');
+
+function readLivePluginVersion() {
+  return resolveInstalledVersion(PLUGIN_INSTALL_DIR, cdp.PLUGIN_VERSION);
+}
+
+const sharedUpdateManager = createUpdateManager({
+  getCurrentVersion: readLivePluginVersion,
+  installDir: PLUGIN_INSTALL_DIR,
+  stateDir: cdp.STATE_DIR,
+  readConfigFn: cdp.readConfig,
+});
+
+function safeCall(fn, fallback) {
+  try {
+    return fn();
+  } catch {
+    return fallback;
+  }
+}
+
+async function getPanelStatus(updateMgr = sharedUpdateManager) {
+  const config = safeCall(() => cdp.readConfig(), { ...cdp.DEFAULT_CONFIG });
+  const watcher = safeCall(() => readWatcherStatus(), { alive: false, pid: null });
+  const port = safeCall(() => cdp.readPort(), null);
   let pagesList = null;
 
   if (port) {
@@ -218,17 +245,37 @@ async function getPanelStatus() {
   }
   const cdpState = resolveCdpPollStatus({ port, pagesList });
   const pages = cdpState.pages;
+  const fallbackCompanion = { installed: false, version: '', enabled: false };
+
+  let pendingNav = null;
+  const navPath = join(cdp.STATE_DIR, '.panel-nav.json');
+  if (existsSync(navPath)) {
+    try {
+      const parsedNav = JSON.parse(readFileSync(navPath, 'utf8'));
+      unlinkSync(navPath);
+      if (parsedNav && Date.now() - Number(parsedNav.ts || 0) < 15000) {
+        pendingNav = {
+          target: String(parsedNav.target || 'control'),
+          section: String(parsedNav.section || ''),
+          ts: Number(parsedNav.ts || 0),
+        };
+      }
+    } catch {}
+  }
 
   return {
     ok: true,
-    version: cdp.PLUGIN_VERSION,
+    version: readLivePluginVersion(),
     platform: process.platform,
     config,
     defaults: cdp.DEFAULT_CONFIG,
     stateDir: cdp.STATE_DIR,
     configFile: cdp.CONFIG_FILE,
     watcher,
-    relaunchGuard: typeof cdp.readRelaunchGuard === 'function' ? cdp.readRelaunchGuard() : null,
+    relaunchGuard: safeCall(
+      () => (typeof cdp.readRelaunchGuard === 'function' ? cdp.readRelaunchGuard() : null),
+      null
+    ),
     cdp: {
       connected: cdpState.connected,
       reconnecting: cdpState.reconnecting,
@@ -239,13 +286,19 @@ async function getPanelStatus() {
       pages,
     },
     companions: {
-      capsule: inspectCompanionPlugin('agy-capsule'),
-      bridge: inspectCompanionPlugin('agy-claude-capsule-bridge'),
+      capsule: safeCall(() => inspectCompanionPlugin('agy-capsule'), fallbackCompanion),
+      bridge: safeCall(() => inspectCompanionPlugin('agy-claude-capsule-bridge'), fallbackCompanion),
     },
     conflicts: {
-      studio: inspectCompanionPlugin('agy-claude-studio'),
+      studio: safeCall(() => inspectCompanionPlugin('agy-claude-studio'), fallbackCompanion),
     },
-    proxyRuntime: getCachedProxyRuntime(config),
+    proxyRuntime: safeCall(() => getCachedProxyRuntime(config), {
+      inspected: false,
+      coldStartMismatch: false,
+      reason: '',
+    }),
+    update: safeCall(() => updateMgr?.getStatusSnapshot?.() || null, null),
+    pendingNav,
   };
 }
 
@@ -291,13 +344,31 @@ async function resetConfig() {
     mkdirSync(dirname(cdp.CONFIG_FILE), { recursive: true });
   } catch {}
   cdp.writeFileAtomic(cdp.CONFIG_FILE, JSON.stringify(cdp.DEFAULT_CONFIG, null, 2) + '\n');
+  const nextCfg = cdp.readConfig();
+  const port = safeCall(() => cdp.readPort(), null);
+  if (port) {
+    try {
+      const pages = await cdp.listPages(port);
+      const resetExpr = cdp.buildResetExpression(nextCfg);
+      await Promise.allSettled(
+        pages.map(async (p) => {
+          const session = await cdp.CdpSession.connect(p.webSocketDebuggerUrl, 1200);
+          try {
+            await session.evaluate(resetExpr);
+          } finally {
+            session.close();
+          }
+        })
+      );
+    } catch {}
+  }
   const watcher = readWatcherStatus();
   if (!watcher.alive) {
     try {
       await injectOnce();
     } catch {}
   }
-  return { ok: true, config: cdp.readConfig() };
+  return { ok: true, config: nextCfg };
 }
 
 function logSidecarBoot(msg) {
@@ -524,6 +595,48 @@ async function startPanelSidecar() {
     return await pricingStore.refresh({ force: true });
   }), 'POST');
 
+  app.api('/api/update/check', guardApi(async (data) => {
+    return await sharedUpdateManager.check({ force: data?.force !== false });
+  }), 'POST');
+
+  app.api('/api/update/apply', guardApi(async (data) => {
+    const res = await sharedUpdateManager.apply({
+      targetVersion: String(data?.targetVersion || ''),
+      downloadUrl: String(data?.downloadUrl || ''),
+    });
+    if (res?.ok && !res.alreadyLatest) {
+      const t = setTimeout(() => {
+        void triggerHotReloadAfterUpdate({
+          injectOnceFn: injectOnce,
+          installDir: PLUGIN_INSTALL_DIR,
+          stateDir: cdp.STATE_DIR,
+          cdpModule: cdp,
+        }).catch(() => {});
+      }, 350);
+      if (typeof t.unref === 'function') t.unref();
+      return { ...res, reloadScheduled: true };
+    }
+    return res;
+  }), 'POST');
+
+  app.api('/api/update/open-url', guardApi(async (data) => {
+    try {
+      return await openExternalReleaseUrl(data?.url);
+    } catch (err) {
+      return new Response(JSON.stringify({ ok: false, error: err?.message || String(err) }), {
+        status: 400,
+        contentType: 'application/json',
+      });
+    }
+  }), 'POST');
+
+  if (!isTestHost && safeCall(() => cdp.readConfig()?.autoCheckUpdate !== false, true)) {
+    const autoCheckTimer = setTimeout(() => {
+      void sharedUpdateManager.check({ force: false }).catch(() => {});
+    }, 1500);
+    if (typeof autoCheckTimer.unref === 'function') autoCheckTimer.unref();
+  }
+
   app.api('/api/subagents', guardApi(async () => {
     return await fetchSubagentTree();
   }), 'GET');
@@ -747,6 +860,21 @@ async function startPanelSidecar() {
         duplicateWaitMs: 0,
         quietDuplicateLog: true,
         logFile: join(cdp.STATE_DIR, 'watch.log'),
+        onSelfChanged: () => {
+          if (shuttingDown || !watchController) return;
+          const old = watchController;
+          watchController = null;
+          void old
+            .stop({ removeFromPages: false, reason: 'inject-self-reload' })
+            .catch(() => {})
+            .finally(() => {
+              try { delete require.cache[require.resolve('../../cdp.js')]; } catch {}
+              try { delete require.cache[require.resolve('../../inject.js')]; } catch {}
+              try { cdp = require('../../cdp.js'); } catch {}
+              try { ({ injectOnce, createWatchController } = require('../../inject.js')); } catch {}
+              scheduleSidecarWatchReconcile();
+            });
+        },
       });
       if (!ctrl) return;
       if (shuttingDown) {
@@ -910,7 +1038,7 @@ async function startPanelSidecar() {
     lsAddress: process.env.ANTIGRAVITY_LS_ADDRESS,
     watchStdin: false,
     checkIntervalMs: 3000,
-    maxLsFailures: 2,
+    maxLsFailures: 3,
     onShutdown: (reason) => {
       void shutdown(reason);
     },

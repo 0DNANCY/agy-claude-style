@@ -136,6 +136,45 @@
     scheduleSync();
   }
 
+  const updatePendingReqs = new Map();
+  let updateActionSeq = 0;
+  let updateStateCache = null;
+  let updateStatusBooted = false;
+  let updateActionBusy = false;
+
+  if (typeof window !== 'undefined') {
+    window.__agCsUpdateActionReply = (reqId, payload) => {
+      const entry = updatePendingReqs.get(reqId);
+      if (!entry) return;
+      updatePendingReqs.delete(reqId);
+      clearTimeout(entry.timer);
+      entry.resolve(payload || { ok: false, error: 'empty response' });
+    };
+  }
+
+  function dispatchUpdateAction(action, payload = {}, timeoutMs = 45000) {
+    return new Promise((resolve) => {
+      const send = window[cfg.binding];
+      if (typeof send !== 'function') {
+        resolve({ ok: false, error: 'CDP binding unavailable' });
+        return;
+      }
+      const reqId = `upd_${Date.now().toString(36)}_${++updateActionSeq}`;
+      const timer = setTimeout(() => {
+        updatePendingReqs.delete(reqId);
+        resolve({ ok: false, error: 'Update request timeout' });
+      }, timeoutMs);
+      updatePendingReqs.set(reqId, { resolve, timer });
+      try {
+        send(JSON.stringify({ key: '__updateAction', value: { reqId, action, ...payload } }));
+      } catch (err) {
+        clearTimeout(timer);
+        updatePendingReqs.delete(reqId);
+        resolve({ ok: false, error: err?.message || String(err) });
+      }
+    });
+  }
+
   function getLang() {
     const raw = cfg.language || initialConfig?.language || 'zh-CN';
     if (i18nCore && typeof i18nCore.normalizeLanguage === 'function') {
@@ -1313,7 +1352,9 @@
   }
 
   function syncRipple() {
-    const home = cfg.homeRipple !== false && cfg.homeLayout !== 'off' ? document.querySelector('.agy-home') : null;
+    const wpActive = cfg.wpMode === 'global' || cfg.wpMode === 'home';
+    const wpRippleZero = wpActive && Number(cfg.wpRippleOpacity ?? 35) <= 0;
+    const home = cfg.homeRipple !== false && cfg.homeLayout !== 'off' && !wpRippleZero ? document.querySelector('.agy-home') : null;
     if (rippleMount && (rippleMount.root !== home || !rippleMount.canvas.isConnected)) {
       unmountRipple();
     }
@@ -2055,17 +2096,21 @@
     const prevBodyScrollTop = pop.querySelector('.ag-cs-ctx-body')?.scrollTop || 0;
 
     pop.innerHTML = `
-      <div class="ag-cs-ctx-top-bar">
-        <div class="ag-cs-ctx-title-wrap">
-          <span class="ag-cs-ctx-title">${escapeHtml(ui.popoverTitle || 'Context & Token HUD')}</span>
-          <span class="ag-cs-ctx-model-badge">${escapeHtml(modelName)}</span>
-          ${statusBadgeHtml}
+      <div class="ag-cs-ctx-header">
+        <div class="ag-cs-ctx-top-bar">
+          <div class="ag-cs-ctx-title-wrap">
+            <span class="ag-cs-ctx-title">${escapeHtml(ui.popoverTitle || 'Context & Token HUD')}</span>
+          </div>
+          <div class="ag-cs-ctx-actions">
+            <button type="button" class="ag-cs-ctx-act-btn" data-ctx-act="compact" title="${escapeHtml(ui.compactBtnTitle || 'Fill /compact into composer')}">/compact</button>
+            <button type="button" class="ag-cs-ctx-act-btn" data-ctx-act="copy" title="${escapeHtml(ui.copyBtnTitle || 'Copy telemetry report')}">${escapeHtml(ui.copyBtnLabel || 'Copy')}</button>
+            <button type="button" class="ag-cs-ctx-act-btn" data-ctx-act="refresh" title="${escapeHtml(ui.refreshBtnTitle || 'Refresh telemetry')}">↻</button>
+            <button type="button" class="ag-cs-ctx-act-btn is-close" data-ctx-act="close" title="${escapeHtml(ui.closeBtnTitle || 'Close')}">×</button>
+          </div>
         </div>
-        <div class="ag-cs-ctx-actions">
-          <button type="button" class="ag-cs-ctx-act-btn" data-ctx-act="compact" title="${escapeHtml(ui.compactBtnTitle || 'Fill /compact into composer')}">/compact</button>
-          <button type="button" class="ag-cs-ctx-act-btn" data-ctx-act="copy" title="${escapeHtml(ui.copyBtnTitle || 'Copy telemetry report')}">${escapeHtml(ui.copyBtnLabel || 'Copy')}</button>
-          <button type="button" class="ag-cs-ctx-act-btn" data-ctx-act="refresh" title="${escapeHtml(ui.refreshBtnTitle || 'Refresh telemetry')}">↻</button>
-          <button type="button" class="ag-cs-ctx-act-btn is-close" data-ctx-act="close" title="${escapeHtml(ui.closeBtnTitle || 'Close')}">×</button>
+        <div class="ag-cs-ctx-model-row">
+          <span class="ag-cs-ctx-model-badge" title="${escapeHtml(modelName)}">${escapeHtml(modelName)}</span>
+          ${statusBadgeHtml}
         </div>
       </div>
       <div class="ag-cs-ctx-hero">
@@ -5124,8 +5169,12 @@
       root.querySelectorAll('[data-ag-cs-cond-key]').forEach((row) => {
         const k = row.getAttribute('data-ag-cs-cond-key');
         const expected = row.getAttribute('data-ag-cs-cond-val');
+        const notExpected = row.getAttribute('data-ag-cs-cond-not-val');
         const curVal = k === 'language' ? lang : cfg[k];
-        if (k && expected !== null && JSON.stringify(curVal) !== expected) row.setAttribute('data-ag-cs-dim', '1');
+        const curJson = JSON.stringify(curVal);
+        const dimByEq = expected !== null && curJson !== expected;
+        const dimByNot = notExpected !== null && curJson === notExpected;
+        if (k && (dimByEq || dimByNot)) row.setAttribute('data-ag-cs-dim', '1');
         else row.removeAttribute('data-ag-cs-dim');
       });
     };
@@ -5196,6 +5245,7 @@
         key: 'palette',
         title: ui.setPaletteTitle || 'Color Palette',
         desc: ui.setPaletteDesc || 'Pick a built-in theme preset, customize your own palette in the Control Room, or follow host.',
+        jumpAction: { label: ui.btnJumpThemeStudio || '🎨 Custom Colors →', target: 'control', section: 'theme' },
         opts: [
           ['obsidian', ui.optObsidian || 'Obsidian'],
           ['claude', 'Claude'],
@@ -5213,11 +5263,33 @@
         key: 'wpMode',
         title: ui.setWpModeTitle || 'Dynamic Wallpaper',
         desc: ui.setWpModeDesc || 'Render local video/image wallpaper behind the window or home page (manage media in Claude Style Control Room).',
+        jumpAction: { label: ui.btnJumpWpStudio || '🎬 Manage Wallpapers →', target: 'control', section: 'wallpaper' },
         opts: [
           ['off', ui.offLabel || 'Off'],
           ['global', ui.optWpGlobal || 'Global'],
           ['home', ui.optWpHome || 'Home'],
         ],
+      },
+      wpRippleOpacity: {
+        key: 'wpRippleOpacity',
+        subRow: true,
+        condKey: 'wpMode',
+        condNotVal: 'off',
+        title: ui.setWpRippleTitle || 'Home Ripple Over Wallpaper',
+        desc: ui.setWpRippleDesc || 'Adjust home matrix ripple opacity while wallpaper is active (35% recommended; 0% turns it off).',
+        opts: (() => {
+          const base = [
+            [0, ui.optWpRippleOff || 'Off 0%'],
+            [35, ui.optWpRippleRec || 'Rec 35%'],
+            [60, ui.optWpRippleSoft || '60%'],
+            [100, ui.optWpRippleFull || '100%'],
+          ];
+          const cur = Number(cfg.wpRippleOpacity ?? 35);
+          if (Number.isFinite(cur) && ![0, 35, 60, 100].includes(cur)) {
+            base.push([cur, `${cur}%`]);
+          }
+          return base;
+        })(),
       },
       logoInk: {
         key: 'logoInk',
@@ -5563,13 +5635,22 @@
           [false, ui.offLabel || 'Off'],
         ],
       },
+      autoCheckUpdate: {
+        key: 'autoCheckUpdate',
+        title: ui.setAutoUpdateTitle || 'Auto-Check Plugin Updates',
+        desc: ui.setAutoUpdateDesc || 'Silently check GitHub Releases every 6 hours and show an inline banner when an update is ready.',
+        opts: [
+          [true, ui.onLabel || 'On'],
+          [false, ui.offLabel || 'Off'],
+        ],
+      },
     };
 
     const groups = [
       {
         id: 'appearance',
         title: ui.grpAppearance || 'Appearance & Layout',
-        keys: ['language', 'homeLayout', 'palette', 'glassEffect', 'wpMode', 'logoInk', 'sidebarRestyle', 'sidebarCompact', 'sidebarFoldEmpty', 'composerRestyle', 'compactChatLayout'],
+        keys: ['language', 'homeLayout', 'palette', 'glassEffect', 'wpMode', 'wpRippleOpacity', 'logoInk', 'sidebarRestyle', 'sidebarCompact', 'sidebarFoldEmpty', 'composerRestyle', 'compactChatLayout'],
       },
       {
         id: 'interaction',
@@ -5585,7 +5666,7 @@
       {
         id: 'powertools',
         title: ui.setGrpPowertools || 'Powertools & Extensions',
-        keys: ['taskProgressCard', 'stageCollapse', 'stagePromptInjection', 'windowUnreadTitle', 'branchSession', 'messageEdit', 'fileContextMenu', 'headerExtensionsBar', 'sidebarExtensionsSection', 'hideOnClose', 'autoRelaunchWithCdp'],
+        keys: ['taskProgressCard', 'stageCollapse', 'stagePromptInjection', 'windowUnreadTitle', 'branchSession', 'messageEdit', 'fileContextMenu', 'headerExtensionsBar', 'sidebarExtensionsSection', 'hideOnClose', 'autoRelaunchWithCdp', 'autoCheckUpdate'],
       },
     ];
 
@@ -5606,9 +5687,15 @@
       }
       if (r.condKey) {
         row.setAttribute('data-ag-cs-cond-key', r.condKey);
-        row.setAttribute('data-ag-cs-cond-val', JSON.stringify(r.condVal));
-        const curVal = r.condKey === 'language' ? lang : cfg[r.condKey];
-        if (curVal !== r.condVal) row.setAttribute('data-ag-cs-dim', '1');
+        if (r.condVal !== undefined) {
+          row.setAttribute('data-ag-cs-cond-val', JSON.stringify(r.condVal));
+          const curVal = r.condKey === 'language' ? lang : cfg[r.condKey];
+          if (curVal !== r.condVal) row.setAttribute('data-ag-cs-dim', '1');
+        } else if (r.condNotVal !== undefined) {
+          row.setAttribute('data-ag-cs-cond-not-val', JSON.stringify(r.condNotVal));
+          const curVal = r.condKey === 'language' ? lang : cfg[r.condKey];
+          if (curVal === r.condNotVal) row.setAttribute('data-ag-cs-dim', '1');
+        }
       }
       const inner = mkEl('div', 'py-2 px-3 w-full bg-transparent flex justify-between gap-4 items-center');
       const textCol = mkEl('div', 'flex-1 flex flex-col gap-0.5');
@@ -5621,6 +5708,17 @@
         const badgeSpan = mkEl('span', 'ag-cs-settings-hint-pill');
         badgeSpan.textContent = r.badge;
         titleLine.appendChild(badgeSpan);
+      }
+      if (r.jumpAction) {
+        const jumpBtn = document.createElement('button');
+        jumpBtn.type = 'button';
+        jumpBtn.className = 'ag-cs-settings-jump-pill';
+        jumpBtn.textContent = r.jumpAction.label;
+        jumpBtn.addEventListener('click', (ev) => {
+          ev.stopPropagation();
+          navigateToControlRoom({ target: r.jumpAction.target, section: r.jumpAction.section });
+        });
+        titleLine.appendChild(jumpBtn);
       }
       const dSpan = mkEl('span', 'text-xs text-muted-foreground whitespace-pre-wrap');
       dSpan.setAttribute('data-k', 'd');
@@ -5662,15 +5760,247 @@
       return row;
     };
 
+    const navigateToControlRoom = ({ target = 'control', section = '' } = {}) => {
+      try {
+        const send = window[cfg.binding];
+        if (typeof send === 'function') {
+          send(JSON.stringify({ key: '__panelNavigate', value: { target, section } }));
+        }
+      } catch {}
+      try {
+        const dlg = panel.closest('[role="dialog"]') || document.querySelector('[role="dialog"]');
+        if (dlg) {
+          const closeBtn = dlg.querySelector(
+            'button[aria-label="Close"], button[aria-label="关闭"], button[aria-label="關閉"], button[aria-label="閉じる"]'
+          );
+          if (closeBtn && typeof closeBtn.click === 'function') {
+            closeBtn.click();
+          } else if (typeof KeyboardEvent === 'function' && typeof dlg.dispatchEvent === 'function') {
+            dlg.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+          }
+        }
+      } catch {}
+      try {
+        if (typeof globalThis !== 'undefined' && typeof globalThis.__agCsOpenControlRoom === 'function') {
+          globalThis.__agCsOpenControlRoom({ target, section });
+        }
+      } catch {}
+    };
+
     const headWrap = mkEl('div', 'flex flex-col gap-1');
     const headRow = mkEl('div', 'flex items-center justify-between');
     const headTitleWrap = mkEl('div', 'flex items-center gap-1.5');
     const h3 = mkEl('h3', 'm-0 text-sm font-medium');
     h3.textContent = 'AGY Claude Style (agy-claude-style)';
+    const verPill = mkEl('span', 'ag-cs-settings-ver-pill');
+    verPill.textContent = `v${VERSION}`;
     headTitleWrap.appendChild(h3);
+    headTitleWrap.appendChild(verPill);
+
+    const headUpdWrap = mkEl('div', 'ag-cs-settings-upd-actions');
+    const openCrBtn = document.createElement('button');
+    openCrBtn.type = 'button';
+    openCrBtn.className = 'ag-cs-settings-upd-btn';
+    openCrBtn.textContent = ui.btnOpenControlRoom || '⚙ Control Room';
+    openCrBtn.addEventListener('click', () => navigateToControlRoom({ target: 'control', section: 'theme' }));
+
+    const resetAllBtn = document.createElement('button');
+    resetAllBtn.type = 'button';
+    resetAllBtn.className = 'ag-cs-settings-upd-btn';
+    resetAllBtn.setAttribute('data-ag-cs-reset-all', '1');
+    resetAllBtn.textContent = ui.btnResetAll || '↺ Reset All';
+    let resetArmed = false;
+    let resetTimer = null;
+    resetAllBtn.addEventListener('click', async () => {
+      const curUi = uiText(getLang());
+      if (!resetArmed) {
+        resetArmed = true;
+        resetAllBtn.textContent = curUi.btnResetConfirm || 'Confirm Reset?';
+        resetAllBtn.classList.add('is-danger-confirm');
+        clearTimeout(resetTimer);
+        resetTimer = setTimeout(() => {
+          resetArmed = false;
+          resetAllBtn.textContent = uiText(getLang()).btnResetAll || '↺ Reset All';
+          resetAllBtn.classList.remove('is-danger-confirm');
+        }, 3500);
+        return;
+      }
+      clearTimeout(resetTimer);
+      resetArmed = false;
+      resetAllBtn.classList.remove('is-danger-confirm');
+      resetAllBtn.disabled = true;
+      const res = await new Promise((resolve) => {
+        const send = window[cfg.binding];
+        if (typeof send !== 'function') {
+          resolve({ ok: false });
+          return;
+        }
+        const reqId = `rst_${Date.now().toString(36)}_${++updateActionSeq}`;
+        const timer = setTimeout(() => {
+          updatePendingReqs.delete(reqId);
+          resolve({ ok: false });
+        }, 8000);
+        updatePendingReqs.set(reqId, { resolve, timer });
+        try {
+          send(JSON.stringify({ key: '__resetConfig', value: { reqId } }));
+        } catch {
+          clearTimeout(timer);
+          updatePendingReqs.delete(reqId);
+          resolve({ ok: false });
+        }
+      });
+      resetAllBtn.disabled = false;
+      if (res?.ok && res.config && window.__agClaudeStyle?.resetLocalOverrides) {
+        window.__agClaudeStyle.resetLocalOverrides(res.config);
+      } else if (window.__agClaudeStyle?.resetLocalOverrides) {
+        window.__agClaudeStyle.resetLocalOverrides(initialConfig);
+      }
+      const nextMsg = uiText(getLang()).resetDoneToast || '✓ All settings reset to defaults';
+      const bar = document.querySelector('#' + SETTINGS_SEC_ID + ' [data-ag-cs-upd-bar="1"]');
+      const barTxt = bar?.querySelector('.ag-cs-settings-upd-text');
+      if (bar && barTxt) {
+        bar.hidden = false;
+        barTxt.textContent = nextMsg;
+      }
+    });
+
+    const checkUpdBtn = document.createElement('button');
+    checkUpdBtn.type = 'button';
+    checkUpdBtn.className = 'ag-cs-settings-upd-btn';
+    checkUpdBtn.setAttribute('data-ag-cs-upd-check', '1');
+    headUpdWrap.appendChild(openCrBtn);
+    headUpdWrap.appendChild(resetAllBtn);
+    headUpdWrap.appendChild(checkUpdBtn);
+
     headRow.appendChild(headTitleWrap);
+    headRow.appendChild(headUpdWrap);
     headWrap.appendChild(headRow);
+
+    const updNotice = mkEl('div', 'ag-cs-settings-upd-bar');
+    updNotice.setAttribute('data-ag-cs-upd-bar', '1');
+    updNotice.hidden = true;
+    const updNoticeText = mkEl('div', 'ag-cs-settings-upd-text');
+    const updNoticeBtns = mkEl('div', 'ag-cs-settings-upd-btns');
+    const updApplyBtn = document.createElement('button');
+    updApplyBtn.type = 'button';
+    updApplyBtn.className = 'ag-cs-settings-upd-btn is-primary';
+    const updCopyBtn = document.createElement('button');
+    updCopyBtn.type = 'button';
+    updCopyBtn.className = 'ag-cs-settings-upd-btn';
+    const updRelBtn = document.createElement('button');
+    updRelBtn.type = 'button';
+    updRelBtn.className = 'ag-cs-settings-upd-btn';
+    updNoticeBtns.appendChild(updApplyBtn);
+    updNoticeBtns.appendChild(updCopyBtn);
+    updNoticeBtns.appendChild(updRelBtn);
+    updNotice.appendChild(updNoticeText);
+    updNotice.appendChild(updNoticeBtns);
+    headWrap.appendChild(updNotice);
     sec.appendChild(headWrap);
+
+    const syncSettingsUpdateUi = (stateOverride) => {
+      const curUi = uiText(getLang());
+      const st = stateOverride || updateStateCache;
+      if (stateOverride) updateStateCache = stateOverride;
+      checkUpdBtn.disabled = updateActionBusy;
+      if (st?.hasUpdate) checkUpdBtn.classList.add('is-has-update');
+      else checkUpdBtn.classList.remove('is-has-update');
+      if (updateActionBusy) {
+        checkUpdBtn.textContent = curUi.updChecking || 'Checking…';
+      } else if (st?.hasUpdate && st.latestVersion) {
+        checkUpdBtn.textContent = `${curUi.updFoundBadge || 'Update Ready'}: v${st.latestVersion}`;
+      } else if (st?.checkedAtMs && st?.ok !== false) {
+        checkUpdBtn.textContent = curUi.updLatest || 'Up to Date';
+      } else {
+        checkUpdBtn.textContent = curUi.updCheckBtn || 'Check for Updates';
+      }
+
+      if (st?.hasUpdate && st.latestVersion) {
+        updNotice.hidden = false;
+        updNoticeText.textContent = st.isGitRepo
+          ? curUi.updGitHint || 'Git checkout detected — run git pull && npm run setup.'
+          : `v${st.currentVersion || VERSION} → v${st.latestVersion}`;
+        updApplyBtn.hidden = Boolean(st.isGitRepo);
+        updApplyBtn.disabled = updateActionBusy;
+        updApplyBtn.textContent = updateActionBusy
+          ? curUi.updApplying || 'Upgrading…'
+          : curUi.updApplyBtn || '✦ Upgrade & Hot Reload';
+        updCopyBtn.textContent = curUi.updCopyCmdBtn || 'Copy Command';
+        updRelBtn.textContent = curUi.updReleaseBtn || 'Release';
+      } else if (st && st.ok === false && st.error) {
+        updNotice.hidden = false;
+        updNoticeText.textContent = `${curUi.updFailed || 'Update error'}: ${st.error}`;
+        updApplyBtn.hidden = true;
+        updCopyBtn.hidden = !st.installCommand;
+        updCopyBtn.textContent = curUi.updCopyCmdBtn || 'Copy Command';
+        updRelBtn.textContent = curUi.updReleaseBtn || 'Release';
+      } else {
+        updNotice.hidden = true;
+      }
+    };
+
+    checkUpdBtn.addEventListener('click', async () => {
+      if (updateActionBusy) return;
+      updateActionBusy = true;
+      syncSettingsUpdateUi();
+      const res = await dispatchUpdateAction('check', { force: true }, 20000);
+      updateActionBusy = false;
+      syncSettingsUpdateUi(res);
+    });
+
+    updApplyBtn.addEventListener('click', async () => {
+      if (updateActionBusy) return;
+      updateActionBusy = true;
+      syncSettingsUpdateUi();
+      const res = await dispatchUpdateAction(
+        'apply',
+        {
+          targetVersion: updateStateCache?.latestVersion || '',
+          downloadUrl: updateStateCache?.downloadUrl || '',
+        },
+        60000
+      );
+      updateActionBusy = false;
+      if (res?.ok && !res.alreadyLatest) {
+        const curUi = uiText(getLang());
+        updNoticeText.textContent = `${curUi.updDoneReloading || 'Upgraded, hot reloading…'} (v${res.updatedVersion || updateStateCache?.latestVersion || ''})`;
+        updApplyBtn.hidden = true;
+        updateStateCache = {
+          ...(updateStateCache || {}),
+          ok: true,
+          currentVersion: res.updatedVersion || updateStateCache?.latestVersion,
+          latestVersion: res.updatedVersion || updateStateCache?.latestVersion,
+          hasUpdate: false,
+        };
+        verPill.textContent = `v${updateStateCache.currentVersion || VERSION}`;
+        syncSettingsUpdateUi();
+        return;
+      }
+      syncSettingsUpdateUi(res);
+    });
+
+    updCopyBtn.addEventListener('click', async () => {
+      const cmd = updateStateCache?.installCommand || '';
+      if (!cmd) return;
+      try {
+        await navigator.clipboard?.writeText(cmd);
+        updNoticeText.textContent = uiText(getLang()).updCopied || 'Upgrade command copied';
+      } catch {}
+    });
+
+    updRelBtn.addEventListener('click', () => {
+      void dispatchUpdateAction('openUrl', { url: updateStateCache?.releaseUrl || '' }, 10000);
+    });
+
+    syncSettingsUpdateUi();
+    if (!updateStatusBooted) {
+      updateStatusBooted = true;
+      void dispatchUpdateAction('status', {}, 15000).then((res) => {
+        if (!destroyed && res && typeof res === 'object') {
+          syncSettingsUpdateUi(res);
+        }
+      });
+    }
 
     const groupsWrap = mkEl('div', 'ag-cs-settings-groups');
     for (const grp of groups) {
@@ -5710,6 +6040,58 @@
       grpEl.appendChild(list);
       groupsWrap.appendChild(grpEl);
     }
+
+    const linksGrp = mkEl('div', 'ag-cs-settings-group');
+    linksGrp.setAttribute('data-ag-cs-group', 'control-room-links');
+    const linksHead = mkEl('div', 'ag-cs-settings-subhead');
+    linksHead.textContent = ui.grpControlRoomLinks || 'Control Room Exclusive Modules (1-Click Open)';
+    linksGrp.appendChild(linksHead);
+    const linksList = mkEl('div', 'bg-transparent rounded-xl border border-border overflow-hidden divide-y divide-border');
+    const linkItems = [
+      {
+        title: ui.jumpDashboardTitle || '📊 Usage Dashboard & Pricing',
+        desc: ui.jumpDashboardDesc || '53-week heatmap, request logs, cache anomaly alerts & quota tracking.',
+        target: 'dashboard',
+        section: '',
+      },
+      {
+        title: ui.jumpRemoteTitle || '🌐 Standalone Proxy & SSH Remote',
+        desc: ui.jumpRemoteDesc || 'Configure process-level proxy env, connectivity test & remote SSH telemetry.',
+        target: 'remote',
+        section: '',
+      },
+      {
+        title: ui.jumpDockTitle || '📌 Extensions Dock & System',
+        desc: ui.jumpDockDesc || 'Search all settings, manage pinned sidecars & window guard options.',
+        target: 'control',
+        section: 'powertools',
+      },
+    ];
+    for (const item of linkItems) {
+      const row = mkEl('div', 'w-full');
+      const inner = mkEl('div', 'py-2 px-3 w-full bg-transparent flex justify-between gap-4 items-center');
+      const textCol = mkEl('div', 'flex-1 flex flex-col gap-0.5');
+      const titleLine = mkEl('div', 'ag-cs-settings-title-line');
+      const tSpan = mkEl('span', 'text-sm');
+      tSpan.textContent = item.title;
+      titleLine.appendChild(tSpan);
+      const dSpan = mkEl('span', 'text-xs text-muted-foreground whitespace-pre-wrap');
+      dSpan.textContent = item.desc;
+      textCol.appendChild(titleLine);
+      textCol.appendChild(dSpan);
+      const goBtn = document.createElement('button');
+      goBtn.type = 'button';
+      goBtn.className = 'ag-cs-settings-upd-btn';
+      goBtn.textContent = ui.btnJumpGo || 'Open →';
+      goBtn.addEventListener('click', () => navigateToControlRoom({ target: item.target, section: item.section }));
+      inner.appendChild(textCol);
+      inner.appendChild(goBtn);
+      row.appendChild(inner);
+      linksList.appendChild(row);
+    }
+    linksGrp.appendChild(linksList);
+    groupsWrap.appendChild(linksGrp);
+
     sec.appendChild(groupsWrap);
     anchor.parentElement.appendChild(sec);
   }
@@ -6539,6 +6921,14 @@
         window.removeEventListener('resize', onWindowResize);
       } catch {}
     }
+    for (const entry of updatePendingReqs.values()) {
+      clearTimeout(entry.timer);
+      try { entry.resolve({ ok: false, error: 'destroyed' }); } catch {}
+    }
+    updatePendingReqs.clear();
+    if (typeof window !== 'undefined' && '__agCsUpdateActionReply' in window) {
+      try { delete window.__agCsUpdateActionReply; } catch { window.__agCsUpdateActionReply = undefined; }
+    }
     if (Array.isArray(globalThis.__agCsCleanups)) {
       const idx = globalThis.__agCsCleanups.indexOf(teardownCore);
       if (idx >= 0) globalThis.__agCsCleanups.splice(idx, 1);
@@ -6598,6 +6988,25 @@
           cfg = { ...runtimeInitConfig, ...cfg, ...saved };
         } catch {}
       }
+      applyRootAttrs();
+      refreshOpenEffortPopover();
+      runSync();
+      scheduleSync();
+    },
+    resetLocalOverrides(nextDefaults) {
+      try {
+        localStorage.removeItem(STORAGE_SETTINGS_KEY);
+        localStorage.removeItem(STORAGE_FILE_CFG_KEY);
+        localStorage.removeItem('agCsPinnedHeaderExtensions');
+        localStorage.removeItem('agCsPinnedSidebarExtensions');
+        localStorage.removeItem('agCsSidebarExtExpanded');
+      } catch {}
+      if (nextDefaults && typeof nextDefaults === 'object') {
+        runtimeInitConfig = { ...runtimeInitConfig, ...nextDefaults };
+      }
+      cfg = loadSettings(runtimeInitConfig);
+      const existingSec = document.getElementById(SETTINGS_SEC_ID);
+      if (existingSec) existingSec.remove();
       applyRootAttrs();
       refreshOpenEffortPopover();
       runSync();
