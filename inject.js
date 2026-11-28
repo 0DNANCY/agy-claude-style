@@ -16,6 +16,7 @@ const POLL_INTERVAL_MS = Math.max(
 
 let consoleLoggingEnabled = false;
 let activeLogFile = LOG_FILE;
+let lastDuplicateLogPid = null;
 
 function log(...args) {
   const line = args.map((a) => (typeof a === 'string' ? a : JSON.stringify(a))).join(' ');
@@ -135,12 +136,17 @@ function acquireLock(opts = {}) {
         } catch {}
       }
     } else if (allowGracefulDuplicateExit) {
-      const deadline = Date.now() + duplicateWaitMs;
-      while (Date.now() < deadline && aliveCheck(pid)) {
-        sleepSync(100);
+      if (duplicateWaitMs > 0) {
+        const deadline = Date.now() + duplicateWaitMs;
+        while (Date.now() < deadline && aliveCheck(pid)) {
+          sleepSync(100);
+        }
       }
       if (aliveCheck(pid)) {
-        log(`[*] 监听进程已在运行 (PID ${pid})，跳过重复启动`);
+        if (!opts.quietDuplicateLog || lastDuplicateLogPid !== pid) {
+          lastDuplicateLogPid = pid;
+          log(`[*] 监听进程已在运行 (PID ${pid})，跳过重复启动`);
+        }
         return { acquired: false, duplicate: true, pid };
       }
       const reDecision = cdpApi.resolveExistingWatchPidAction(pidFile, targetDir, {
@@ -155,7 +161,10 @@ function acquireLock(opts = {}) {
         return exitFn(1, { blocked: true, reason: reDecision.reason || 'unknown', pid: reDecision.pid });
       }
       if (reDecision.action === 'owned') {
-        log(`[*] 监听进程已在运行 (PID ${reDecision.pid})，跳过重复启动`);
+        if (!opts.quietDuplicateLog || lastDuplicateLogPid !== reDecision.pid) {
+          lastDuplicateLogPid = reDecision.pid;
+          log(`[*] 监听进程已在运行 (PID ${reDecision.pid})，跳过重复启动`);
+        }
         return { acquired: false, duplicate: true, pid: reDecision.pid };
       }
     } else {
@@ -165,6 +174,7 @@ function acquireLock(opts = {}) {
   }
 
   // Only reached when action is 'write', 'clear' (dead/foreign/invalid), or 'owned' resolved via --replace / prior exit.
+  lastDuplicateLogPid = null;
   cdpApi.writeFileAtomic(pidFile, String(opts.selfPid || process.pid));
   if (!opts.skipExitHook) {
     process.removeListener('exit', releasePidFile);
@@ -221,11 +231,15 @@ async function createWatchController({
   allowAutoRelaunch = true,
   enableConsole = false,
   logFile = LOG_FILE,
+  duplicateWaitMs = 0,
+  quietDuplicateLog = true,
 } = {}) {
   consoleLoggingEnabled = Boolean(enableConsole);
   if (logFile) activeLogFile = logFile;
   const lockRes = acquireLock({
     allowGracefulDuplicateExit,
+    duplicateWaitMs,
+    quietDuplicateLog,
     exitFn: () => ({ acquired: false }),
   });
   if (!lockRes || !lockRes.acquired) return null;
