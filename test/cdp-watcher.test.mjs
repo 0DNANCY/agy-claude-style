@@ -1087,6 +1087,31 @@ test('acquireLock with allowGracefulDuplicateExit keeps fail-closed unknown/fore
     assert.equal(exitedRes.acquired, true);
     assert.equal(exitedRes.replaced, true);
     assert.equal(fs.readFileSync(pidFile, 'utf8'), '9104');
+
+    // 5. duplicateWaitMs: 0 skips synchronous Atomics.wait stall when another owned watcher holds the lock
+    const t0 = Date.now();
+    const fastOwnedRes = injectMod.acquireLock({
+      pidFile,
+      targetDir: lockDir,
+      selfPid: 9105,
+      allowGracefulDuplicateExit: true,
+      duplicateWaitMs: 0,
+      quietDuplicateLog: true,
+      skipExitHook: true,
+      killFn: () => {},
+      inspectFn: () => ({
+        cmd: `${process.execPath} ${path.join(lockDir, 'plugin', 'mcp-host.js')}`,
+        args: null,
+        exePath: null,
+        cwd: null,
+      }),
+      exitFn: () => {
+        throw new Error('exitFn must not be called for owned duplicate');
+      },
+    });
+    const elapsedMs = Date.now() - t0;
+    assert.deepEqual(fastOwnedRes, { acquired: false, duplicate: true, pid: 9104 });
+    assert.ok(elapsedMs < 500, `expected non-blocking lock check (<500ms), got ${elapsedMs}ms`);
   } finally {
     fs.rmSync(lockDir, { recursive: true, force: true });
   }

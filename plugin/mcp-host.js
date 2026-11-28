@@ -271,6 +271,8 @@ function startMcpPluginHost() {
         allowGracefulDuplicateExit: true,
         allowAutoRelaunch: true,
         enableConsole: false,
+        duplicateWaitMs: 0,
+        quietDuplicateLog: true,
         logFile,
       });
 

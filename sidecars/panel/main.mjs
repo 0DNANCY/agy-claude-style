@@ -415,7 +415,10 @@ async function startPanelSidecar() {
   }
 
   const guardApi = (fn) => async (data, req) => {
-    if (!isLocalHostRequest(req)) {
+    // Antigravity built-in sidecar_sdk invokes app.api handlers as handler(data) without req
+    // after enforcing loopback bind (127.0.0.1) and x-sidecar-token authentication.
+    // Enforce strict Host/Origin validation whenever a request object is provided.
+    if (req !== undefined && !isLocalHostRequest(req)) {
       return new Response(JSON.stringify({ ok: false, error: 'Forbidden host or origin' }), {
         status: 403,
         contentType: 'application/json',
@@ -660,6 +663,8 @@ async function startPanelSidecar() {
         allowGracefulDuplicateExit: true,
         allowAutoRelaunch: true,
         enableConsole: false,
+        duplicateWaitMs: 0,
+        quietDuplicateLog: true,
         logFile: join(cdp.STATE_DIR, 'watch.log'),
       });
       if (!ctrl) return;

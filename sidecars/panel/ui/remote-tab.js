@@ -79,7 +79,12 @@
       note.textContent = '正在通过 SSH 拉取远端统计…';
       try {
         const res = await app.apiFetch('/api/ssh/sync', { method: 'POST', body: JSON.stringify({ host }) });
-        const d = await res.json();
+        const rawText = await res.text();
+        let d = null;
+        if (rawText) {
+          try { d = JSON.parse(rawText); } catch {}
+        }
+        if (!d) throw new Error(res.ok ? '服务端返回空响应（面板可能正在重启，请重试）' : `HTTP ${res.status}`);
         note.textContent = d.ok ? `同步成功：${d.host}（共 ${d.count} 条请求已并入看板）` : `同步失败：${d.error || '未知错误'}`;
       } catch (err) {
         note.textContent = `同步异常：${err.message}`;
@@ -122,7 +127,12 @@
       note.textContent = '正在测试代理连通性…';
       try {
         const res = await app.apiFetch('/api/proxy/test', { method: 'POST', body: JSON.stringify({ proxyUrl }) });
-        const d = await res.json();
+        const rawText = await res.text();
+        let d = null;
+        if (rawText) {
+          try { d = JSON.parse(rawText); } catch {}
+        }
+        if (!d) throw new Error(res.ok ? '服务端返回空响应（面板可能正在重启，请重试）' : `HTTP ${res.status}`);
         note.textContent = d.ok ? `✓ 连通成功 (${d.host}:${d.port} · ${d.latencyMs}ms)` : `✕ 连通失败：${d.error || '无法连接'}`;
       } catch (err) {
         note.textContent = `✕ 测试异常：${err.message}`;

@@ -213,6 +213,8 @@ test('Aux Pane sidecar guards origins and validates config updates', async () =>
   assert.equal(panel.isLocalHostRequest({ headers: { host: 'localhost:8123', origin: 'http://localhost:8123' } }), true);
   assert.equal(panel.isLocalHostRequest({ headers: { host: '127.0.0.1:8123', origin: 'https://evil.example' } }), false);
   assert.equal(panel.isLocalHostRequest({ headers: { host: '127.0.0.1:8123', 'sec-fetch-site': 'cross-site' } }), false);
+  const mainSrc = fs.readFileSync(path.resolve(__dirname, '../sidecars/panel/main.mjs'), 'utf8');
+  assert.match(mainSrc, /if \(req !== undefined && !isLocalHostRequest\(req\)\)/);
 
   const manifest = JSON.parse(fs.readFileSync(path.resolve(__dirname, '../plugin.json'), 'utf8'));
   const sidecar = JSON.parse(fs.readFileSync(path.resolve(__dirname, '../sidecars/panel/sidecar.json'), 'utf8'));
