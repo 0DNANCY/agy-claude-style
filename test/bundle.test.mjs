@@ -440,7 +440,7 @@ test('inject expression mounts and REMOVE_EXPRESSION cleanly tears down on simul
     const settingKeys = new Set(
       appearancePanel.querySelectorAll('#ag-cs-settings-sec button').map((b) => b.getAttribute('data-ag-cs-key'))
     );
-    assert.equal(settingKeys.size, 20);
+    assert.equal(settingKeys.size, 23);
     for (const expectedKey of [
       'language',
       'homeLayout',
@@ -454,6 +454,9 @@ test('inject expression mounts and REMOVE_EXPRESSION cleanly tears down on simul
       'smoothCaret',
       'mascot',
       'homeRipple',
+      'rightSidebar',
+      'rightSidebarAutoSimplifyHud',
+      'contextMetric',
       'inlineStats',
       'ringMode',
       'turnBadges',
@@ -3471,6 +3474,14 @@ test('remote (cloud) conversation populates Token HUD, top bar, turn badges, and
     assert.equal(getCascadeCalls, 0);
     assert.equal(providerListeners.size, 1, 'Expected live subscription to cloud agentStateProvider.onDidChange');
 
+    const anchor = footer.querySelector('.ag-cs-context-ring');
+    sandbox.window.__agClaudeStyle.openContextPopover(anchor, 'breakdown');
+    const empty = body.querySelector('.ag-cs-ctx-popover').innerHTML;
+    assert.match(empty, /<dt>TTFT<\/dt>\s*<dd>—<\/dd>/);
+    assert.match(empty, /最近一次调用<small>缓存 —<\/small>/);
+    assert.doesNotMatch(empty, /NaN|style="flex-grow:/);
+    sandbox.window.__agClaudeStyle.openContextPopover(anchor, 'breakdown');
+
     // Now cloud stream delivers steps with step-level modelUsage & empty generatorMetadata stubs
     liveAgentState = {
       conversationId: cascadeId,
@@ -3495,8 +3506,8 @@ test('remote (cloud) conversation populates Token HUD, top bar, turn badges, and
             status: 3,
             metadata: {
               createdAt: { seconds: '1795180390' },
-              viewableAt: { seconds: '1795180393' },
-              finishedGeneratingAt: { seconds: '1795180398' },
+              viewableAt: { seconds: '1795180395' },
+              finishedGeneratingAt: { seconds: '1795180402' },
               modelUsage: { inputTokens: '16000', cacheReadTokens: '30000', outputTokens: '1000', thinkingOutputTokens: '400', responseOutputTokens: '600' },
               modelInfo: { displayName: 'Gemini 4 Neon (High)', modelName: 'gemini-4-neon-high', maxTokens: 1048576 },
               sourceTrajectoryStepInfo: { stepIndex: 2 },
@@ -3559,6 +3570,11 @@ test('remote (cloud) conversation populates Token HUD, top bar, turn badges, and
     assert.ok(pop);
     assert.ok(pop.innerHTML.includes('1.05M'));
     assert.ok(pop.innerHTML.includes('Gemini 4 Hydrogen (High)'));
+    const statsText = pop.innerHTML.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
+    assert.match(statsText, /生成速度 当前 200 tok\/s 平均 156 tok\/s TTFT 4\.00 s/);
+    assert.match(statsText, /会话 总量 101\.4K 轮次 · 调用 2 · 2 输出 1\.4K/);
+    assert.match(statsText, /最近一次调用 缓存 92\.6% 新输入 4\.0K 缓存读取 50\.0K 输出 400 思考 100/);
+    assert.equal((pop.innerHTML.match(/ag-cs-ctx-stat-row is-restored/g) || []).length, 4);
 
     assert.equal(getCascadeCalls, 0);
 
@@ -3966,7 +3982,7 @@ test('hudBottomBar triggers quota fetch in context mode, low-context triggers /c
           metadata: {
             value: {
               modelDisplayName: 'Claude Sonnet 4.5',
-              usage: { inputTokens: '12000', cacheReadTokens: '160000', outputTokens: '4000', model: 1001 },
+              usage: { inputTokens: '10000', cacheWriteTokens: '2000', cacheReadTokens: '160000', outputTokens: '4000', model: 1001 },
               chatStartMetadata: {
                 contextWindowMetadata: { maxContextTokens: 200000, estimatedTokensUsed: 176000 }, // 12% free (<= 20%)
               },
@@ -4083,6 +4099,9 @@ test('hudBottomBar triggers quota fetch in context mode, low-context triggers /c
     assert.ok(pop);
     assert.ok(pop.innerHTML.includes('ag-cs-ctx-warn-banner'));
     assert.ok(!pop.innerHTML.includes('ag-cs-ctx-cost'));
+    assert.match(pop.innerHTML, /新输入 10\.0K \+ 缓存写入 2\.0K/);
+    assert.match(pop.innerHTML, /class="is-fresh" style="flex-grow:12000"/);
+    assert.match(pop.innerHTML, /最近一次调用<small>缓存 93\.0%<\/small>/);
 
     assert.equal(pop.querySelector('button[data-ctx-act="export"]'), null);
     const copyBtn = pop.querySelector('button[data-ctx-act="copy"]');
@@ -4640,4 +4659,416 @@ test('inject expression enters sidecar-lite mode on plugin://swarm-- iframe with
   assert.equal(html.getAttribute('lang'), 'en');
   assert.equal(sandbox.window.__agClaudeStyle, undefined);
   assert.equal(sandbox.globalThis.__agCsSidecarCore, undefined);
+});
+
+test('right persistent sidebar renders single-column sections, auto-yields to native aux-sidebar, unifies contextMetric, and jumps to clicked conversation turns', async () => {
+  const timers = new Set();
+  const matchesSel = (node, sel) => {
+    if (!node || !sel) return false;
+    return sel.split(',').some((rawPart) => {
+      const s = rawPart.trim();
+      if (!s) return false;
+      const parts = s.split(/\s+/);
+      let cur = node;
+      for (let i = parts.length - 1; i >= 0; i--) {
+        const tok = parts[i];
+        const ok = (el) => {
+          if (!el) return false;
+          if (tok.startsWith('#')) return el.id === tok.slice(1);
+          if (tok.startsWith('.')) return el.classList.contains(tok.slice(1));
+          const attrM = /^\[([^=\]]+)(?:="([^"]*)")?\]$/.exec(tok);
+          if (attrM) {
+            return attrM[2] === undefined ? el.hasAttribute(attrM[1]) : el.getAttribute(attrM[1]) === attrM[2];
+          }
+          return el.tagName === tok.toUpperCase();
+        };
+        if (i === parts.length - 1) {
+          if (!ok(cur)) return false;
+          cur = cur.parentElement;
+        } else {
+          while (cur && !ok(cur)) cur = cur.parentElement;
+          if (!cur) return false;
+          cur = cur.parentElement;
+        }
+      }
+      return true;
+    });
+  };
+
+  let cvWidth = 1280;
+  const scrolledNodes = [];
+  const makeEl = (tag, opts = {}) => {
+    const attrs = new Map(Object.entries(opts.attrs || {}));
+    const listeners = new Map();
+    const classes = new Set((opts.className || '').split(/\s+/).filter(Boolean));
+    const children = [];
+    const el = {
+      tagName: tag.toUpperCase(),
+      id: opts.id || '',
+      style: {
+        _p: {},
+        setProperty(k, v) { this._p[k] = String(v); },
+        getPropertyValue(k) { return this._p[k] || ''; },
+        removeProperty(k) { delete this._p[k]; },
+      },
+      classList: {
+        contains: (c) => classes.has(c),
+        add: (c) => classes.add(c),
+        remove: (c) => classes.delete(c),
+      },
+      get className() { return Array.from(classes).join(' '); },
+      set className(v) { classes.clear(); String(v).split(/\s+/).filter(Boolean).forEach((c) => classes.add(c)); },
+      children,
+      parentElement: null,
+      parentNode: null,
+      isConnected: true,
+      _text: opts.text || '',
+      get textContent() { return children.length ? children.map((c) => c.textContent).join('') : this._text; },
+      set textContent(v) { children.length = 0; this._text = String(v); },
+      set innerHTML(h) { children.length = 0; this._html = String(h); },
+      get innerHTML() { return this._html || ''; },
+      appendChild(ch) { ch.parentElement = this; ch.parentNode = this; children.push(ch); return ch; },
+      insertBefore(ch, ref) {
+        ch.parentElement = this; ch.parentNode = this;
+        const idx = ref ? children.indexOf(ref) : -1;
+        if (idx >= 0) children.splice(idx, 0, ch); else children.push(ch);
+        return ch;
+      },
+      removeChild(ch) {
+        const idx = children.indexOf(ch);
+        if (idx >= 0) children.splice(idx, 1);
+        ch.parentElement = null; ch.parentNode = null;
+        return ch;
+      },
+      remove() { if (this.parentElement) this.parentElement.removeChild(this); },
+      setAttribute(k, v) { attrs.set(k, String(v)); if (k === 'id') this.id = String(v); },
+      getAttribute(k) { return attrs.has(k) ? attrs.get(k) : null; },
+      hasAttribute(k) { return attrs.has(k); },
+      removeAttribute(k) { attrs.delete(k); },
+      addEventListener(ev, cb) { if (!listeners.has(ev)) listeners.set(ev, []); listeners.get(ev).push(cb); },
+      removeEventListener(ev, cb) {
+        const arr = listeners.get(ev);
+        if (arr) { const i = arr.indexOf(cb); if (i >= 0) arr.splice(i, 1); }
+      },
+      dispatch(ev, payload = {}) {
+        for (const fn of [...(listeners.get(ev) || [])]) {
+          fn({ type: ev, target: this, stopPropagation() {}, preventDefault() {}, ...payload });
+        }
+      },
+      matches(sel) { return matchesSel(this, sel); },
+      closest(sel) {
+        for (let cur = this; cur; cur = cur.parentElement) {
+          if (matchesSel(cur, sel)) return cur;
+        }
+        return null;
+      },
+      querySelector(sel) { return this.querySelectorAll(sel)[0] || null; },
+      querySelectorAll(sel) {
+        const out = [];
+        const walk = (n) => {
+          for (const c of n.children) {
+            if (matchesSel(c, sel)) out.push(c);
+            walk(c);
+          }
+        };
+        walk(this);
+        return out;
+      },
+      scrollIntoView(arg) { scrolledNodes.push({ el: this, arg }); },
+      animate() { return { cancel() {}, finished: Promise.resolve() }; },
+      focus() {},
+      getBoundingClientRect() {
+        if (this.getAttribute('data-testid') === 'conversation-view') {
+          return { left: 220, top: 0, right: 220 + cvWidth, bottom: 800, width: cvWidth, height: 800 };
+        }
+        return { left: 300, top: 680, right: 780, bottom: 720, width: 480, height: 40 };
+      },
+    };
+    return el;
+  };
+
+  const html = makeEl('html');
+  const head = makeEl('head');
+  const body = makeEl('body', { className: 'theme-dark' });
+  html.appendChild(head);
+  html.appendChild(body);
+
+  const auxToggleBtn = makeEl('button', { attrs: { 'data-testid': 'toggle-aux-sidebar', 'aria-pressed': 'false' } });
+  body.appendChild(auxToggleBtn);
+
+  const cascadeId = '11111111-2222-3333-4444-555555555555';
+  const convView = makeEl('div', { attrs: { 'data-testid': 'conversation-view', 'data-cascade-id': cascadeId } });
+  const viewport = makeEl('div', { attrs: { 'data-testid': 'autoscroll-viewport' } });
+  const userStep1 = makeEl('div', { attrs: { 'data-testid': 'user-input-step' }, text: 'First prompt' });
+  const resp1 = makeEl('div', { attrs: { 'data-testid': 'agent-response' }, text: 'First answer' });
+  const userStep2 = makeEl('div', { attrs: { 'data-testid': 'user-input-step' }, text: 'Second prompt' });
+  const resp2 = makeEl('div', { attrs: { 'data-testid': 'agent-response' }, text: 'Second answer' });
+  viewport.appendChild(userStep1);
+  viewport.appendChild(resp1);
+  viewport.appendChild(userStep2);
+  viewport.appendChild(resp2);
+  convView.appendChild(viewport);
+
+  const inputBox = makeEl('div', { attrs: { 'data-testid': 'agent-input-box' } });
+  const card = makeEl('div', { className: 'surface-composer-card' });
+  const editor = makeEl('div', { attrs: { contenteditable: 'true' }, text: '' });
+  const footer = makeEl('div', { className: 'agy-composer-footer' });
+  card.appendChild(editor);
+  card.appendChild(footer);
+  inputBox.appendChild(card);
+  convView.appendChild(inputBox);
+  body.appendChild(convView);
+
+  // Subagent nested conversation-view must NEVER get a duplicate right sidebar
+  const subTab = makeEl('div', { attrs: { 'data-testid': 'subagent-tab-conversation' } });
+  subTab.getBoundingClientRect = () => ({ left: 0, top: 0, right: 0, bottom: 0, width: 0, height: 0 });
+  const subCv = makeEl('div', { attrs: { 'data-testid': 'conversation-view' } });
+  subTab.appendChild(subCv);
+  body.appendChild(subTab);
+
+  const mockTraj = {
+    trajectory: {
+      cascadeId,
+      steps: [
+        { status: 3, metadata: { createdAt: { seconds: '1700010000' } }, step: { case: 'userInput', value: { query: 'First prompt' } } },
+        {
+          status: 3,
+          metadata: { createdAt: { seconds: '1700010002' } },
+          step: {
+            case: 'plannerResponse',
+            value: {
+              response: 'First answer',
+              toolCalls: [{ name: 'edit_file', argumentsJson: JSON.stringify({ Path: '/repo/index.js', Target: 'old();\n', Replacement: 'updated();\nadded();\n' }) }],
+            },
+          },
+        },
+        { status: 3, metadata: { createdAt: { seconds: '1700010003' }, toolCall: { name: 'edit_file' } }, step: { case: 'codeAction', value: {} } },
+        { status: 3, metadata: { createdAt: { seconds: '1700010010' } }, step: { case: 'userInput', value: { query: 'Second prompt' } } },
+        { status: 1, metadata: { createdAt: { seconds: '1700010012' }, toolCall: { name: 'run_command' } }, step: { case: 'runCommand', value: { commandLine: 'npm run build' } } },
+      ],
+      generatorMetadata: [
+        {
+          stepIndices: [0, 1],
+          metadata: {
+            value: {
+              modelDisplayName: 'Claude Sonnet',
+              usage: { inputTokens: '4000', cacheReadTokens: '46000', outputTokens: '1000' },
+              chatStartMetadata: {
+                contextWindowMetadata: {
+                  estimatedTokensUsed: 50000,
+                  maxContextTokens: 200000,
+                  tokenBreakdown: {
+                    groups: [
+                      { type: 1, name: 'System', numTokens: 15000 },
+                      { type: 7, name: 'Messages', numTokens: 35000, children: [{ name: '2: GENERIC', numTokens: 20000 }] },
+                    ],
+                  },
+                },
+              },
+            },
+          },
+        },
+        {
+          stepIndices: [3, 4],
+          metadata: {
+            value: {
+              modelDisplayName: 'Claude Sonnet',
+              usage: { inputTokens: '5000', cacheReadTokens: '75000', outputTokens: '500' },
+              chatStartMetadata: { contextWindowMetadata: { estimatedTokensUsed: 80000, maxContextTokens: 200000 } },
+            },
+          },
+        },
+      ],
+    },
+  };
+
+  convView.__reactFiber$test = {
+    memoizedProps: {
+      store: {
+        getState: () => ({
+          trajectorySummaries: { summaries: { [cascadeId]: { stepCount: 5, status: 2 } } },
+          userStatus: { cascadeModelConfigData: { clientModelConfigs: [] } },
+        }),
+        subscribe: () => () => {},
+      },
+    },
+    dependencies: {
+      firstContext: {
+        memoizedValue: {
+          getCascadeTrajectory: async () => mockTraj,
+          getModelStatuses: async () => ({ groups: [{ displayName: 'Claude', buckets: [{ window: '5h', remaining: { case: 'remainingFraction', value: 0.72 }, resetTime: { seconds: String(Math.floor(Date.now() / 1000) + 3600) } }] }] }),
+        },
+        next: null,
+      },
+    },
+    return: null,
+  };
+
+  const storageMap = new Map();
+  const doc = {
+    documentElement: html,
+    head,
+    body,
+    hidden: false,
+    activeElement: null,
+    createElement: (t) => makeEl(t),
+    getElementById: (id) => html.querySelector('#' + id),
+    querySelector: (s) => html.querySelector(s),
+    querySelectorAll: (s) => html.querySelectorAll(s),
+    addEventListener: () => {},
+    removeEventListener: () => {},
+  };
+
+  const sandbox = {
+    document: doc,
+    location: { protocol: 'https:', pathname: '/' },
+    localStorage: {
+      getItem: (k) => (storageMap.has(k) ? storageMap.get(k) : null),
+      setItem: (k, v) => storageMap.set(k, String(v)),
+    },
+    MutationObserver: class { observe() {} disconnect() {} },
+    requestAnimationFrame: (fn) => { const id = setTimeout(fn, 5); timers.add(id); return id; },
+    cancelAnimationFrame: (id) => { timers.delete(id); clearTimeout(id); },
+    setTimeout: (fn, ms) => { const id = setTimeout(fn, ms); timers.add(id); return id; },
+    clearTimeout: (id) => { timers.delete(id); clearTimeout(id); },
+    setInterval: () => 1,
+    clearInterval: () => {},
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    matchMedia: () => ({ matches: false }),
+    navigator: {},
+    Math, Date, JSON, Map, Set, Array, Object, String, Number, Boolean, Promise, Intl,
+  };
+  sandbox.window = sandbox;
+  sandbox.globalThis = sandbox;
+
+  try {
+    const res = vm.runInNewContext(
+      cdp.buildInjectExpression({ ...cdp.DEFAULT_CONFIG, hudTopBar: true, rightSidebar: true }),
+      sandbox
+    );
+    assert.equal(res.status, 'ok');
+    await new Promise((r) => setTimeout(r, 90));
+
+    // 1. Right sidebar mounts ONLY in main conversation-view, never inside subagent-tab-conversation, and simplifies HUD
+    const rail = convView.querySelector('.ag-cs-right-rail');
+    assert.ok(rail, 'Expected .ag-cs-right-rail in main conversation view');
+    assert.equal(subCv.querySelector('.ag-cs-right-rail'), null, 'Must not mount duplicate sidebar in subagent pane');
+    assert.equal(convView.getAttribute('data-ag-cs-has-rail'), 'open');
+    assert.equal(html.getAttribute('data-ag-cs-right-rail'), 'open');
+    assert.equal(html.getAttribute('data-ag-cs-hud-simplified'), 'on');
+    assert.ok(rail.innerHTML.includes('npm run build'), 'Pinned running section shows active command');
+    assert.ok(rail.innerHTML.includes('#T1') && rail.innerHTML.includes('#T2'), 'Turns section lists turns');
+    const topToggles = body.querySelectorAll('.ag-cs-rail-top-toggle');
+    assert.equal(topToggles.length, 2, 'Expected Details (≡) and Changes (±) icons in same row as toggle-aux-sidebar');
+    assert.equal(auxToggleBtn.parentElement.children[0], topToggles[0], 'Details icon must be leftmost');
+    assert.equal(auxToggleBtn.parentElement.children[1], topToggles[1], 'Changes icon must be second');
+    // Click Changes (±) icon to view modified files, then click Details (≡) to return
+    topToggles[1].dispatch('click');
+    await new Promise((r) => setTimeout(r, 20));
+    assert.ok(rail.innerHTML.includes('index.js'), 'Changes view lists modified file');
+    assert.ok(rail.innerHTML.includes('本次对话累计') && rail.innerHTML.includes('最近一次修改'));
+    const addKey = rail.innerHTML.match(/data-line-key="([^"]+)" data-side="add"/)[1];
+    const delKey = rail.innerHTML.match(/data-line-key="([^"]+)" data-side="del"/)[1];
+    const filePath = rail.innerHTML.match(/data-rel-path="([^"]+)" data-line-no="1"/)[1];
+    assert.notEqual(addKey, delKey);
+    const action = (name, attrs = {}) => makeEl('button', { attrs: { 'data-rail-act': name, ...attrs } });
+    rail.dispatch('click', { target: action('open-comment', { 'data-line-key': delKey, 'data-line-no': '1',
+      'data-side': 'del', 'data-rel-path': filePath }) });
+    assert.equal((rail.innerHTML.match(/class="ag-cs-rail-comment-input"/g) || []).length, 1);
+    const box = makeEl('div', { className: 'ag-cs-rail-comment-box' });
+    const input = makeEl('input', { className: 'ag-cs-rail-comment-input' });
+    const add = action('submit-comment');
+    box.appendChild(input);
+    box.appendChild(add);
+    input.value = 'review the deletion';
+    editor.textContent = 'Existing draft';
+    rail.dispatch('click', { target: add });
+    assert.equal(editor.textContent, 'Existing draft [' + filePath + ':1] (删除行) review the deletion');
+    editor.textContent = '';
+    topToggles[0].dispatch('click');
+    await new Promise((r) => setTimeout(r, 20));
+
+    // 2. Unified contextMetric switches ring & sidebar between Remaining (60%) and Used (40%)
+    const ringBtn = footer.querySelector('.ag-cs-context-ring');
+    assert.ok(ringBtn?.innerHTML.includes('<span>60%</span>'), `Expected 60% in ring, got ${ringBtn?.innerHTML}`);
+    sandbox.window.__agClaudeStyle.refreshConfig({ ...cdp.DEFAULT_CONFIG, hudTopBar: true, rightSidebar: true, contextMetric: 'used' });
+    await new Promise((r) => setTimeout(r, 30));
+    assert.ok(ringBtn?.innerHTML.includes('<span>40%</span>'), `Expected 40% in ring, got ${ringBtn?.innerHTML}`);
+    assert.ok(rail.innerHTML.includes('已用 80.5K') && rail.innerHTML.includes('40.3%'), `Expected Used 80.5K (40.3%) in rail, got ${rail.innerHTML}`);
+
+    // 3. Clicking a turn (via right sidebar delegation AND via popover Turns tab) scrolls & flashes target turn node!
+    const fakeTurnBtn = makeEl('button', { attrs: { 'data-rail-act': 'jump-turn', 'data-turn': '1' } });
+    rail.dispatch('click', { target: fakeTurnBtn });
+    assert.equal(scrolledNodes.length, 1);
+    assert.equal(scrolledNodes[0].el, userStep1);
+    assert.equal(userStep1.getAttribute('data-ag-cs-turn-flash'), '1');
+
+    // Also test jumping to Turn 2 via Token HUD Popover Turns tab
+    ringBtn.dispatch('click');
+    await new Promise((r) => setTimeout(r, 30));
+    const pop = body.querySelector('.ag-cs-ctx-popover');
+    assert.ok(pop);
+    const turnsTabBtn = makeEl('button', { attrs: { 'data-ctx-tab': 'turns' } });
+    // Switch to turns tab via openContextPopover API
+    sandbox.window.__agClaudeStyle.openContextPopover(ringBtn, 'turns');
+    await new Promise((r) => setTimeout(r, 30));
+    const popTurns = body.querySelector('.ag-cs-ctx-popover');
+    assert.ok(popTurns?.innerHTML.includes('data-jump-turn="2"'));
+    const popJumpItem = makeEl('div', { attrs: { 'data-jump-turn': '2' } });
+    popTurns.dispatch('click', { target: popJumpItem });
+    assert.equal(scrolledNodes.length, 2);
+    assert.equal(scrolledNodes[1].el, userStep2);
+    assert.equal(userStep2.getAttribute('data-ag-cs-turn-flash'), '1');
+
+    // 4. Attach @file action inserts @index.js into main composer
+    const attachBtn = makeEl('button', { attrs: { 'data-rail-act': 'attach', 'data-rel-path': 'index.js' } });
+    rail.dispatch('click', { target: attachBtn });
+    assert.equal(editor.textContent, '@index.js');
+
+    // 5. Auto-yield when native aux-sidebar opens: right rail yields (top toggle stays inactive) & restores HUD!
+    auxToggleBtn.setAttribute('aria-pressed', 'true');
+    sandbox.window.__agClaudeStyle.refreshConfig({ ...cdp.DEFAULT_CONFIG, hudTopBar: true, rightSidebar: true });
+    assert.equal(convView.querySelector('.ag-cs-right-rail'), null);
+    assert.equal(body.querySelector('.ag-cs-rail-top-toggle')?.getAttribute('aria-pressed'), 'false');
+    assert.equal(html.getAttribute('data-ag-cs-hud-simplified'), 'off', 'Should restore composer HUD when yielded');
+
+    let nativeToggleClicks = 0;
+    auxToggleBtn.click = () => { nativeToggleClicks++; auxToggleBtn.setAttribute('aria-pressed', 'false'); };
+    topToggles[1].dispatch('click');
+    await new Promise((r) => setTimeout(r, 25));
+    assert.equal(nativeToggleClicks, 1);
+    assert.ok(convView.querySelector('.ag-cs-right-rail').innerHTML.includes('本次对话累计'));
+    assert.equal(subTab.parentElement, body, 'Switching views preserves the native tab');
+
+    // While the host fetches a page its load button can disappear for a while.
+    viewport.removeChild(userStep1);
+    viewport.removeChild(resp1);
+    const load = makeEl('button', { text: 'Load earlier messages (2/4)' });
+    let pages = 0;
+    load.click = () => {
+      pages++;
+      load.remove();
+      setTimeout(() => {
+        viewport.insertBefore(userStep1, userStep2);
+        viewport.insertBefore(resp1, userStep2);
+      }, 420);
+    };
+    viewport.appendChild(load);
+    sandbox.window.__agClaudeStyle.scrollToTurn(1);
+    assert.ok(convView.querySelector('.ag-cs-rail-jump-notice'));
+    await new Promise((r) => setTimeout(r, 750));
+    assert.equal(pages, 1);
+    assert.equal(scrolledNodes.at(-1).el, userStep1);
+    assert.equal(convView.querySelector('.ag-cs-rail-jump-notice'), null);
+
+    // 6. Clean teardown removes all nodes, attributes, and inline CSS vars
+    vm.runInNewContext(cdp.REMOVE_EXPRESSION, sandbox);
+    assert.equal(convView.querySelector('.ag-cs-right-rail'), null);
+    assert.equal(convView.hasAttribute('data-ag-cs-has-rail'), false);
+    assert.equal(html.hasAttribute('data-ag-cs-right-rail'), false);
+    assert.equal(userStep2.hasAttribute('data-ag-cs-turn-flash'), false);
+  } finally {
+    for (const id of timers) clearTimeout(id);
+  }
 });

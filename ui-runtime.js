@@ -182,6 +182,7 @@
     if (inHero && cfg.homeLayout === 'studio') renderHomePanel(true);
     refreshOpenEffortPopover();
     refreshOpenContextPopover();
+    if (railState.el) railState.renderKey = '';
     syncComposers();
     ensureSettingsSection();
   }
@@ -200,6 +201,7 @@
     html.setAttribute('data-ag-cs-sidebar-compact', cfg.sidebarCompact === true ? 'on' : 'off');
     html.setAttribute('data-ag-cs-hud-compact', cfg.hudCompact === true ? 'on' : 'off');
     html.setAttribute('data-ag-cs-effort-accent', cfg.effortAccent === false ? 'off' : 'on');
+    html.setAttribute('data-ag-cs-ctx-metric', cfg.contextMetric === 'used' ? 'used' : 'remaining');
     html.setAttribute('data-ag-cs-lang', lang);
     const isCjk = i18nCore && typeof i18nCore.isCjkLanguage === 'function' ? i18nCore.isCjkLanguage(lang) : isZh();
     if (isCjk) html.setAttribute('data-ag-cs-cjk', '1');
@@ -1634,27 +1636,162 @@
     };
   }
 
-  function fillCompactCommand(scopeEl) {
+  function insertTextIntoComposer(scopeEl, text, replaceAll = false) {
+    const payload = String(text || '');
+    if (!payload) return false;
     const scopedBox = scopeEl?.closest?.('[data-testid="agent-input-box"]') || scopeEl;
+    const mainCv = Array.from(document.querySelectorAll('[data-testid="conversation-view"]')).find(
+      (v) => !v.closest('[data-testid="subagent-tab-conversation"]')
+    );
     const ed =
       scopedBox?.querySelector?.('[contenteditable="true"]') ||
+      mainCv?.querySelector?.('[data-testid="agent-input-box"] [contenteditable="true"]') ||
       document.querySelector('[data-testid="agent-input-box"] [contenteditable="true"]');
     if (!ed) return false;
     try {
-      ed.focus();
+      if (typeof ed.focus === 'function') ed.focus();
+      if (replaceAll) {
+        if (typeof document.execCommand === 'function') {
+          document.execCommand('selectAll', false, null);
+          const ok = document.execCommand('insertText', false, payload);
+          if (ok) return true;
+        }
+        ed.textContent = payload;
+        if (typeof InputEvent === 'function' && typeof ed.dispatchEvent === 'function') {
+          ed.dispatchEvent(new InputEvent('input', { bubbles: true, data: payload, inputType: 'insertText' }));
+        }
+        return true;
+      }
+      const existing = String(ed.textContent || '');
+      const needsSpace = existing.length > 0 && !/\s$/.test(existing);
+      const piece = (needsSpace ? ' ' : '') + payload;
       if (typeof document.execCommand === 'function') {
-        document.execCommand('selectAll', false, null);
-        const ok = document.execCommand('insertText', false, '/compact');
+        const sel = typeof window.getSelection === 'function' ? window.getSelection() : null;
+        if (sel && typeof sel.selectAllChildren === 'function' && typeof sel.collapseToEnd === 'function') {
+          try {
+            sel.selectAllChildren(ed);
+            sel.collapseToEnd();
+          } catch {}
+        }
+        const ok = document.execCommand('insertText', false, piece);
         if (ok) return true;
       }
-      ed.textContent = '/compact';
-      if (typeof InputEvent === 'function') {
-        ed.dispatchEvent(new InputEvent('input', { bubbles: true, data: '/compact', inputType: 'insertText' }));
+      ed.textContent = existing + piece;
+      if (typeof InputEvent === 'function' && typeof ed.dispatchEvent === 'function') {
+        ed.dispatchEvent(new InputEvent('input', { bubbles: true, data: piece, inputType: 'insertText' }));
       }
       return true;
     } catch {
       return false;
     }
+  }
+
+  function fillCompactCommand(scopeEl) {
+    const ok = insertTextIntoComposer(scopeEl, '/compact', true);
+    if (ok && cfg.mascot === 'crab' && crabState.root) {
+      mascotCore.takeMoment(crabState.stage, 'compacting', Date.now());
+      stepCrab();
+    }
+    return ok;
+  }
+
+  function formatUnifiedContextReadout(ring, ui, draftTokens = 0) {
+    const totalW = ring.maxTokens || 256000;
+    const remFmt = formatCompactK(ring.remainingTokens);
+    const usedFmt = formatCompactK(ring.usedTokens);
+    const maxFmt = formatCompactK(totalW);
+    const remPctStr = ring.contextRemainingPct.toFixed(1);
+    const usedPctStr = ring.contextUsedPct.toFixed(1);
+    const draftSuffix = draftTokens > 0 ? ` · ${ui.draftWord || 'Draft'} +${formatCompactK(draftTokens)}` : '';
+    const isUsedPrimary = cfg.contextMetric === 'used';
+    if (isUsedPrimary) {
+      return {
+        isUsedPrimary: true,
+        heroMain: `${ui.usedWord || 'Used'} ${usedFmt} / ${maxFmt} (${usedPctStr}%)`,
+        heroSub: `${ui.remAvailLabel || 'Remaining'} ${remFmt} (${remPctStr}%)${draftSuffix}`,
+        shortMain: `${ui.usedWord || 'Used'} ${Math.round(ring.contextUsedPct)}% (${usedFmt} / ${maxFmt})`,
+        shortSub: `${ui.remShort || 'Rem'} ${remFmt}`,
+        railMain: `${ui.usedWord || 'Used'} ${usedFmt}`,
+        railMainMeta: `/ ${maxFmt} (${usedPctStr}%)`,
+        railSub: `${ui.remShort || 'Rem'} ${remFmt}`,
+        ringPct: ring.mode === 'quota' ? ring.pct : ring.contextUsedPct,
+        ringPctRound: ring.mode === 'quota' ? ring.pctRound : Math.round(ring.contextUsedPct),
+      };
+    }
+    return {
+      isUsedPrimary: false,
+      heroMain: `${ui.remAvailLabel || 'Remaining'} ${remFmt} / ${maxFmt} (${remPctStr}%)`,
+      heroSub: `${ui.usedWord || 'Used'} ${usedFmt} (${usedPctStr}%)${draftSuffix}`,
+      shortMain: `${ui.remShort || 'Rem'} ${Math.round(ring.contextRemainingPct)}% (${remFmt} / ${maxFmt})`,
+      shortSub: `${ui.usedWord || 'Used'} ${usedFmt}${draftTokens > 0 ? ` +${formatCompactK(draftTokens)}` : ''}`,
+      railMain: `${ui.remShort || 'Rem'} ${remFmt}`,
+      railMainMeta: `/ ${maxFmt} (${remPctStr}%)`,
+      railSub: `${ui.usedWord || 'Used'} ${usedFmt} (${usedPctStr}%)`,
+      ringPct: ring.pct,
+      ringPctRound: ring.pctRound,
+    };
+  }
+
+  function renderPopoverStats(data, ui, maxWindow) {
+    const last = data?.lastCall;
+    const speed = data?.displaySpeed || data?.lastSpeed;
+    const ttft = data?.avgTtft || data?.lastTtft;
+    // Cache writes are newly processed input. Include them on the fresh side of the two-part bar.
+    const writes = last?.cacheWriteTokens || 0;
+    const fresh = (last?.inputTokens || 0) + writes;
+    const read = last?.cacheReadTokens || 0;
+    const cachePct = fresh + read > 0 ? `${last.cacheHitPct.toFixed(1)}%` : '—';
+    const freshLabel = ui.freshIn || 'Fresh in';
+    const outputLabel = ui.replyOutput || 'Output';
+    const freshHint = writes > 0
+      ? `${freshLabel} ${formatCompactK(last.inputTokens)} + ${ui.cacheWrite || 'Cache write'} ${formatCompactK(writes)}`
+      : '';
+    const callTokens = (count) => last ? formatCompactK(count) : null;
+    const row = (label, value, { unit, mark = '', hint = '' } = {}) => `
+      <div class="ag-cs-ctx-stat-row ${mark}"${hint ? ` title="${escapeHtml(hint)}"` : ''}>
+        <dt>${escapeHtml(label)}</dt>
+        <dd>${escapeHtml(value ?? '—')}${unit && value != null ? ` <small>${escapeHtml(unit)}</small>` : ''}</dd>
+      </div>`;
+    const limit = (label, value) => `<div><dt>${escapeHtml(label)}</dt><dd>${value == null ? '—' : formatCompactK(value)}</dd></div>`;
+
+    return `<div class="ag-cs-ctx-stats">
+      <div class="ag-cs-ctx-stat-grid">
+        <section>
+          <h3>${escapeHtml(ui.kpiSpeed || 'Speed')}</h3>
+          <dl>
+            ${row(ui.speedCurrent || 'Current', speed || null, { unit: 'tok/s' })}
+            ${row(ui.speedAvgShort || 'Average', data?.avgSpeed || null, { unit: 'tok/s', mark: 'is-restored' })}
+            ${row('TTFT', ttft > 0 ? ttft.toFixed(2) : null, { unit: 's', mark: 'is-restored', hint: ui.avgTtftTitle || 'Average time to first token' })}
+          </dl>
+        </section>
+        <section>
+          <h3>${escapeHtml(ui.kpiSessionTotal || 'Session')}</h3>
+          <dl>
+            ${row(ui.tokenTotal || 'Total', formatCompactK(data?.totalTokens))}
+            ${row(ui.turnsAndCalls || 'Turns · Calls', `${data?.turns || 0} · ${data?.calls || 0}`, { mark: 'is-restored' })}
+            ${row(outputLabel, formatCompactK(data?.totalOutput), { mark: 'is-restored' })}
+          </dl>
+        </section>
+        <section class="ag-cs-ctx-last-call">
+          <h3>${escapeHtml(ui.latestCallTitle || 'Last call')}<small>${escapeHtml(ui.cacheShort || 'Cache')} ${cachePct}</small></h3>
+          <div class="ag-cs-ctx-input-bar" aria-hidden="true">
+            ${fresh > 0 ? `<i class="is-fresh" style="flex-grow:${fresh}"></i>` : ''}
+            ${read > 0 ? `<i class="is-cached" style="flex-grow:${read}"></i>` : ''}
+          </div>
+          <dl class="ag-cs-ctx-stat-grid">
+            ${row(freshLabel, callTokens(fresh), { mark: 'is-fresh', hint: freshHint })}
+            ${row(ui.cacheRead || 'Cache read', callTokens(read), { mark: 'is-cached' })}
+            ${row(outputLabel, callTokens(last?.outputTokens))}
+            ${row(ui.thinkingTokens || 'Thinking', callTokens(last?.thinkingTokens))}
+          </dl>
+        </section>
+        <dl class="ag-cs-ctx-limits">
+          ${limit(ui.rulesBudget || 'Rules', data?.budgets?.rulesTokenBudget)}
+          ${limit(ui.customBudget || 'Custom', data?.budgets?.customizationTokenBudget)}
+          ${limit(ui.maxWindow || 'Max window', maxWindow)}
+        </dl>
+      </div>
+    </div>`;
   }
 
   function renderContextPopoverContent(pop, data, cascadeId) {
@@ -1672,8 +1809,7 @@
     const overhead = Number(data?.overheadTokens || 0);
     const draft = Number(draftEst.tokens || 0);
     const modelName = data?.lastModel || getCurrentModelLabel(card) || ui.activeModelFallback || 'Active Model';
-    const remStr = `${formatCompactK(ring.remainingTokens)} / ${formatCompactK(totalW)} (${ring.contextRemainingPct.toFixed(1)}%)`;
-    const usedStr = `${formatCompactK(ring.usedTokens)} (${ring.contextUsedPct.toFixed(1)}%)`;
+    const ctxReadout = formatUnifiedContextReadout(ring, ui, draft);
     const isLowCtx = Boolean((data?.calls > 0 || ring.usedTokens > 0) && ring.contextRemainingPct <= 20);
     const lowCtxLevel = ring.contextRemainingPct <= 10 ? 'danger' : 'warn';
     const lowCtxBannerHtml = isLowCtx
@@ -1702,127 +1838,115 @@
       const sysChildren = Array.isArray(data?.sysChildren) ? data.sysChildren : [];
       const toolsChildren = Array.isArray(data?.toolsChildren) ? data.toolsChildren : [];
       const topSteps = Array.isArray(data?.topSteps) ? data.topSteps : [];
+      const userTok = Number(data?.userMsgTokens || 0);
+      const botTok = Number(data?.botMsgTokens || Math.max(0, msgs - userTok));
+      const pctOne = (v) => Math.max(0, Math.min(100, ((Number(v) || 0) / totalW) * 100)).toFixed(1) + '%';
+
       const segRows = [
         {
-          id: 'sys',
-          color: '#3b82f6',
-          label: ui.segSystemRules || 'System & Rules',
-          val: sys,
-          children: sysChildren,
-        },
-        {
           id: 'tools',
-          color: '#a855f7',
-          label: typeof ui.toolDeclarationsN === 'function' ? ui.toolDeclarationsN(toolsChildren.length) : `Tool Declarations (${toolsChildren.length})`,
+          color: '#2f7de1',
+          label: typeof ui.toolDeclarationsN === 'function' ? ui.toolDeclarationsN(toolsChildren.length) : `Tools (${toolsChildren.length})`,
           val: tools,
           children: toolsChildren,
         },
         {
           id: 'msgs',
-          color: '#10b981',
-          label: ui.segChatMessages || 'Chat Messages',
+          color: '#ef6c35',
+          label: ui.segChatMessages || 'Messages',
           val: msgs,
+          children: [
+            { name: ui.userWord || 'User', tokens: userTok },
+            { name: ui.assistantWord || 'Assistant', tokens: botTok },
+          ],
         },
         {
           id: 'toolres',
-          color: '#f59e0b',
-          label: ui.segToolResults || 'Tool Results',
+          color: '#14b394',
+          label: ui.segToolResults || 'Tool results',
           val: toolRes,
-          children: topSteps.map((s) => ({ name: s.label || s.name, tokens: s.tokens })),
+          children: topSteps.slice(0, 8).map((s) => ({ name: s.label || s.name, tokens: s.tokens })),
+        },
+        {
+          id: 'sys',
+          color: '#f2a20c',
+          label: ui.segSystemRules || 'System prompt',
+          val: sys,
+          children: sysChildren,
         },
       ];
-      if (overhead > 0) {
-        segRows.push({ id: 'overhead', color: '#64748b', label: ui.segOverhead || 'Context Overhead', val: overhead });
-      }
       if (draft > 0) {
         segRows.push({
           id: 'draft',
-          color: '#ec4899',
-          label: typeof ui.liveDraftN === 'function' ? ui.liveDraftN(draftEst.chars) : `Live Draft (${draftEst.chars} chars)`,
+          color: '#ec6ea6',
+          label: typeof ui.liveDraftN === 'function' ? ui.liveDraftN(draftEst.chars) : `Draft (${draftEst.chars})`,
           val: draft,
+          children: [],
         });
       }
-      segRows.push({
-        id: 'rem',
-        color: ring.color,
-        label: ui.segRemaining || 'Remaining Free Capacity',
-        val: ring.remainingTokens,
-        highlight: true,
-      });
 
-      const rulesB = Number(data?.budgets?.rulesTokenBudget || 0);
-      const customB = Number(data?.budgets?.customizationTokenBudget || 0);
+      const expandedDetailsHtml = segRows
+        .filter((r) => Array.isArray(r.children) && r.children.length > 0 && expandedHudGroups.has(r.id))
+        .map(
+          (r) => `
+          <div class="ag-cs-rail-detail-block">
+            <button type="button" class="ag-cs-rail-cc-row is-detail-head" data-expand-group="${r.id}">
+              <span class="ag-cs-rail-chev is-open">${SVG_ICONS.chevron}</span>
+              <span class="ag-cs-rail-cc-lbl">${escapeHtml(r.label)}</span>
+              <span class="ag-cs-rail-cc-pct is-muted">${r.children.length}</span>
+            </button>
+            ${r.children
+              .slice(0, 12)
+              .map(
+                (c) => `
+              <div class="ag-cs-rail-cc-sub" title="${escapeHtml(c.name || '')}">
+                <span class="ag-cs-rail-cc-lbl">${escapeHtml(c.name || '')}</span>
+                <span class="ag-cs-rail-cc-num">${formatCompactK(c.tokens || 0)}</span>
+              </div>`
+              )
+              .join('')}
+          </div>`
+        )
+        .join('');
 
       tabBodyHtml = `
-        <div class="ag-cs-ctx-kpi-grid">
-          <div class="ag-cs-ctx-kpi">
-            <span class="ag-cs-ctx-k">${escapeHtml(ui.kpiRemaining || 'Remaining Free')}</span>
-            <span class="ag-cs-ctx-v" data-ag-live-kpi-rem-v="1" style="color:${ring.color}">${formatCompactK(ring.remainingTokens)} <small>(${ring.contextRemainingPct.toFixed(1)}%)</small></span>
-            <span class="ag-cs-ctx-sub" data-ag-live-kpi-rem-sub="1">${escapeHtml(ui.usedWord || 'Used')} ${formatCompactK(ring.usedTokens)} / ${formatCompactK(totalW)}</span>
-          </div>
-          <div class="ag-cs-ctx-kpi">
-            <span class="ag-cs-ctx-k">${escapeHtml(ui.kpiCacheHit || 'Cache Hit Rate')}</span>
-            <span class="ag-cs-ctx-v">${(data?.cacheHitPct || 0).toFixed(1)}%</span>
-            <span class="ag-cs-ctx-sub">${escapeHtml(ui.cacheReadShort || 'Read')} ${formatCompactK(data?.lastCacheRead || 0)} · ${escapeHtml(ui.cacheFreshShort || 'Fresh')} ${formatCompactK(data?.lastFreshInput || 0)}</span>
-          </div>
-          <div class="ag-cs-ctx-kpi">
-            <span class="ag-cs-ctx-k">${escapeHtml(ui.kpiSpeed || 'Output Speed')}</span>
-            <span class="ag-cs-ctx-v">${(data?.displaySpeed || data?.lastSpeed) ? (data.displaySpeed || data.lastSpeed) + ' tok/s' : '—'}</span>
-            <span class="ag-cs-ctx-sub">${escapeHtml(ui.speedAvgShort || 'Avg')} ${data?.avgSpeed || 0} tok/s · TTFT ${(data?.avgTtft || data?.lastTtft || 0).toFixed(2)}s</span>
-          </div>
-          <div class="ag-cs-ctx-kpi">
-            <span class="ag-cs-ctx-k">${escapeHtml(ui.kpiSessionTotal || 'Session Total')}</span>
-            <span class="ag-cs-ctx-v">${formatCompactK(data?.totalTokens || 0)}</span>
-            <span class="ag-cs-ctx-sub">${data?.turns || 0} ${escapeHtml(ui.turnsUnit || 'turns')} · ${data?.calls || 0} ${escapeHtml(ui.callsUnit || 'calls')} · ${escapeHtml(ui.outShort || 'Out')} ${formatCompactK(data?.totalOutput || 0)}</span>
-          </div>
-        </div>
-        <div class="ag-cs-ctx-sec-title">${escapeHtml(ui.ctxBreakdownTitle || 'Context Window Breakdown')}</div>
-        <div class="ag-cs-ctx-rows">
+        <div class="ag-cs-rail-cc-list">
           ${segRows
             .map((r) => {
               const hasCh = Array.isArray(r.children) && r.children.length > 0;
               const isExp = hasCh && expandedHudGroups.has(r.id);
-              const chHtml = isExp
-                ? `<div class="ag-cs-ctx-children">
-                    ${r.children
-                      .slice(0, 12)
-                      .map(
-                        (c) => `
-                      <div class="ag-cs-ctx-child-row">
-                        <span class="ag-cs-ctx-child-name">${escapeHtml(c.name || '')}</span>
-                        <span class="ag-cs-ctx-child-val">${formatCompactK(c.tokens || 0)}</span>
-                      </div>`
-                      )
-                      .join('')}
-                  </div>`
-                : '';
               const labelAttr = r.id === 'draft' ? ' data-ag-live-draft-label="1"' : '';
-              const valAttr = r.id === 'draft' ? ' data-ag-live-draft-val="1"' : r.id === 'rem' ? ' data-ag-live-rem-val="1"' : '';
+              const valAttr = r.id === 'draft' ? ' data-ag-live-draft-val="1"' : '';
               return `
-                <div class="ag-cs-ctx-row${r.highlight ? ' is-highlight' : ''}${hasCh ? ' is-expandable' : ''}" ${hasCh ? `data-expand-group="${r.id}"` : ''}>
-                  <span class="ag-cs-ctx-row-label"><span class="ag-cs-ctx-dot" style="background:${r.color}"></span><span${labelAttr}>${escapeHtml(r.label)}</span>${hasCh ? ` <small class="ag-cs-ctx-caret">${isExp ? '▾' : '▸'}</small>` : ''}</span>
-                  <span class="ag-cs-ctx-row-val"${valAttr}>${formatCompactK(r.val)} <small>(${((r.val / totalW) * 100).toFixed(1)}%)</small></span>
-                </div>
-                ${chHtml}`;
+                <div class="ag-cs-rail-cc-row${hasCh ? ' is-expandable' : ''}${isExp ? ' is-open' : ''}"${hasCh ? ` data-expand-group="${r.id}"` : ''}>
+                  <span class="ag-cs-rail-sq" style="background:${r.color}"></span>
+                  <span class="ag-cs-rail-cc-lbl"><span class="${hasCh ? 'ag-cs-rail-dotted' : ''}"${labelAttr}>${escapeHtml(r.label)}</span></span>
+                  <span class="ag-cs-rail-cc-num"${valAttr}>${formatCompactK(r.val)}</span>
+                  <span class="ag-cs-rail-cc-pct">${pctOne(r.val)}</span>
+                </div>`;
             })
             .join('')}
         </div>
-        ${
-          rulesB > 0 || customB > 0
-            ? `<div class="ag-cs-ctx-budgets">
-                <span>${escapeHtml(ui.rulesBudget || 'Rules Budget')}: <strong>${formatCompactK(rulesB)}</strong></span>
-                <span>${escapeHtml(ui.customBudget || 'Custom Budget')}: <strong>${formatCompactK(customB)}</strong></span>
-                <span>${escapeHtml(ui.maxWindow || 'Max Window')}: <strong>${formatCompactK(totalW)}</strong></span>
-              </div>`
-            : ''
-        }
-        <div class="ag-cs-ctx-sec-title">${escapeHtml(ui.latestCallTitle || 'Latest Model Call')}</div>
-        <div class="ag-cs-ctx-latest-grid">
-          <div><span>${escapeHtml(ui.freshIn || 'Fresh In')}</span><strong>${formatCompactK(data?.lastFreshInput || 0)}</strong></div>
-          <div><span>${escapeHtml(ui.cacheRead || 'Cache Read')}</span><strong>${formatCompactK(data?.lastCacheRead || 0)}</strong></div>
-          <div><span>${escapeHtml(ui.replyOutput || 'Output')}</span><strong>${formatCompactK(data?.lastOutput || 0)}</strong></div>
-          <div><span>${escapeHtml(ui.thinkingTokens || 'Thinking')}</span><strong>${formatCompactK(data?.lastThinking || 0)}</strong></div>
+        <div class="ag-cs-rail-cc-list is-gap-top">
+          ${
+            overhead > 0
+              ? `<div class="ag-cs-rail-cc-row">
+                  <span class="ag-cs-rail-sq is-buffer"></span>
+                  <span class="ag-cs-rail-cc-lbl">${escapeHtml(ui.segOverhead || 'Overhead')}</span>
+                  <span class="ag-cs-rail-cc-num">${formatCompactK(overhead)}</span>
+                  <span class="ag-cs-rail-cc-pct">${pctOne(overhead)}</span>
+                </div>`
+              : ''
+          }
+          <div class="ag-cs-rail-cc-row">
+            <span class="ag-cs-rail-sq is-free"></span>
+            <span class="ag-cs-rail-cc-lbl is-primary">${escapeHtml(ui.segRemaining || 'Free space')}</span>
+            <span class="ag-cs-rail-cc-num" data-ag-live-rem-val="1">${formatCompactK(ring.remainingTokens)}</span>
+            <span class="ag-cs-rail-cc-pct">${pctOne(ring.remainingTokens)}</span>
+          </div>
         </div>
+        ${expandedDetailsHtml}
+        ${renderPopoverStats(data, ui, totalW)}
       `;
     } else if (activeHudTab === 'turns') {
       const turns = Array.isArray(data?.turnDetails) ? data.turnDetails.slice().reverse() : [];
@@ -1836,12 +1960,13 @@
                 const dSign = t.ctxDelta >= 0 ? '+' : '';
                 const dCls = t.ctxDelta >= 15000 ? 'is-high' : t.ctxDelta >= 5000 ? 'is-mid' : '';
                 return `
-                  <div class="ag-cs-ctx-turn-item">
+                  <div class="ag-cs-ctx-turn-item is-clickable" data-jump-turn="${t.turn}" title="${escapeHtml(ui.railJumpHint || 'Click to jump')}">
                     <div class="ag-cs-ctx-turn-top">
                       <span class="ag-cs-ctx-turn-idx">#T${t.turn}</span>
                       <span class="ag-cs-ctx-turn-model">${escapeHtml(t.model || modelName)}</span>
                       <span class="ag-cs-ctx-turn-ctx">${escapeHtml(ui.ctxShort || 'Ctx')} ${formatCompactK(t.ctxUsed)}</span>
                       <span class="ag-cs-ctx-turn-delta ${dCls}">${dSign}${formatCompactK(t.ctxDelta)}</span>
+                      <span class="ag-cs-ctx-turn-jump" aria-hidden="true">↗</span>
                     </div>
                     ${t.userPreview ? `<div class="ag-cs-ctx-turn-prompt">${escapeHtml(t.userPreview)}</div>` : ''}
                     <div class="ag-cs-ctx-turn-meta">
@@ -1971,17 +2096,17 @@
       </div>
       <div class="ag-cs-ctx-hero">
         <div class="ag-cs-ctx-hero-line">
-          <span class="ag-cs-ctx-rem-main" data-ag-live-rem-hero="1" style="color:${ring.color}">${escapeHtml(ui.remAvailLabel || 'Remaining')} ${remStr}</span>
-          <span class="ag-cs-ctx-used-sub" data-ag-live-used="1">${escapeHtml(ui.usedWord || 'Used')} ${usedStr}${draft > 0 ? ` · ${escapeHtml(ui.draftWord || 'Draft')} +${formatCompactK(draft)}` : ''}</span>
+          <span class="ag-cs-ctx-rem-main" data-ag-live-rem-hero="1">${escapeHtml(ctxReadout.heroMain)}</span>
+          <span class="ag-cs-ctx-used-sub" data-ag-live-used="1">${escapeHtml(ctxReadout.heroSub)}</span>
         </div>
         ${lowCtxBannerHtml}
         ${quotaBadgeHtml ? `<div class="ag-cs-ctx-hero-sub">${quotaBadgeHtml}</div>` : ''}
         <div class="ag-cs-ctx-bar">
-          <span class="ag-cs-ctx-seg-sys" style="width:${pctOf(sys)}%" title="${escapeHtml(ui.segSystemRules || 'System')}: ${formatCompactK(sys)}"></span>
-          <span class="ag-cs-ctx-seg-tools" style="width:${pctOf(tools)}%" title="${escapeHtml(ui.toolsShort || 'Tools')}: ${formatCompactK(tools)}"></span>
-          <span class="ag-cs-ctx-seg-msgs" style="width:${pctOf(msgs)}%" title="${escapeHtml(ui.segChatMessages || 'Messages')}: ${formatCompactK(msgs)}"></span>
-          <span class="ag-cs-ctx-seg-toolres" style="width:${pctOf(toolRes)}%" title="${escapeHtml(ui.segToolResults || 'Tool Results')}: ${formatCompactK(toolRes)}"></span>
-          ${overhead > 0 ? `<span class="ag-cs-ctx-seg-overhead" style="width:${pctOf(overhead)}%;background:#64748b" title="${escapeHtml(ui.segOverhead || 'Context Overhead')}: ${formatCompactK(overhead)}"></span>` : ''}
+          ${tools > 0 ? `<span class="ag-cs-ctx-seg-tools" style="width:${pctOf(tools)}%" title="${escapeHtml(ui.toolsShort || 'Tools')}: ${formatCompactK(tools)}"></span>` : ''}
+          ${msgs > 0 ? `<span class="ag-cs-ctx-seg-msgs" style="width:${pctOf(msgs)}%" title="${escapeHtml(ui.segChatMessages || 'Messages')}: ${formatCompactK(msgs)}"></span>` : ''}
+          ${toolRes > 0 ? `<span class="ag-cs-ctx-seg-toolres" style="width:${pctOf(toolRes)}%" title="${escapeHtml(ui.segToolResults || 'Tool Results')}: ${formatCompactK(toolRes)}"></span>` : ''}
+          ${sys > 0 ? `<span class="ag-cs-ctx-seg-sys" style="width:${pctOf(sys)}%" title="${escapeHtml(ui.segSystemRules || 'System')}: ${formatCompactK(sys)}"></span>` : ''}
+          ${overhead > 0 ? `<span class="ag-cs-ctx-seg-overhead" style="width:${pctOf(overhead)}%" title="${escapeHtml(ui.segOverhead || 'Overhead')}: ${formatCompactK(overhead)}"></span>` : ''}
           <span class="ag-cs-ctx-seg-draft" data-ag-live-draft-seg="1" style="width:${pctOf(draft)}%" title="${escapeHtml(ui.draftWord || 'Draft')}: ${formatCompactK(draft)}"></span>
         </div>
       </div>
@@ -2082,6 +2207,26 @@
         if (openPopoverAnchor) positionPopoverAboveAnchor(pop, openPopoverAnchor);
       });
     });
+
+    const onJumpTurnClick = (turnNum, ev) => {
+      if (ev && typeof ev.stopPropagation === 'function') ev.stopPropagation();
+      if (!(turnNum > 0)) return;
+      const latest = (cascadeId && activeTrajCache.get(cascadeId)?.data) || data;
+      closeContextPopover();
+      scrollToConversationTurn(turnNum, latest);
+    };
+    pop.querySelectorAll('[data-jump-turn]').forEach((item) => {
+      item.addEventListener('click', (ev) => {
+        onJumpTurnClick(parseInt(item.getAttribute('data-jump-turn') || '0', 10), ev);
+      });
+    });
+    if (!pop._agCsTurnJumpDelegated) {
+      pop._agCsTurnJumpDelegated = true;
+      pop.addEventListener('click', (ev) => {
+        const jt = ev?.target?.closest?.('[data-jump-turn]');
+        if (jt) onJumpTurnClick(parseInt(jt.getAttribute('data-jump-turn') || '0', 10), ev);
+      });
+    }
   }
 
   function positionPopoverAboveAnchor(pop, anchor) {
@@ -2223,7 +2368,8 @@
     const rawFallback = st.cascadeTrajectorySummaries || {};
     const allSummaries = { ...rawFallback, ...rawPrimary };
     const sumEntry = rawPrimary[cascadeId] || rawFallback[cascadeId] || allSummaries[cascadeId];
-    const sum = sumEntry?.summary || sumEntry || {};
+    const unwrapSummary = (entry) => entry?.summary && typeof entry.summary === 'object' ? entry.summary : entry || {};
+    const sum = unwrapSummary(sumEntry);
     const isCloud = Boolean(sum?.cloud === true || cloudOnlyCascadeIds.has(cascadeId));
     const liveState = liveProv ? liveProv.getState?.() || null : null;
     if (liveProv && isCloud) {
@@ -2248,7 +2394,7 @@
       sum?.notFullyIdle ||
       sum?.hasActivity ||
       sum?.status === 2 ||
-      sum?.hasRunningSubagents ||
+      sum?.hasRunningSubagents || sum?.backgroundTaskCount > 0 ||
       liveState?.status === 2 ||
       (liveState && liveState.fullyIdle === false) ||
       domRunning
@@ -2258,7 +2404,7 @@
     const childMetaList = [];
     for (const [subId, rawEntry] of Object.entries(allSummaries)) {
       if (subId === cascadeId) continue;
-      const s = rawEntry?.summary || rawEntry || {};
+      const s = unwrapSummary(rawEntry);
       const meta = s.trajectoryMetadata || {};
       if (meta.parentConversationId === cascadeId || meta.rootConversationId === cascadeId) {
         childMetaList.push({
@@ -2266,14 +2412,20 @@
           parentId: meta.parentConversationId || '',
           rootId: meta.rootConversationId || '',
           summary: s.summary || '',
+          role: meta.subagentSpec?.role || meta.role || meta.subagentRole || meta.agentRole || meta.workerName || '',
+          typeName: meta.subagentSpec?.typeName || meta.typeName || meta.subagentType || meta.agentType || '',
+          nestingDepth: Number(meta.nestingDepth || 1) || 1,
           summaryObj: s,
           stepCount: Number(s.stepCount || 0),
-          status: Number(s.status || 1),
+          status: Number(s.status || 0),
+          backgroundTaskCount: Number(s.backgroundTaskCount || 0),
+          notFullyIdle: Boolean(s.notFullyIdle),
           createdAt: meta.createdAt || s.createdTime,
         });
       }
     }
 
+    const childSignature = JSON.stringify(childMetaList.map((c) => [c.id, c.parentId, c.status, c.stepCount, c.backgroundTaskCount, c.notFullyIdle, c.role, c.summary]));
     let entry = activeTrajCache.get(cascadeId);
     if (entry) {
       // Touch for LRU ordering
@@ -2286,7 +2438,7 @@
         needsRefetch: false,
         lastStep: -1,
         lastMod: -1,
-        lastSubCount: -1,
+        lastSubSignature: '',
         lastRunning: false,
         lastDomSig: '',
         lastLiveSig: '',
@@ -2305,7 +2457,7 @@
       !entry.data ||
       entry.lastStep !== stepCount ||
       entry.lastMod !== lastMod ||
-      entry.lastSubCount !== childMetaList.length ||
+      entry.lastSubSignature !== childSignature ||
       entry.lastRunning !== running ||
       entry.lastDomSig !== domSig ||
       entry.lastLiveSig !== liveSig;
@@ -2316,7 +2468,7 @@
     }
 
     const recentlySubmitted = now - lastUserSubmitAt < 12000;
-    const isHot = running || Boolean(entry.data?.isRunning) || recentlySubmitted;
+    const isHot = running || childMetaList.some((c) => c.status === 2 || c.backgroundTaskCount || c.notFullyIdle) || Boolean(entry.data?.isRunning) || recentlySubmitted;
     const ttlMs = isHot ? 1000 : document.hidden ? 15000 : 3500;
     if (!force && !changed && entry.data && now - entry.lastAt < ttlMs) {
       return entry.data;
@@ -2333,8 +2485,24 @@
         });
         if (!res) return entry.data;
         const knownMax = getKnownMaxContextForCard(null, entry.data);
+        let backgroundByConversation;
+        if (cfg.rightSidebar !== false && isHot && typeof h?.svc?.listBackgroundTasks === 'function') {
+          try {
+            const { tasks } = await h.svc.listBackgroundTasks({});
+            if (Array.isArray(tasks)) {
+              const relevant = new Set([cascadeId, ...childMetaList.map((c) => c.id)]);
+              backgroundByConversation = new Map();
+              for (const item of tasks) {
+                if (!relevant.has(item.conversationId) || !item.task) continue;
+                if (!backgroundByConversation.has(item.conversationId)) backgroundByConversation.set(item.conversationId, []);
+                backgroundByConversation.get(item.conversationId).push(item.task);
+              }
+            }
+          } catch { /* Older hosts provide counts and per-step task details instead. */ }
+        }
+        const backgroundFor = (id) => backgroundByConversation ? backgroundByConversation.get(id) || [] : undefined;
         const analyzed = usageCore.analyzeActiveConversation(res, {
-          cascadeId,
+          cascadeId, backgroundTasks: backgroundFor(cascadeId), backgroundTaskCount: sum.backgroundTaskCount,
           knownLimits: knownMax > 0 ? { maxContextTokens: knownMax } : undefined,
         });
         if (entry.data && entry.data.totalSteps > 0 && analyzed && analyzed.totalSteps === 0 && analyzed.totalCalls === 0) {
@@ -2361,40 +2529,48 @@
         }
 
         if (childMetaList.length > 0 && typeof usageCore.attachSubagentSummaries === 'function') {
-          const subItems = await Promise.all(
-            childMetaList.slice(0, 12).map(async (cm) => {
-              const cachedSub = subagentTrajCache.get(cm.id);
-              const subIsCloud = Boolean(cm.summaryObj?.cloud === true || cloudOnlyCascadeIds.has(cm.id));
-              if (!subIsCloud && cachedSub && cachedSub.stepCount === cm.stepCount && cachedSub.status === 1 && cm.status === 1) {
-                return { ...cm, analysis: cachedSub.analysis };
-              }
-              try {
-                const subRes = await resolveTrajectoryPayload(cm.id, cm.summaryObj, h, {
-                  allowTempStream: true,
-                  timeoutMs: 2500,
-                });
-                if (!subRes) return cm;
-                const subAnalysis = usageCore.analyzeActiveConversation(subRes, { cascadeId: cm.id });
-                subagentTrajCache.delete(cm.id);
-                subagentTrajCache.set(cm.id, {
-                  stepCount: Math.max(cm.stepCount, subAnalysis?.totalSteps || 0),
-                  status: cm.status,
-                  analysis: subAnalysis,
-                });
-                pruneMapCache(subagentTrajCache, MAX_SUBAGENT_TRAJ_CACHE, null);
-                return { ...cm, analysis: subAnalysis };
-              } catch {
-                return cm;
-              }
-            })
-          );
-          usageCore.attachSubagentSummaries(analyzed, subItems);
+          const fetchChild = async (cm) => {
+            const cachedSub = subagentTrajCache.get(cm.id);
+            const subIsCloud = Boolean(cm.summaryObj?.cloud === true || cloudOnlyCascadeIds.has(cm.id));
+            if (!subIsCloud && cachedSub && cachedSub.stepCount === cm.stepCount && cachedSub.status === 1 && cm.status === 1 &&
+                !cm.notFullyIdle && !cm.backgroundTaskCount && !backgroundFor(cm.id)?.length && !cachedSub.analysis?.activeTasks?.length) {
+              return { ...cm, analysis: cachedSub.analysis };
+            }
+            try {
+              const subRes = await resolveTrajectoryPayload(cm.id, cm.summaryObj, h, {
+                allowTempStream: true,
+                timeoutMs: 2500,
+              });
+              if (!subRes) return cm;
+              const subAnalysis = usageCore.analyzeActiveConversation(subRes, {
+                cascadeId: cm.id, backgroundTasks: backgroundFor(cm.id), backgroundTaskCount: cm.backgroundTaskCount,
+              });
+              subagentTrajCache.delete(cm.id);
+              subagentTrajCache.set(cm.id, {
+                stepCount: Math.max(cm.stepCount, subAnalysis?.totalSteps || 0),
+                status: cm.status,
+                analysis: subAnalysis,
+              });
+              pruneMapCache(subagentTrajCache, MAX_SUBAGENT_TRAJ_CACHE, null);
+              return { ...cm, analysis: subAnalysis };
+            } catch {
+              return cm;
+            }
+          };
+          // Keep every child's status visible. Limit concurrent detail reads and reuse idle history.
+          const subItems = new Map(childMetaList.map((cm) => [cm.id, { ...cm, analysis: subagentTrajCache.get(cm.id)?.analysis }]));
+          const fetchList = childMetaList.filter((cm, i) => cm.status === 2 || cm.notFullyIdle || cm.backgroundTaskCount || backgroundFor(cm.id)?.length || i < 12);
+          for (let i = 0; i < fetchList.length; i += 4) {
+            const batch = await Promise.all(fetchList.slice(i, i + 4).map(fetchChild));
+            for (const child of batch) subItems.set(child.id, child);
+          }
+          usageCore.attachSubagentSummaries(analyzed, Array.from(subItems.values()));
         }
 
         entry.data = analyzed;
         entry.lastStep = stepCount;
         entry.lastMod = lastMod;
-        entry.lastSubCount = childMetaList.length;
+        entry.lastSubSignature = childSignature;
         entry.lastRunning = running;
         entry.lastDomSig = domSig;
         entry.lastLiveSig = liveSig;
@@ -2548,7 +2724,8 @@
     hit.className = 'ag-cs-crab-hit';
     hit.addEventListener('pointerdown', (ev) => {
       if (ev.button !== 0) return;
-      crabState.stage.quietSince = Date.now();
+      if (typeof mascotCore.wakeStage === 'function') mascotCore.wakeStage(crabState.stage, Date.now());
+      else crabState.stage.quietSince = Date.now();
       crabState.stage.press = { id: ev.pointerId, x: ev.clientX, y: ev.clientY, lifted: false };
       try {
         hit.setPointerCapture(ev.pointerId);
@@ -2592,6 +2769,18 @@
     };
     hit.addEventListener('pointerup', (ev) => endPress(ev, true));
     hit.addEventListener('pointercancel', (ev) => endPress(ev, false));
+    hit.addEventListener('contextmenu', (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      const now = Date.now();
+      if (typeof mascotCore.wakeStage === 'function') mascotCore.wakeStage(crabState.stage, now);
+      if (crabState.stage.moment?.state === 'music') {
+        crabState.stage.moment = null;
+      } else {
+        mascotCore.takeMoment(crabState.stage, 'music', now);
+      }
+      stepCrab();
+    });
     hit.addEventListener('click', (ev) => ev.stopPropagation());
     root.appendChild(hit);
     return { root, sprite, strip };
@@ -2631,12 +2820,47 @@
     }
     const now = Date.now();
     const isRunning = Boolean(activeInfo?.isRunning);
+    const activeTasks = Array.isArray(activeInfo?.activeTasks) ? activeInfo.activeTasks : [];
+    const subagents = Array.isArray(activeInfo?.subagents) ? activeInfo.subagents : [];
+    const isConducting = subagents.some((s) => s.isRunning) || activeTasks.some((t) => t.kind === 'subagent');
+    const isBuilding =
+      isRunning &&
+      activeTasks.some((t) => t.kind === 'command' || t.kind === 'code' || /build|test|edit|write|run_command/i.test(String(t.title || t.tool || '')));
+    const lastTurn = Array.isArray(activeInfo?.turnDetails) && activeInfo.turnDetails.length > 0
+      ? activeInfo.turnDetails[activeInfo.turnDetails.length - 1]
+      : null;
+    const isCompacting = Boolean(
+      isRunning && lastTurn && /^\s*\/compact\b/i.test(String(lastTurn.userPreview || ''))
+    );
+    const mainCv = activeCard.closest?.('[data-testid="conversation-view"]') || getMainConversationView();
+    const needsApproval = Boolean(mainCv?.querySelector?.('[data-testid="interaction-takeover-card"]'));
+
+    const cid = String(activeInfo?.cascadeId || '');
+    const compCount = Number(activeInfo?.compactionCount || activeInfo?.checkpoints || 0);
+    if (cid && crabState.lastCid === cid && compCount > Number(crabState.lastCompactionCount || 0)) {
+      mascotCore.takeMoment(crabState.stage, 'compacting', now);
+      needsStep = true;
+    }
+    crabState.lastCid = cid;
+    crabState.lastCompactionCount = compCount;
+
     if (crabState.wasRunning && !isRunning) {
-      mascotCore.takeMoment(crabState.stage, activeInfo?.hasError ? 'error' : 'attention', now);
+      const momentName = activeInfo?.hasError
+        ? 'error'
+        : document.hidden || needsApproval
+        ? 'notification'
+        : 'attention';
+      mascotCore.takeMoment(crabState.stage, momentName, now);
       needsStep = true;
     }
     crabState.wasRunning = isRunning;
-    const nextLevel = mascotCore.levelFromActiveInfo(activeInfo);
+
+    const enrichedInfo = activeInfo
+      ? { ...activeInfo, isConducting, isBuilding, isCompacting, needsApproval }
+      : needsApproval
+      ? { needsApproval: true }
+      : null;
+    const nextLevel = mascotCore.levelFromActiveInfo(enrichedInfo);
     if (!crabState.stage.level || crabState.stage.level.state !== nextLevel.state) {
       crabState.stage.level = nextLevel;
       needsStep = true;
@@ -3144,6 +3368,1494 @@
     });
   }
 
+  // ── Turn Jump Locator & Claude Code Single-Column Right Persistent Sidebar ──
+  const STORAGE_RIGHT_RAIL_KEY = 'agClaudeStyle.rightRail.v1';
+  const SVG_ICONS = {
+    chevron: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>',
+    list: '<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6h11M9 12h11M9 18h11"/><circle cx="4.5" cy="6" r=".85" fill="currentColor"/><circle cx="4.5" cy="12" r=".85" fill="currentColor"/><circle cx="4.5" cy="18" r=".85" fill="currentColor"/></svg>',
+    term: '<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="m5 7 5 5-5 5M12 18h7"/></svg>',
+    diff: '<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="3.5" width="16" height="17" rx="2.5"/><path d="M12 7.5v6M9 10.5h6M9 17h6"/></svg>',
+    more: '<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><circle cx="5" cy="12" r="1.1" fill="currentColor"/><circle cx="12" cy="12" r="1.1" fill="currentColor"/><circle cx="19" cy="12" r="1.1" fill="currentColor"/></svg>',
+    refresh: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 4v7h-7"/></svg>',
+    copy: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>',
+    collapse: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M15 4v16"/></svg>',
+    panelRight: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M15 4v16"/></svg>',
+    laptop: '<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="5" width="16" height="11" rx="1.5"/><path d="M2.5 19h19"/></svg>',
+    folder: '<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 7.5a2 2 0 0 1 2-2h4l2 2h7a2 2 0 0 1 2 2v7.5a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/></svg>',
+    dots: (() => {
+      const len = [9.6, 7.4, 10.4, 6.8, 9.2, 8.0, 10.2, 7.0, 9.0, 7.8, 10.6, 6.9];
+      const jit = [0, 4, -3, 2, -2, 5, 1, -4, 3, -1, 2, -3];
+      const dur = [1.3, 1.6, 1.45, 1.75, 1.35, 1.55, 1.5, 1.7, 1.4, 1.65, 1.3, 1.6];
+      const rays = len
+        .map((L, i) => {
+          const tip = 12 - L;
+          const d = `M10.9 12 L11.45 ${(tip + 0.9).toFixed(2)} Q12 ${(tip - 0.2).toFixed(2)} 12.55 ${(tip + 0.9).toFixed(2)} L13.1 12 Z`;
+          return `<g transform="rotate(${i * 30 + jit[i]} 12 12)"><path d="${d}" style="animation-duration:${dur[i]}s;animation-delay:${(-i * 0.13).toFixed(2)}s"/></g>`;
+        })
+        .join('');
+      return `<span class="ag-cs-cc-star" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">${rays}<circle cx="12" cy="12" r="1.6"/></svg></span>`;
+    })(),
+  };
+
+  let turnFlashTimers = new Set();
+
+  function clearTurnFlashes() {
+    for (const id of turnFlashTimers) clearTimeout(id);
+    turnFlashTimers.clear();
+    document.querySelectorAll('[data-ag-cs-turn-flash]').forEach((el) => {
+      el.removeAttribute('data-ag-cs-turn-flash');
+    });
+  }
+
+  function nodeContains(ancestor, child) {
+    if (!ancestor || !child) return false;
+    if (typeof ancestor.contains === 'function') return ancestor.contains(child);
+    for (let cur = child; cur; cur = cur.parentElement || cur.parentNode) {
+      if (cur === ancestor) return true;
+    }
+    return false;
+  }
+
+  function getMainConversationView() {
+    const views = Array.from(document.querySelectorAll('[data-testid="conversation-view"]'));
+    return views.find((v) => !v.closest('[data-testid="subagent-tab-conversation"]')) || null;
+  }
+
+  function findTurnAnchorNodes(turnNum, data) {
+    const targetTurn = Number(turnNum || 0);
+    if (!(targetTurn > 0)) return null;
+    const cv = getMainConversationView();
+    if (!cv) return null;
+
+    const isUserStepEl = (n) =>
+      typeof n?.matches === 'function'
+        ? n.matches('[data-testid="user-input-step"]')
+        : n?.getAttribute?.('data-testid') === 'user-input-step';
+
+    const mainFlowNodes = Array.from(
+      cv.querySelectorAll('[data-testid="user-input-step"], [data-testid="agent-response"]')
+    ).filter((el) => !el.closest('[data-testid="subagent-tab-conversation"]'));
+    const userSteps = [];
+    const userByGroup = new Map();
+    const domTurnGroupByResp = new Map();
+    let currentGroup = 0;
+    for (const node of mainFlowNodes) {
+      if (isUserStepEl(node)) {
+        currentGroup++;
+        userSteps.push(node);
+        userByGroup.set(currentGroup, node);
+      } else {
+        domTurnGroupByResp.set(node, currentGroup);
+      }
+    }
+    const hasDomUserSteps = userSteps.length > 0;
+
+    const allResps = Array.from(cv.querySelectorAll('[data-testid="agent-response"]')).filter(
+      (el) => !el.closest('[data-testid="subagent-tab-conversation"]')
+    );
+    const rawTargets = [];
+    const byContainer = new Map();
+    const byGroup = new Map();
+    for (const resp of allResps) {
+      const host = resp.closest('[data-turn-content]') || resp.parentElement || resp;
+      const fiberInfo = extractFiberTurnContainer(resp);
+      if (fiberInfo?.cascadeId && data?.cascadeId && !sameCascadeId(fiberInfo.cascadeId, data.cascadeId)) {
+        continue;
+      }
+      const grp = hasDomUserSteps && domTurnGroupByResp.has(resp) ? domTurnGroupByResp.get(resp) : -1;
+      const userNode = grp > 0 ? userByGroup.get(grp) || null : null;
+      const containerRef = fiberInfo?.container || null;
+      if (containerRef && byContainer.has(containerRef)) {
+        const ex = byContainer.get(containerRef);
+        ex.host = host;
+        if (!ex.userNode && userNode) ex.userNode = userNode;
+        continue;
+      }
+      if (grp > 0 && byGroup.has(grp)) {
+        const ex = byGroup.get(grp);
+        ex.host = host;
+        if (!ex.userNode && userNode) ex.userNode = userNode;
+        if (containerRef) byContainer.set(containerRef, ex);
+        continue;
+      }
+      const item = { host, userNode, fiberInfo, grp };
+      rawTargets.push(item);
+      if (containerRef) byContainer.set(containerRef, item);
+      if (grp > 0) byGroup.set(grp, item);
+    }
+
+    const turns = Array.isArray(data?.turnDetails) ? data.turnDetails : [];
+    const td = turns.find((x) => x.turn === targetTurn) || null;
+    const hasIndexedTurns = turns.some((x) => x.userStepIdx >= 0);
+
+    // Match unique prompt text before falling back to response group metadata.
+    if (td?.userPreview && hasDomUserSteps) {
+      const norm = (text) => String(text || '').replace(/\s+/g, ' ').trim();
+      const needle = norm(td.userPreview).slice(0, 60);
+      if (needle && turns.filter((t) => norm(t.userPreview).startsWith(needle)).length === 1) {
+        const matches = userSteps.filter((u) => norm(u.textContent).includes(needle));
+        if (matches.length === 1) return { userNode: matches[0], host: null };
+      }
+      const indexed = userSteps.find((el) => {
+        const info = extractFiberTurnContainer(el);
+        return td.userStepIdx >= 0 && info?.stepIndex === td.userStepIdx;
+      });
+      if (indexed) return { userNode: indexed, host: null };
+    }
+
+    // 1. Exact Fiber stepIndex / timestamp match
+    if (td) {
+      for (const item of rawTargets) {
+        const fi = item.fiberInfo;
+        if (!fi) continue;
+        if (typeof fi.stepIndex === 'number' && fi.stepIndex >= 0 && hasIndexedTurns && td.userStepIdx >= 0) {
+          if (fi.stepIndex >= td.userStepIdx && fi.stepIndex < td.nextUserStepIdx) {
+            return { userNode: item.userNode, host: item.host };
+          }
+        } else if (typeof fi.stepTimeSec === 'number' && fi.stepTimeSec > 0 && td.startTimeSec > 0) {
+          if (
+            fi.stepTimeSec >= td.startTimeSec - 2 &&
+            (!Number.isFinite(td.nextStartTimeSec) || fi.stepTimeSec < td.nextStartTimeSec - 1)
+          ) {
+            return { userNode: item.userNode, host: item.host };
+          }
+        }
+      }
+    }
+
+    // 3. Direct or tail-aligned index match ONLY when the turn is actually within the mounted window (never clamp negative indices!)
+    if (hasDomUserSteps) {
+      if (turns.length > 0 && userSteps.length === turns.length && targetTurn <= userSteps.length) {
+        const uNode = userSteps[targetTurn - 1];
+        const paired = byGroup.get(targetTurn);
+        return { userNode: uNode, host: paired?.host || null };
+      }
+      if (td && (td.userStepIdx >= 0 || td.userPreview)) return null;
+      if (turns.length > 0) {
+        const tailOffset = turns.length - targetTurn;
+        const uIdx = userSteps.length - 1 - tailOffset;
+        if (uIdx >= 0 && uIdx < userSteps.length) {
+          const uNode = userSteps[uIdx];
+          const paired = byGroup.get(uIdx + 1);
+          return { userNode: uNode, host: paired?.host || null };
+        }
+        // Target turn is earlier than the currently mounted DOM window
+        if (uIdx < 0) return null;
+      }
+    }
+
+    // 4. Tail-aligned response hosts ONLY when within mounted range (never clamp negative indices!)
+    if (rawTargets.length > 0 && turns.length > 0) {
+      const offsetFromEnd = turns.length - targetTurn;
+      const rIdx = rawTargets.length - 1 - offsetFromEnd;
+      if (rIdx >= 0 && rIdx < rawTargets.length) {
+        const hit = rawTargets[rIdx];
+        if (hit) return { userNode: hit.userNode, host: hit.host };
+      }
+      return null;
+    }
+
+    if (userSteps.length > 0 && targetTurn <= userSteps.length) {
+      return { userNode: userSteps[targetTurn - 1], host: null };
+    }
+    return null;
+  }
+
+  function findLoadEarlierButton(cv) {
+    if (!cv) return null;
+    const vp = cv.querySelector('[data-testid="autoscroll-viewport"]') || cv;
+    const btns = Array.from(vp.querySelectorAll('button')).filter(
+      (b) => !b.closest('.ag-cs-right-rail') && !b.closest('[data-testid="subagent-tab-conversation"]')
+    );
+    return (
+      btns.find((b) => {
+        const txt = String(b.textContent || '').trim();
+        return /load earlier|show earlier|load more|older messages|加载更早|載入更早|顯示更早|之前[嘅的]訊息|以前のメッセージ|過去のメッセージ/i.test(txt);
+      }) || null
+    );
+  }
+
+  let pendingTurnJump = null;
+
+  function cancelTurnJump() {
+    if (!pendingTurnJump) return;
+    clearTimeout(pendingTurnJump.timer);
+    pendingTurnJump.notice?.remove();
+    pendingTurnJump = null;
+  }
+
+  function applyTurnScrollAndFlash(cv, hit) {
+    const anchor = hit?.userNode || hit?.host;
+    if (!anchor) return false;
+    clearTurnFlashes();
+    anchor.scrollIntoView?.({ behavior: 'instant', block: 'start', inline: 'nearest' });
+    const flashTargets = [hit.userNode, hit.host].filter(Boolean);
+    for (const el of flashTargets) {
+      el.setAttribute('data-ag-cs-turn-flash', '1');
+    }
+    const timer = setTimeout(() => {
+      turnFlashTimers.delete(timer);
+      for (const el of flashTargets) {
+        if (el.isConnected) el.removeAttribute('data-ag-cs-turn-flash');
+      }
+    }, 1500);
+    turnFlashTimers.add(timer);
+    return true;
+  }
+
+  function scrollToConversationTurn(turnNum, data) {
+    const cv = getMainConversationView();
+    if (!cv) return false;
+    const resolvedData =
+      data ||
+      (() => {
+        const ib = cv.querySelector('[data-testid="agent-input-box"]');
+        const cid = resolveCascadeId(ib);
+        return (cid && activeTrajCache.get(cid)?.data) || null;
+      })();
+
+    cancelTurnJump();
+    const hit = findTurnAnchorNodes(turnNum, resolvedData);
+    if (hit) return applyTurnScrollAndFlash(cv, hit);
+
+    const cid = resolveCascadeId(cv.querySelector('[data-testid="agent-input-box"]'));
+    const ui = uiText();
+    const notice = document.createElement('div');
+    notice.className = 'ag-cs-rail-jump-notice';
+    notice.setAttribute('role', 'status');
+    notice.setAttribute('data-ag-no-i18n', '');
+    notice.textContent = ui.railLocating.replace('{n}', turnNum);
+    cv.appendChild(notice);
+    const job = { notice, timer: 0 };
+    pendingTurnJump = job;
+    let lastPage = null;
+    let lastProgress = Date.now();
+    let lastClick = 0;
+    const advance = () => {
+      if (pendingTurnJump !== job) return;
+      if (destroyed || getMainConversationView() !== cv || resolveCascadeId(cv.querySelector('[data-testid="agent-input-box"]')) !== cid) {
+        cancelTurnJump();
+        return;
+      }
+      const target = findTurnAnchorNodes(turnNum, resolvedData);
+      if (target) {
+        cancelTurnJump();
+        applyTurnScrollAndFlash(cv, target);
+        return;
+      }
+      const button = findLoadEarlierButton(cv);
+      const page = button?.textContent?.trim() || '';
+      const now = Date.now();
+      if (page && page !== lastPage) {
+        lastPage = page;
+        lastProgress = now;
+        lastClick = 0;
+      }
+      if (now - lastProgress >= 12000) {
+        notice.textContent = '';
+        const retry = document.createElement('button');
+        retry.type = 'button';
+        retry.textContent = ui.railJumpFailed.replace('{n}', turnNum);
+        retry.addEventListener('click', () => scrollToConversationTurn(turnNum, resolvedData));
+        notice.appendChild(retry);
+        return;
+      }
+      if (button && !button.disabled && now - lastClick >= 1400) {
+        // Let the host mount and measure this page before requesting the next.
+        button.scrollIntoView?.({ behavior: 'instant', block: 'start' });
+        button.click();
+        lastClick = now;
+      }
+      job.timer = setTimeout(advance, 240);
+    };
+    advance();
+    return true;
+  }
+
+  function loadRightRailPrefs() {
+    try {
+      const raw = JSON.parse(localStorage.getItem(STORAGE_RIGHT_RAIL_KEY) || '{}');
+      return {
+        collapsed: Boolean(raw?.collapsed === true),
+        width: Math.max(268, Math.min(460, Number(raw?.width) || 316)),
+      };
+    } catch {
+      return { collapsed: false, width: 316 };
+    }
+  }
+
+  const initialRailPrefs = loadRightRailPrefs();
+  const railDiffCache = new Map();
+
+  function extractUnifiedDiffHunks(diffResp) {
+    const rawLines = diffResp?.diff?.unifiedDiff?.lines;
+    if (!Array.isArray(rawLines) || rawLines.length === 0) return [];
+    const startLine = Number(diffResp?.diff?.startLine || 0);
+    const changedIdxs = [];
+    for (let i = 0; i < rawLines.length; i++) {
+      const t = Number(rawLines[i]?.type || 3);
+      if (t === 1 || t === 2) changedIdxs.push(i);
+    }
+    if (changedIdxs.length === 0) return [];
+
+    // Group changed indices into hunks with 2 context lines around each change
+    const ranges = [];
+    for (const idx of changedIdxs) {
+      const lo = Math.max(0, idx - 2);
+      const hi = Math.min(rawLines.length - 1, idx + 2);
+      if (ranges.length > 0 && lo <= ranges[ranges.length - 1][1] + 1) {
+        ranges[ranges.length - 1][1] = Math.max(ranges[ranges.length - 1][1], hi);
+      } else {
+        ranges.push([lo, hi]);
+      }
+    }
+
+    // Precompute 1-based line numbers (old & new)
+    const lineNums = new Array(rawLines.length);
+    let newLn = startLine + 1;
+    let oldLn = startLine + 1;
+    for (let i = 0; i < rawLines.length; i++) {
+      const t = Number(rawLines[i]?.type || 3);
+      if (t === 1) {
+        lineNums[i] = newLn++;
+      } else if (t === 2) {
+        lineNums[i] = oldLn++;
+      } else {
+        lineNums[i] = newLn;
+        newLn++;
+        oldLn++;
+      }
+    }
+
+    const out = [];
+    for (let r = 0; r < ranges.length; r++) {
+      const [lo, hi] = ranges[r];
+      if (r > 0) {
+        out.push({ type: 'hdr', lineNo: '', text: `@@ L${lineNums[lo]} @@` });
+      }
+      for (let i = lo; i <= hi; i++) {
+        const entry = rawLines[i];
+        const t = Number(entry?.type || 3);
+        const rawTxt = String(entry?.text ?? '');
+        if (t === 1) out.push({ type: 'add', lineNo: lineNums[i], text: '+' + rawTxt });
+        else if (t === 2) out.push({ type: 'del', lineNo: lineNums[i], text: '-' + rawTxt });
+        else out.push({ type: 'ctx', lineNo: lineNums[i], text: ' ' + rawTxt });
+      }
+    }
+    return out;
+  }
+
+  function getRailEditDetail(cid, file, edit, full) {
+    const preview = edit.diffLines || [];
+    if (!full && preview.length) return { lines: preview };
+    const key = JSON.stringify([cid, file.path, edit.stepIdx, edit.addedLines, edit.deletedLines]);
+    const cached = railDiffCache.get(key);
+    if (cached) return cached;
+
+    const fallback = () => {
+      const diff = edit.source && usageCore.readEditDiff(edit.source, Infinity);
+      return {
+        lines: diff?.diffLines.length ? diff.diffLines : preview,
+        incomplete: !diff || diff.addedLines < edit.addedLines || diff.deletedLines < edit.deletedLines,
+      };
+    };
+    if (!cid || edit.stepIdx < 0 || typeof cachedSvc?.getCodeActionDiff !== 'function') return fallback();
+
+    const result = { lines: preview, loading: true, key };
+    railDiffCache.set(key, result);
+    pruneMapCache(railDiffCache, 32, new Set([key]));
+    Promise.resolve().then(() => cachedSvc.getCodeActionDiff({ cascadeId: cid, stepIndex: edit.stepIdx }))
+      .then((resp) => {
+        const lines = extractUnifiedDiffHunks(resp);
+        Object.assign(result, lines.length ? { lines } : fallback());
+      }, () => Object.assign(result, fallback()))
+      .finally(() => {
+        result.loading = false;
+        if (!destroyed && railDiffCache.get(key) === result) {
+          railState.renderKey = '';
+          scheduleSync();
+        }
+      });
+    return result;
+  }
+
+  const railState = {
+    el: null,
+    reopenBtn: null,
+    topToggleBtn: null,
+    topDiffBtn: null,
+    hostCv: null,
+    collapsed: initialRailPrefs.collapsed,
+    forceOpen: false,
+    activeView: 'details', // 'details' | 'diff'
+    width: initialRailPrefs.width,
+    dragging: false,
+    renderKey: '',
+    expandedGroups: new Set(['msgs']),
+    sectionsOpen: { diff: true, turns: true, quotas: false },
+    conversationId: null,
+    openDiffPath: null,
+    historyOpen: false,
+    selectedEditStep: null,
+    shownLines: 120,
+    commentTarget: null,
+    copyFeedback: '',
+    copyTimer: 0,
+  };
+
+  function saveRightRailPrefs() {
+    try {
+      localStorage.setItem(
+        STORAGE_RIGHT_RAIL_KEY,
+        JSON.stringify({ collapsed: railState.collapsed, width: Math.round(railState.width) })
+      );
+    } catch {}
+  }
+
+  function isNativeAuxSidebarOpen() {
+    const auxBtn = document.querySelector('[data-testid="toggle-aux-sidebar"]');
+    if (auxBtn) {
+      const pressed = auxBtn.getAttribute('aria-pressed');
+      const expanded = auxBtn.getAttribute('aria-expanded');
+      const dState = auxBtn.getAttribute('data-state');
+      if (pressed === 'true' || expanded === 'true' || dState === 'open' || dState === 'active') {
+        return true;
+      }
+    }
+    const subTabs = document.querySelectorAll('[data-testid="subagent-tab-conversation"]');
+    for (const st of subTabs) {
+      const r = typeof st.getBoundingClientRect === 'function' ? st.getBoundingClientRect() : null;
+      if (!r || r.width > 20) return true;
+    }
+    return false;
+  }
+
+  function unmountRightSidebar() {
+    if (railState.copyTimer) {
+      clearTimeout(railState.copyTimer);
+      railState.copyTimer = 0;
+    }
+    if (railState.el) {
+      railState.el.remove();
+      railState.el = null;
+    }
+    if (railState.reopenBtn) {
+      railState.reopenBtn.remove();
+      railState.reopenBtn = null;
+    }
+    if (railState.topToggleBtn) {
+      railState.topToggleBtn.remove();
+      railState.topToggleBtn = null;
+    }
+    if (railState.topDiffBtn) {
+      railState.topDiffBtn.remove();
+      railState.topDiffBtn = null;
+    }
+    if (railState.hostCv) {
+      railState.hostCv.removeAttribute('data-ag-cs-has-rail');
+      railState.hostCv.style.removeProperty('--ag-cs-rail-w');
+      railState.hostCv = null;
+    }
+    railState.renderKey = '';
+    document.querySelectorAll('[data-ag-cs-has-rail]').forEach((el) => {
+      el.removeAttribute('data-ag-cs-has-rail');
+      el.style.removeProperty('--ag-cs-rail-w');
+    });
+    document.querySelectorAll('.ag-cs-right-rail, .ag-cs-rail-reopen-btn, .ag-cs-rail-top-toggle').forEach((n) => n.remove());
+    const html = document.documentElement;
+    if (html) {
+      html.removeAttribute('data-ag-cs-right-rail');
+      html.setAttribute('data-ag-cs-hud-simplified', 'off');
+    }
+  }
+
+  function selectRailFile(path) {
+    railState.openDiffPath = path;
+    railState.historyOpen = false;
+    railState.selectedEditStep = null;
+    railState.shownLines = 120;
+    railState.commentTarget = null;
+    railState.renderKey = '';
+  }
+
+  function bindRightRailEvents(rail) {
+    if (rail._agCsBound) return;
+    rail._agCsBound = true;
+
+    rail.addEventListener('pointerdown', (ev) => {
+      const resizer = ev?.target?.closest?.('.ag-cs-rail-resizer');
+      if (!resizer) return;
+      ev.stopPropagation();
+      ev.preventDefault();
+      railState.dragging = true;
+      resizer.classList.add('is-dragging');
+      const startX = Number(ev.clientX || 0);
+      const startW = railState.width;
+      const onMove = (me) => {
+        if (!railState.dragging) return;
+        const dx = startX - Number(me.clientX || 0);
+        const nextW = Math.max(268, Math.min(460, Math.round(startW + dx)));
+        if (nextW !== railState.width) {
+          railState.width = nextW;
+          if (railState.hostCv) {
+            railState.hostCv.style.setProperty('--ag-cs-rail-w', `${nextW}px`);
+          }
+          rail.style.setProperty('--ag-cs-rail-w', `${nextW}px`);
+        }
+      };
+      const onUp = () => {
+        railState.dragging = false;
+        resizer.classList.remove('is-dragging');
+        window.removeEventListener('pointermove', onMove, true);
+        window.removeEventListener('pointerup', onUp, true);
+        saveRightRailPrefs();
+      };
+      window.addEventListener('pointermove', onMove, true);
+      window.addEventListener('pointerup', onUp, true);
+    });
+
+    const submitCommentBox = (inputEl) => {
+      if (!railState.commentTarget) return;
+      if (!inputEl) return;
+      const rawVal = String(inputEl.value || '').trim();
+      const { relPath, lineNo, deleted } = railState.commentTarget;
+      const ref = `${relPath}:${lineNo}`;
+      const side = deleted ? ` (${uiText().railDeletedLine})` : '';
+      const snippet = rawVal ? `[${ref}]${side} ${rawVal}` : `@${ref}${side}`;
+      const box = railState.hostCv?.querySelector('[data-testid="agent-input-box"]');
+      if (!insertTextIntoComposer(box || railState.hostCv, snippet, false)) return;
+      railState.commentTarget = null;
+      railState.renderKey = '';
+      scheduleSync();
+    };
+
+    rail.addEventListener('input', (ev) => {
+      if (railState.commentTarget && ev.target?.classList?.contains('ag-cs-rail-comment-input')) {
+        railState.commentTarget.text = ev.target.value;
+      }
+    });
+    rail.addEventListener('keydown', (ev) => {
+      const cInput = ev?.target?.closest?.('.ag-cs-rail-comment-input');
+      if (!cInput) return;
+      ev.stopPropagation();
+      if (ev.key === 'Enter' && !ev.isComposing) {
+        ev.preventDefault();
+        submitCommentBox(cInput);
+      } else if (ev.key === 'Escape') {
+        ev.preventDefault();
+        railState.commentTarget = null;
+        railState.renderKey = '';
+        scheduleSync();
+      }
+    });
+
+    rail.addEventListener('click', (ev) => {
+      const btn = ev?.target?.closest?.('[data-rail-act]');
+      if (!btn) return;
+      ev.stopPropagation();
+      const act = btn.getAttribute('data-rail-act');
+      const cv = railState.hostCv || getMainConversationView();
+      const card = cv?.querySelector?.('[data-testid="agent-input-box"] .surface-composer-card');
+      const ib = cv?.querySelector?.('[data-testid="agent-input-box"]');
+      const cid = resolveCascadeId(ib);
+      const curData = (cid && activeTrajCache.get(cid)?.data) || card?._agCsLastData || null;
+
+      if (act === 'collapse') {
+        railState.collapsed = true;
+        railState.forceOpen = false;
+        saveRightRailPrefs();
+        scheduleSync();
+      } else if (act === 'compact') {
+        fillCompactCommand(card || cv);
+      } else if (act === 'refresh') {
+        railState.renderKey = '';
+        Promise.all([cid ? fetchActiveConvo(cid, true, card) : Promise.resolve(null), fetchQuotaData(true)]).then(() => {
+          if (!destroyed) scheduleSync();
+        });
+      } else if (act === 'copy') {
+        const curLang = getLang();
+        const curUi = uiText(curLang);
+        const safeData = curData || createEmptyConvoData(cid, getKnownMaxContextForCard(card, curData));
+        const { draftEst, activeQuota } = getRingTelemetryForCard(card, safeData);
+        const report =
+          typeof usageCore?.buildTelemetryReport === 'function'
+            ? usageCore.buildTelemetryReport(safeData, draftEst, cachedQuotaData, activeQuota, curLang)
+            : JSON.stringify(safeData || {}, null, 2);
+        const finishCopy = (ok) => {
+          railState.copyFeedback = ok ? curUi.copiedBtnLabel || '✓ Copied' : curUi.actionFailedLabel || '✕ Failed';
+          railState.renderKey = '';
+          scheduleSync();
+          clearTimeout(railState.copyTimer);
+          railState.copyTimer = setTimeout(() => {
+            railState.copyFeedback = '';
+            railState.renderKey = '';
+            if (!destroyed) scheduleSync();
+          }, 1400);
+        };
+        if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+          navigator.clipboard.writeText(report).then(
+            () => finishCopy(true),
+            () => finishCopy(false)
+          );
+        } else {
+          finishCopy(false);
+        }
+      } else if (act === 'toggle-group') {
+        const gid = btn.getAttribute('data-rail-group') || '';
+        if (!gid) return;
+        if (railState.expandedGroups.has(gid)) railState.expandedGroups.delete(gid);
+        else railState.expandedGroups.add(gid);
+        railState.renderKey = '';
+        scheduleSync();
+      } else if (act === 'toggle-sec') {
+        const sec = btn.getAttribute('data-rail-sec') || '';
+        if (!sec) return;
+        railState.sectionsOpen[sec] = !railState.sectionsOpen[sec];
+        railState.renderKey = '';
+        scheduleSync();
+      } else if (act === 'toggle-diff') {
+        const p = btn.getAttribute('data-diff-path') || '';
+        selectRailFile(railState.openDiffPath === p ? '' : p);
+        scheduleSync();
+      } else if (act === 'toggle-history' || act === 'select-edit') {
+        if (act === 'toggle-history') railState.historyOpen = !railState.historyOpen;
+        railState.selectedEditStep = act === 'select-edit' ? Number(btn.getAttribute('data-step')) : null;
+        railState.shownLines = 120;
+        railState.commentTarget = null;
+        railState.renderKey = '';
+        scheduleSync();
+      } else if (act === 'more-lines' || act === 'retry-diff') {
+        if (act === 'more-lines') railState.shownLines += 120;
+        else railDiffCache.delete(btn.getAttribute('data-cache-key'));
+        railState.renderKey = '';
+        scheduleSync();
+      } else if (act === 'attach') {
+        const rel = btn.getAttribute('data-rel-path') || '';
+        if (rel) insertTextIntoComposer(card || cv, `@${rel}`, false);
+      } else if (act === 'open-comment') {
+        const relPath = btn.getAttribute('data-rel-path') || '';
+        const lineNo = btn.getAttribute('data-line-no') || '1';
+        railState.commentTarget = {
+          relPath, lineNo, key: btn.getAttribute('data-line-key'),
+          deleted: btn.getAttribute('data-side') === 'del', text: '',
+        };
+        railState.renderKey = '';
+        syncRightSidebar(card, curData);
+        const inp = rail.querySelector('.ag-cs-rail-comment-input');
+        if (inp && typeof inp.focus === 'function') inp.focus();
+      } else if (act === 'cancel-comment') {
+        railState.commentTarget = null;
+        railState.renderKey = '';
+        scheduleSync();
+      } else if (act === 'submit-comment') {
+        submitCommentBox(btn.closest('.ag-cs-rail-comment-box')?.querySelector('.ag-cs-rail-comment-input'));
+      } else if (act === 'jump-turn') {
+        const tNum = parseInt(btn.getAttribute('data-turn') || '0', 10);
+        if (tNum > 0) scrollToConversationTurn(tNum, curData);
+      }
+    });
+  }
+
+  function renderRailDiffLines(file, edit, lines, ui) {
+    const rel = escapeHtml(file.relPath);
+    return lines.map((line, index) => {
+      const key = `${edit.stepIdx}:${index}:${line.type}:${line.lineNo}`;
+      const target = railState.commentTarget;
+      const commenting = target?.relPath === file.relPath && target.key === key;
+      const header = line.type === 'hdr';
+      const button = header ? '' : `<button type="button" class="ag-cs-rail-line-plus"
+        data-rail-act="open-comment" data-line-key="${escapeHtml(key)}" data-side="${escapeHtml(line.type)}"
+        data-rel-path="${rel}" data-line-no="${line.lineNo || 1}" title="${escapeHtml(ui.railComment)}">+</button>`;
+      return `<div class="ag-cs-rail-code-line is-${line.type}">
+        <span class="ag-cs-rail-ln">${header ? '' : line.lineNo || ''}</span>
+        <span class="ag-cs-rail-code">${escapeHtml(line.text || '')}</span>${button}</div>
+        ${commenting ? `<div class="ag-cs-rail-comment-box">
+          <input type="text" class="ag-cs-rail-comment-input" value="${escapeHtml(target.text)}" placeholder="${escapeHtml(ui.railCommentPlaceholder)}" />
+          <div class="ag-cs-rail-comment-actions">
+            <button type="button" class="ag-cs-rail-underlink" data-rail-act="cancel-comment">${escapeHtml(ui.railCancel)}</button>
+            <button type="button" class="ag-cs-rail-underlink is-primary" data-rail-act="submit-comment">${escapeHtml(ui.railAddComment)}</button>
+          </div></div>` : ''}`;
+    }).join('');
+  }
+
+  function renderRailFileDetail(cid, file, ui) {
+    const history = file.history?.length ? file.history : [{ ...file, stepIdx: file.lastStepIdx ?? -1 }];
+    const latest = history[history.length - 1];
+    const full = railState.historyOpen;
+    const edit = (full && history.find((item) => item.stepIdx === railState.selectedEditStep)) || latest;
+    const turnLabel = (item) => item.turn > 0 ? ui.railTurnNumber.replace('{n}', item.turn) : '';
+    const detail = getRailEditDetail(cid, file, edit, full);
+    const limit = full ? railState.shownLines : 48;
+    const lines = detail.lines.slice(0, limit);
+    const more = Math.min(120, detail.lines.length - lines.length);
+    const editList = full ? `<div class="ag-cs-rail-edit-list" role="group" aria-label="${escapeHtml(ui.railAllEdits)}">
+      ${history.map((item, i) => `<button type="button" data-rail-act="select-edit" data-step="${item.stepIdx}"
+        aria-pressed="${edit.stepIdx === item.stepIdx}">
+        <span>${escapeHtml([ui.railEditNumber.replace('{n}', i + 1), turnLabel(item)].filter(Boolean).join(' · '))}</span>
+        <span class="ag-cs-rail-diff-stat">+${item.addedLines} −${item.deletedLines}</span></button>`).reverse().join('')}</div>` : '';
+    const summary = full ? ui.railAllEdits : [ui.railLatestEdit, turnLabel(edit)].filter(Boolean).join(' · ');
+    return `<div class="ag-cs-rail-diff-detail">
+      <div class="ag-cs-rail-diff-toolbar">
+        <span>${escapeHtml(summary)}</span>
+        <button type="button" class="ag-cs-rail-underlink" data-rail-act="toggle-history" aria-expanded="${full}">${escapeHtml(full ? ui.railLatestEdit : ui.railAllEdits)}${full ? '' : ` (${history.length})`}</button>
+      </div>${editList}
+      ${lines.length ? `<div class="ag-cs-rail-hunk">${renderRailDiffLines(file, edit, lines, ui)}</div>` : ''}
+      ${detail.loading ? `<div role="status" class="ag-cs-rail-empty">${escapeHtml(ui.railDiffLoading)}</div>` : ''}
+      ${!detail.loading && (detail.incomplete || !lines.length) ? `<div class="ag-cs-rail-empty">${escapeHtml(ui.railDiffUnavailable)}
+        ${detail.key ? `<button type="button" class="ag-cs-rail-underlink" data-rail-act="retry-diff" data-cache-key="${escapeHtml(detail.key)}">${escapeHtml(ui.railRetry)}</button>` : ''}</div>` : ''}
+      ${full && more > 0 ? `<button type="button" class="ag-cs-rail-underlink" data-rail-act="more-lines">${escapeHtml(ui.railMoreLines.replace('{n}', more))}</button>` : ''}
+      <div class="ag-cs-rail-cc-diff-links">
+        <button type="button" class="ag-cs-rail-underlink" data-rail-act="attach" data-rel-path="${escapeHtml(file.relPath)}">${escapeHtml(ui.railAttachBtn)}</button>
+        ${edit.turn > 0 ? `<button type="button" class="ag-cs-rail-underlink" data-rail-act="jump-turn" data-turn="${edit.turn}">${escapeHtml(ui.railLocateBtn)} #T${edit.turn}</button>` : ''}
+      </div></div>`;
+  }
+
+  function visibleRailTasks(tasks) {
+    if (!Array.isArray(tasks)) return [];
+    const work = tasks.filter((t) => t.kind !== 'streaming' && t.kind !== 'thinking');
+    return work.length ? work : tasks.slice(-1);
+  }
+
+  function syncRightSidebar(primaryCard, fallbackData) {
+    const mainCv = getMainConversationView();
+    const html = document.documentElement;
+    if (cfg.rightSidebar === false || !mainCv || cfg.composerRestyle === false) {
+      unmountRightSidebar();
+      return;
+    }
+
+    const card =
+      (primaryCard && nodeContains(mainCv, primaryCard) ? primaryCard : null) ||
+      mainCv.querySelector('[data-testid="agent-input-box"] .surface-composer-card');
+    const ib = card?.closest?.('[data-testid="agent-input-box"]') || mainCv.querySelector('[data-testid="agent-input-box"]');
+    const cid = resolveCascadeId(ib);
+    if (railState.conversationId !== cid) {
+      cancelTurnJump();
+      railState.conversationId = cid;
+      selectRailFile(null);
+      railDiffCache.clear();
+    }
+    const fallback = fallbackData || card?._agCsLastData;
+    const d = (cid && activeTrajCache.get(cid)?.data) ||
+      (fallback && (!cid || !fallback.cascadeId || sameCascadeId(cid, fallback.cascadeId)) ? fallback : null) ||
+      createEmptyConvoData(cid, getKnownMaxContextForCard(card, null));
+
+    const cvRect = typeof mainCv.getBoundingClientRect === 'function' ? mainCv.getBoundingClientRect() : null;
+    const cvWidth = Number(cvRect?.width || 0);
+    const nativeAuxOpen = isNativeAuxSidebarOpen();
+    const minRequiredWidth = railState.width + 480;
+    const autoYield =
+      nativeAuxOpen ||
+      (cvWidth > 0 ? cvWidth < (railState.forceOpen ? 540 : minRequiredWidth) : !railState.forceOpen);
+
+    if (!nativeAuxOpen && cvWidth >= minRequiredWidth + 24 && railState.forceOpen) {
+      railState.forceOpen = false;
+    }
+
+    const shouldCollapse = railState.collapsed || autoYield;
+    const lang = getLang();
+    const ui = uiText(lang);
+    const { ring, draftEst, activeQuota } = getRingTelemetryForCard(card, d);
+    const isRunningNow = Boolean(d.isRunning || d.isThinking || getDomConvoSignal(cid).domRunning);
+    const isLowCtx = Boolean((d.calls > 0 || ring.usedTokens > 0) && ring.contextRemainingPct <= 20);
+
+    const isOpen = !shouldCollapse;
+    const changedFilesTop = Array.isArray(d.changedFiles) ? d.changedFiles : [];
+
+    // Mount Details (≡) and Changes (±) toggle buttons on the leftmost side of Antigravity's native sidebar button row
+    const auxBtn = document.querySelector('[data-testid="toggle-aux-sidebar"]');
+    const auxRow = auxBtn?.parentElement || null;
+    let hasTopToggle = false;
+    if (auxRow && typeof auxRow.insertBefore === 'function') {
+      hasTopToggle = true;
+      const makeOrPlaceTopBtn = (stateKey, viewName) => {
+        let btn = railState[stateKey];
+        if (!btn || btn.parentElement !== auxRow) {
+          btn?.remove();
+          btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'ag-cs-rail-top-toggle';
+          btn.setAttribute('data-ag-no-i18n', '');
+          btn.setAttribute('data-rail-view', viewName);
+          btn.addEventListener('click', (ev) => {
+            ev.stopPropagation();
+            const currentlyOpen = Boolean(railState.el && railState.el.parentElement);
+            const nativeOpen = isNativeAuxSidebarOpen();
+            if (!nativeOpen && currentlyOpen && railState.activeView === viewName) {
+              railState.collapsed = true;
+              railState.forceOpen = false;
+            } else {
+              railState.activeView = viewName;
+              // The native toggle hides its pane while retaining the selected tab and its draft.
+              if (nativeOpen) document.querySelector('[data-testid="toggle-aux-sidebar"]')?.click();
+              railState.collapsed = false;
+              railState.forceOpen = true;
+              railState.renderKey = '';
+            }
+            saveRightRailPrefs();
+            scheduleSync();
+          });
+          railState[stateKey] = btn;
+        }
+        return btn;
+      };
+
+      const detailsBtn = makeOrPlaceTopBtn('topToggleBtn', 'details');
+      const diffBtn = makeOrPlaceTopBtn('topDiffBtn', 'diff');
+      // Keep order: [detailsBtn, diffBtn, ...native buttons]
+      if (auxRow.children[0] !== detailsBtn) auxRow.insertBefore(detailsBtn, auxRow.firstChild || auxBtn);
+      if (auxRow.children[1] !== diffBtn) auxRow.insertBefore(diffBtn, detailsBtn.nextSibling || auxBtn);
+
+      const detailsActive = isOpen && railState.activeView === 'details';
+      detailsBtn.className = detailsActive ? 'ag-cs-rail-top-toggle is-active' : 'ag-cs-rail-top-toggle';
+      detailsBtn.setAttribute('aria-pressed', detailsActive ? 'true' : 'false');
+      detailsBtn.setAttribute('title', detailsActive ? (ui.railCollapseTitle || 'Collapse sidebar') : (ui.railExpandTitle || 'Session details'));
+      if (isRunningNow && !detailsActive) detailsBtn.setAttribute('data-rail-running', '1');
+      else detailsBtn.removeAttribute('data-rail-running');
+      if (isLowCtx && !detailsActive) detailsBtn.setAttribute('data-rail-low', ring.contextRemainingPct <= 10 ? 'danger' : 'warn');
+      else detailsBtn.removeAttribute('data-rail-low');
+      const detailsHtml = `${SVG_ICONS.list}<span class="ag-cs-rail-reopen-dot" aria-hidden="true"></span>`;
+      if (detailsBtn.innerHTML !== detailsHtml) detailsBtn.innerHTML = detailsHtml;
+
+      const diffActive = isOpen && railState.activeView === 'diff';
+      diffBtn.className = diffActive ? 'ag-cs-rail-top-toggle is-active' : 'ag-cs-rail-top-toggle';
+      diffBtn.setAttribute('aria-pressed', diffActive ? 'true' : 'false');
+      diffBtn.setAttribute('title', ui.railDiffTitle || 'Changed files');
+      diffBtn.setAttribute('aria-label', changedFilesTop.length ? ui.railFileCount.replace('{n}', changedFilesTop.length) : ui.railDiffTitle);
+      const diffBadge = changedFilesTop.length > 0 && !diffActive ? `<span class="ag-cs-rail-top-badge">${changedFilesTop.length}</span>` : '';
+      const diffHtml = `${SVG_ICONS.diff}${diffBadge}`;
+      if (diffBtn.innerHTML !== diffHtml) diffBtn.innerHTML = diffHtml;
+    } else {
+      if (railState.topToggleBtn) {
+        railState.topToggleBtn.remove();
+        railState.topToggleBtn = null;
+      }
+      if (railState.topDiffBtn) {
+        railState.topDiffBtn.remove();
+        railState.topDiffBtn = null;
+      }
+    }
+
+    if (shouldCollapse) {
+      if (railState.el) {
+        railState.el.remove();
+        railState.el = null;
+        railState.renderKey = '';
+      }
+      mainCv.removeAttribute('data-ag-cs-has-rail');
+      mainCv.style.removeProperty('--ag-cs-rail-w');
+      railState.hostCv = mainCv;
+      if (html) {
+        html.setAttribute('data-ag-cs-right-rail', 'collapsed');
+        html.setAttribute('data-ag-cs-hud-simplified', 'off');
+      }
+
+      if (hasTopToggle) {
+        if (railState.reopenBtn) {
+          railState.reopenBtn.remove();
+          railState.reopenBtn = null;
+        }
+        return;
+      }
+
+      let reopen = railState.reopenBtn;
+      if (!reopen || reopen.parentElement !== mainCv) {
+        reopen?.remove();
+        reopen = document.createElement('button');
+        reopen.type = 'button';
+        reopen.className = 'ag-cs-rail-reopen-btn';
+        reopen.setAttribute('data-ag-no-i18n', '');
+        reopen.addEventListener('click', (ev) => {
+          ev.stopPropagation();
+          railState.collapsed = false;
+          railState.forceOpen = true;
+          saveRightRailPrefs();
+          scheduleSync();
+        });
+        mainCv.appendChild(reopen);
+        railState.reopenBtn = reopen;
+      }
+      reopen.setAttribute('title', ui.railExpandTitle || 'Expand right sidebar');
+      if (isRunningNow) reopen.setAttribute('data-rail-running', '1');
+      else reopen.removeAttribute('data-rail-running');
+      if (isLowCtx) reopen.setAttribute('data-rail-low', ring.contextRemainingPct <= 10 ? 'danger' : 'warn');
+      else reopen.removeAttribute('data-rail-low');
+      const reopenHtml = `${SVG_ICONS.list}<span class="ag-cs-rail-reopen-dot" aria-hidden="true"></span>`;
+      if (reopen.innerHTML !== reopenHtml) reopen.innerHTML = reopenHtml;
+      return;
+    }
+
+    // Expanded state: mount single-column Claude Code inspector inside mainCv
+    if (railState.reopenBtn) {
+      railState.reopenBtn.remove();
+      railState.reopenBtn = null;
+    }
+    if (railState.hostCv && railState.hostCv !== mainCv) {
+      railState.hostCv.removeAttribute('data-ag-cs-has-rail');
+      railState.hostCv.style.removeProperty('--ag-cs-rail-w');
+    }
+    railState.hostCv = mainCv;
+    mainCv.setAttribute('data-ag-cs-has-rail', 'open');
+    mainCv.style.setProperty('--ag-cs-rail-w', `${railState.width}px`);
+
+    if (html) {
+      html.setAttribute('data-ag-cs-right-rail', 'open');
+      html.setAttribute('data-ag-cs-hud-simplified', cfg.rightSidebarAutoSimplifyHud === false ? 'off' : 'on');
+    }
+
+    let rail = railState.el;
+    if (!rail || rail.parentElement !== mainCv) {
+      rail?.remove();
+      rail = document.createElement('aside');
+      rail.className = 'ag-cs-right-rail';
+      rail.setAttribute('data-ag-no-i18n', '');
+      rail.style.setProperty('--ag-cs-rail-w', `${railState.width}px`);
+      bindRightRailEvents(rail);
+      mainCv.appendChild(rail);
+      railState.el = rail;
+      railState.renderKey = '';
+    }
+
+    // Do not clobber active inline comment input typing
+    const activeEl = document.activeElement;
+    if (railState.commentTarget && railState.activeView === 'diff' && activeEl?.classList?.contains('ag-cs-rail-comment-input') && nodeContains(rail, activeEl)) {
+      return;
+    }
+
+    const totalW = ring.maxTokens || 256000;
+    const sys = Number(d.sysTokens || 0);
+    const tools = Number(d.toolsTokens || 0);
+    const toolRes = Number(d.toolResultsTokens || 0);
+    const chatMsgs = Number(d.chatMsgTokens != null ? d.chatMsgTokens : Math.max(0, Number(d.msgTokens || 0) - toolRes));
+    const msgTotal = chatMsgs + toolRes;
+    const overhead = Number(d.overheadTokens || 0);
+    const draft = Number(draftEst.tokens || 0);
+    const readout = formatUnifiedContextReadout(ring, ui, draft);
+    const modelName = String(d.lastModel || getCurrentModelLabel(card) || ui.activeModelFallback || 'Model')
+      .replace(/\s*\([^)]*\)\s*/g, '')
+      .trim();
+
+    const activeTasks = visibleRailTasks(d.activeTasks);
+    const subagents = Array.isArray(d.subagents) ? d.subagents : [];
+    const activeSubs = subagents.filter((s) => s.isRunning).map((sub) => ({ ...sub, activeTasks: visibleRailTasks(sub.activeTasks) }));
+    const changedFiles = Array.isArray(d.changedFiles) ? d.changedFiles : [];
+    const changedTotals = d.changedTotals || { files: changedFiles.length, addedLines: 0, deletedLines: 0 };
+    const turns = Array.isArray(d.turnDetails) ? d.turnDetails : [];
+    const quotaGroups = Array.isArray(cachedQuotaData?.groups) ? cachedQuotaData.groups : [];
+    const topSteps = Array.isArray(d.topSteps) ? d.topSteps.slice(0, 5) : [];
+
+    // Auto-select first changed file when none chosen yet
+    if (railState.openDiffPath === null && changedFiles.length === 1) {
+      railState.openDiffPath = changedFiles[0].path;
+    }
+
+    const renderKey = [
+      cid,
+      lang,
+      railState.activeView,
+      cfg.contextMetric || 'remaining',
+      isRunningNow ? 1 : 0,
+      d.isThinking ? 1 : 0,
+      d.displaySpeed || 0,
+      ring.usedTokens,
+      ring.remainingTokens,
+      totalW,
+      draft,
+      d.totalTokens || 0,
+      Math.round(d.cacheHitPct || 0),
+      activeTasks.map((t) => `${t.stepIdx}:${t.turn}:${t.title}:${Math.round(t.elapsedSec || 0)}`).join(','),
+      d.currentFocus || '',
+      d.latestTurnAction || '',
+      activeSubs
+        .map((s) => `${s.id}:${s.parentId}:${s.roleKind}:${s.role}:${s.steps}:${s.totalTokens}:${s.summary}:${s.activeTasks.map(t => [t.stepIdx, t.kind, t.title, t.elapsedSec].join(':')).join(',')}`)
+        .join(','),
+      changedFiles.map((f) => `${f.path}:${f.kind}:${f.edits}:${f.addedLines}:${f.deletedLines}`).join(','),
+      turns.length,
+      turns[turns.length - 1]?.ctxUsed || 0,
+      turns[turns.length - 1]?.inProgress ? 1 : 0,
+      quotaGroups.map((g) => `${g.groupName}:${Math.round(g.effectiveRemainingPct || 0)}`).join(','),
+      Array.from(railState.expandedGroups).sort().join(','),
+      `${railState.sectionsOpen.diff ? 1 : 0}${railState.sectionsOpen.turns ? 1 : 0}${railState.sectionsOpen.quotas ? 1 : 0}`,
+      railState.openDiffPath,
+      railState.historyOpen, railState.selectedEditStep, railState.shownLines,
+      railState.commentTarget?.key,
+      railState.copyFeedback,
+    ].join('|');
+
+    if (railState.renderKey === renderKey) return;
+    railState.renderKey = renderKey;
+
+    const prevScroll = rail.querySelector('.ag-cs-rail-body')?.scrollTop || 0;
+    const pctOf = (v) => Math.max(0, Math.min(100, ((Number(v) || 0) / totalW) * 100)).toFixed(2);
+    const pctOne = (v) => Math.max(0, Math.min(100, ((Number(v) || 0) / totalW) * 100)).toFixed(1) + '%';
+    const lowCtxLevel = ring.contextRemainingPct <= 10 ? 'danger' : 'warn';
+
+    // 0. Pinned Live Execution Section (Full parallel tasks + parent→child subagent tree + role badges; hidden when idle!)
+    let liveSectionHtml = '';
+    if (isRunningNow || activeTasks.length > 0 || activeSubs.length > 0) {
+      const isZhLang = String(lang || '').startsWith('zh') || lang === 'yue';
+      const roleLabels = isZhLang
+        ? { main: '主任务', browser: '浏览器', research: '调研', coder: '开发', review: '审查', image: '图像', swarm: '蜂群', agent: '子代理' }
+        : { main: 'Main', browser: 'Browser', research: 'Research', coder: 'Coder', review: 'Review', image: 'Image', swarm: 'Swarm', agent: 'Subagent' };
+      const getRoleText = (sub) => {
+        if (sub.role && sub.role.length <= 14) return sub.role;
+        return roleLabels[sub.roleKind] || roleLabels.agent;
+      };
+      const fmtTaskElapsed = (t) =>
+        t?.elapsedSec > 0 ? `${Math.max(1, Math.round(t.elapsedSec))}s` : '';
+
+      // Build parent -> child subagent map
+      const activeSubIds = new Set(activeSubs.map((s) => s.id).filter(Boolean));
+      const subChildrenByParent = new Map();
+      const topLevelSubs = [];
+      for (const s of activeSubs) {
+        if (s.parentId && s.parentId !== cid && activeSubIds.has(s.parentId)) {
+          if (!subChildrenByParent.has(s.parentId)) subChildrenByParent.set(s.parentId, []);
+          subChildrenByParent.get(s.parentId).push(s);
+        } else {
+          topLevelSubs.push(s);
+        }
+      }
+
+      const renderedSubs = new Set();
+      const renderSubTree = (sub) => {
+        if (renderedSubs.has(sub.id)) return '';
+        renderedSubs.add(sub.id);
+        const rk = sub.roleKind || 'agent';
+        const rLabel = sub.summary ? getRoleText(sub) : roleLabels[rk] || roleLabels.agent;
+        const subTasks = Array.isArray(sub.activeTasks) ? sub.activeTasks : [];
+        const nestedSubs = subChildrenByParent.get(sub.id) || [];
+        const subTitle = sub.summary || sub.role || sub.typeName || sub.shortId || roleLabels.agent;
+        const tokMeta = sub.totalTokens > 0 ? formatCompactK(sub.totalTokens) : '';
+        return `
+          <div class="ag-cs-rail-tree-node">
+            <div class="ag-cs-rail-cc-row" title="${escapeHtml(subTitle)}">
+              ${SVG_ICONS.dots}
+              <span class="ag-cs-rail-role is-${escapeHtml(rk)}">${escapeHtml(rLabel)}</span>
+              <span class="ag-cs-rail-cc-lbl ag-cs-shimmer-text">${escapeHtml(subTitle)}</span>
+              ${tokMeta ? `<span class="ag-cs-rail-cc-num is-muted">${escapeHtml(tokMeta)}</span>` : ''}
+            </div>
+            ${
+              subTasks.length > 0 || nestedSubs.length > 0
+                ? `<div class="ag-cs-rail-tree-children">
+                    ${subTasks
+                      .map(
+                        (st) => `
+                        <div class="ag-cs-rail-cc-row is-sub-task" title="${escapeHtml(st.title || '')}">
+                          <span class="ag-cs-rail-cc-sub-arrow">↳</span>
+                          <span class="ag-cs-rail-cc-lbl">${escapeHtml(st.title || st.stepCase || 'Task')}</span>
+                          ${fmtTaskElapsed(st) ? `<span class="ag-cs-rail-cc-num is-muted">${escapeHtml(fmtTaskElapsed(st))}</span>` : ''}
+                        </div>`
+                      )
+                      .join('')}
+                    ${nestedSubs.map(renderSubTree).join('')}
+                  </div>`
+                : ''
+            }
+          </div>
+        `;
+      };
+
+      const showMainFallback = isRunningNow && !activeTasks.length && !activeSubs.length;
+      const fallbackActionTitle =
+        String(d.currentFocus || '').trim() ||
+        String(d.latestTurnAction || '').trim() ||
+        (d.isThinking ? (ui.thinkingEllipsis || 'Thinking…') : (ui.streamingEllipsis || 'Streaming…'));
+      const mainTaskRowsHtml =
+        activeTasks.length > 0
+          ? activeTasks
+              .map((t, idx) => {
+                const tEl = fmtTaskElapsed(t) || (idx === 0 && d.displaySpeed > 0 ? `${d.displaySpeed} tok/s` : '');
+                const taskLabel =
+                  t.kind === 'streaming' || t.kind === 'thinking'
+                    ? fallbackActionTitle
+                    : t.title || t.summary || fallbackActionTitle;
+                return `
+                  <div class="ag-cs-rail-cc-row" title="${escapeHtml(taskLabel)}">
+                    ${SVG_ICONS.dots}
+                    <span class="ag-cs-rail-cc-lbl ag-cs-shimmer-text">${escapeHtml(taskLabel)}</span>
+                    ${tEl ? `<span class="ag-cs-rail-cc-num is-muted">${escapeHtml(tEl)}</span>` : ''}
+                  </div>`;
+              })
+              .join('')
+          : showMainFallback
+          ? `<div class="ag-cs-rail-cc-row" title="${escapeHtml(fallbackActionTitle)}">
+              ${SVG_ICONS.dots}
+              <span class="ag-cs-rail-cc-lbl ag-cs-shimmer-text">${escapeHtml(fallbackActionTitle)}</span>
+              ${d.displaySpeed > 0 ? `<span class="ag-cs-rail-cc-num is-muted">${d.displaySpeed} tok/s</span>` : ''}
+            </div>`
+          : '';
+
+      const taskCount = activeTasks.length + Number(showMainFallback) + activeSubs.reduce((n, sub) => n + sub.activeTasks.length, 0);
+      const counts = [taskCount && ui.railTaskCount.replace('{n}', taskCount),
+        activeSubs.length && ui.railAgentCount.replace('{n}', activeSubs.length)].filter(Boolean).join(' · ');
+      const tree = topLevelSubs.map(renderSubTree).join('') + activeSubs.map(renderSubTree).join('');
+      liveSectionHtml = `
+        <section class="ag-cs-rail-sec ag-cs-rail-live">
+          <div class="ag-cs-rail-sec-head">
+            <span class="ag-cs-rail-h is-inline">
+              <span>${escapeHtml(ui.railRunningTitle || 'Running')}</span>
+              <span class="is-muted">${escapeHtml(counts)}</span>
+            </span>
+          </div>
+          <div class="ag-cs-rail-tree">
+            ${mainTaskRowsHtml}
+            ${
+              tree
+                ? `<div class="ag-cs-rail-tree-children">
+                    ${tree}
+                  </div>`
+                : ''
+            }
+          </div>
+        </section>
+      `;
+    }
+
+    // 1. Environment Section (Claude Code screenshot exact 2-row layout)
+    const wsPath = String(d.workspacePath || '').trim();
+    const wsBase = wsPath ? wsPath.split('/').filter(Boolean).pop() || wsPath : '';
+    const wsParent = wsPath && wsBase && wsPath.length > wsBase.length ? wsPath.slice(0, wsPath.length - wsBase.length).replace(/\/$/, '') : '';
+    const envSectionHtml = `
+      <section class="ag-cs-rail-sec">
+        <div class="ag-cs-rail-sec-head">
+          <span class="ag-cs-rail-h is-inline">${escapeHtml(ui.railTitle || 'Environment')}</span>
+          <button type="button" class="ag-cs-rail-mini-btn" data-rail-act="refresh" title="${escapeHtml(ui.refreshBtnTitle || 'Refresh')}">${SVG_ICONS.refresh}</button>
+        </div>
+        <div class="ag-cs-rail-cc-row">
+          <span class="ag-cs-rail-cc-ic">${SVG_ICONS.laptop}</span>
+          <span class="ag-cs-rail-cc-lbl is-primary">${escapeHtml(modelName)}</span>
+          ${
+            railState.copyFeedback
+              ? `<span class="ag-cs-rail-copy-fb">${escapeHtml(railState.copyFeedback)}</span>`
+              : `<button type="button" class="ag-cs-rail-underlink" data-rail-act="copy" title="${escapeHtml(ui.copyBtnTitle || 'Copy')}">${escapeHtml(ui.copyBtnLabel || 'Copy')}</button>`
+          }
+        </div>
+        ${
+          wsBase
+            ? `<div class="ag-cs-rail-cc-row" title="${escapeHtml(wsPath)}">
+                <span class="ag-cs-rail-cc-ic">${SVG_ICONS.folder}</span>
+                <span class="ag-cs-rail-cc-lbl"><strong class="is-primary">${escapeHtml(wsBase)}</strong>${wsParent ? ` <span class="is-muted">· ${escapeHtml(wsParent)}</span>` : ''}</span>
+              </div>`
+            : ''
+        }
+      </section>
+    `;
+
+    // 2. Context Section (Exact Claude Code screenshot: headline + 4px segmented bar + 3-col color square table + expandable detail below)
+    const sysChildren = Array.isArray(d.sysChildren) ? d.sysChildren : [];
+    const toolsChildren = Array.isArray(d.toolsChildren) ? d.toolsChildren : [];
+    const expSys = railState.expandedGroups.has('sys') && sysChildren.length > 0;
+    const expTools = railState.expandedGroups.has('tools') && toolsChildren.length > 0;
+    const expMsgs = railState.expandedGroups.has('msgs');
+    const expToolRes = railState.expandedGroups.has('toolres') && topSteps.length > 0;
+    const userTok = Number(d.userMsgTokens || 0);
+    const botTok = Number(d.botMsgTokens || Math.max(0, chatMsgs - userTok));
+
+    const ctxRows = [
+      { id: 'tools', color: '#2f7de1', label: typeof ui.toolDeclarationsN === 'function' ? ui.toolDeclarationsN(toolsChildren.length) : `Tools (${toolsChildren.length})`, val: tools, expandable: toolsChildren.length > 0 },
+      { id: 'msgs', color: '#ef6c35', label: ui.segChatMessages || 'Messages', val: chatMsgs, expandable: true },
+      { id: 'toolres', color: '#14b394', label: ui.segToolResults || 'Tool results', val: toolRes, expandable: topSteps.length > 0 },
+      { id: 'sys', color: '#f2a20c', label: ui.segSystemRules || 'System prompt', val: sys, expandable: sysChildren.length > 0 },
+    ];
+    if (draft > 0) {
+      ctxRows.push({ id: 'draft', color: '#ec6ea6', label: ui.draftWord || 'Draft', val: draft, expandable: false });
+    }
+
+    const renderDetailBlock = (id, title, count, rowsHtml) => `
+      <div class="ag-cs-rail-detail-block">
+        <button type="button" class="ag-cs-rail-cc-row is-detail-head" data-rail-act="toggle-group" data-rail-group="${id}">
+          <span class="ag-cs-rail-chev is-open">${SVG_ICONS.chevron}</span>
+          <span class="ag-cs-rail-cc-lbl">${escapeHtml(title)}</span>
+          <span class="ag-cs-rail-cc-pct is-muted">${count}</span>
+        </button>
+        ${rowsHtml}
+      </div>
+    `;
+
+    let expandedDetailsHtml = '';
+    if (expTools) {
+      expandedDetailsHtml += renderDetailBlock(
+        'tools',
+        ui.toolsShort || 'Tools',
+        toolsChildren.length,
+        toolsChildren
+          .slice(0, 12)
+          .map(
+            (c) => `<div class="ag-cs-rail-cc-sub" title="${escapeHtml(c.name || '')}"><span class="ag-cs-rail-cc-lbl">${escapeHtml(c.name || '')}</span><span class="ag-cs-rail-cc-num">${formatCompactK(c.tokens || 0)}</span></div>`
+          )
+          .join('')
+      );
+    }
+    if (expMsgs) {
+      const msgSubRows = `
+        <div class="ag-cs-rail-cc-sub"><span class="ag-cs-rail-cc-lbl">${escapeHtml(ui.railUserShort || 'User')}</span><span class="ag-cs-rail-cc-num">${formatCompactK(userTok)}</span></div>
+        <div class="ag-cs-rail-cc-sub"><span class="ag-cs-rail-cc-lbl">${escapeHtml(ui.railAssistantShort || 'Assistant')}</span><span class="ag-cs-rail-cc-num">${formatCompactK(botTok)}</span></div>
+        ${
+          topSteps.length > 0
+            ? topSteps
+                .map((st) => {
+                  const jumpAttr = st.turn > 0 ? ` data-rail-act="jump-turn" data-turn="${st.turn}"` : '';
+                  return `<button type="button" class="ag-cs-rail-cc-sub${st.turn > 0 ? ' is-click' : ''}"${jumpAttr} title="${escapeHtml(st.label || st.name || '')}"><span class="ag-cs-rail-cc-lbl">${escapeHtml(st.label || st.name || '')}</span><span class="ag-cs-rail-cc-num">${formatCompactK(st.tokens || 0)}</span></button>`;
+                })
+                .join('')
+            : ''
+        }
+      `;
+      expandedDetailsHtml += renderDetailBlock('msgs', ui.segChatMessages || 'Messages', topSteps.length || 2, msgSubRows);
+    }
+    if (expToolRes) {
+      expandedDetailsHtml += renderDetailBlock(
+        'toolres',
+        ui.segToolResults || 'Tool results',
+        topSteps.length,
+        topSteps
+          .map((st) => {
+            const jumpAttr = st.turn > 0 ? ` data-rail-act="jump-turn" data-turn="${st.turn}"` : '';
+            return `<button type="button" class="ag-cs-rail-cc-sub${st.turn > 0 ? ' is-click' : ''}"${jumpAttr} title="${escapeHtml(st.label || st.name || '')}"><span class="ag-cs-rail-cc-lbl">${escapeHtml(st.label || st.name || '')}</span><span class="ag-cs-rail-cc-num">${formatCompactK(st.tokens || 0)}</span></button>`;
+          })
+          .join('')
+      );
+    }
+    if (expSys) {
+      expandedDetailsHtml += renderDetailBlock(
+        'sys',
+        ui.segSystemRules || 'System prompt',
+        sysChildren.length,
+        sysChildren
+          .slice(0, 10)
+          .map(
+            (c) => `<div class="ag-cs-rail-cc-sub" title="${escapeHtml(c.name || '')}"><span class="ag-cs-rail-cc-lbl">${escapeHtml(c.name || '')}</span><span class="ag-cs-rail-cc-num">${formatCompactK(c.tokens || 0)}</span></div>`
+          )
+          .join('')
+      );
+    }
+
+    const contextSectionHtml = `
+      <section class="ag-cs-rail-sec">
+        <div class="ag-cs-rail-sec-head">
+          <span class="ag-cs-rail-h">${escapeHtml(ui.railContextTitle || 'Context')}</span>
+          <button type="button" class="ag-cs-rail-underlink${isLowCtx ? ' is-warn' : ''}"${isLowCtx ? ` data-ctx-low="${lowCtxLevel}"` : ''} data-rail-act="compact" title="${escapeHtml(ui.compactBtnTitle || 'Fill /compact')}">/compact</button>
+        </div>
+        <div class="ag-cs-rail-cc-row is-compact">
+          <span class="ag-cs-rail-cc-lbl is-primary">${escapeHtml(readout.railMain)} <span class="is-muted">${escapeHtml(readout.railMainMeta)}</span></span>
+          <span class="ag-cs-rail-cc-right is-muted">${escapeHtml(readout.railSub)}</span>
+        </div>
+        <div class="ag-cs-rail-bar">
+          <span style="width:${pctOf(tools)}%;background:#2f7de1"></span>
+          <span style="width:${pctOf(chatMsgs)}%;background:#ef6c35"></span>
+          <span style="width:${pctOf(toolRes)}%;background:#14b394"></span>
+          <span style="width:${pctOf(sys)}%;background:#f2a20c"></span>
+          ${draft > 0 ? `<span style="width:${pctOf(draft)}%;background:#ec6ea6"></span>` : ''}
+          ${overhead > 0 ? `<span style="width:${pctOf(overhead)}%;background:var(--ag-cs-cc-buffer)"></span>` : ''}
+        </div>
+        ${
+          isLowCtx
+            ? `<button type="button" class="ag-cs-rail-low-banner" data-ctx-low="${lowCtxLevel}" data-rail-act="compact">
+                <span>${escapeHtml(
+                  typeof ui.lowCtxBanner === 'function'
+                    ? ui.lowCtxBanner(Math.round(ring.contextRemainingPct))
+                    : `Low context (${Math.round(ring.contextRemainingPct)}% free) — /compact`
+                )}</span>
+              </button>`
+            : ''
+        }
+        <div class="ag-cs-rail-cc-table">
+          ${ctxRows
+            .map(
+              (r) => `
+            <div class="ag-cs-rail-cc-row">
+              <span class="ag-cs-rail-sq" style="background:${r.color}"></span>
+              <span class="ag-cs-rail-cc-lbl">${
+                r.expandable
+                  ? `<button type="button" class="ag-cs-rail-dotted" data-rail-act="toggle-group" data-rail-group="${r.id}">${escapeHtml(r.label)}</button>`
+                  : escapeHtml(r.label)
+              }</span>
+              <span class="ag-cs-rail-cc-num">${formatCompactK(r.val)}</span>
+              <span class="ag-cs-rail-cc-pct">${pctOne(r.val)}</span>
+            </div>`
+            )
+            .join('')}
+          <div class="ag-cs-rail-cc-gap"></div>
+          ${
+            overhead > 0
+              ? `<div class="ag-cs-rail-cc-row">
+                  <span class="ag-cs-rail-sq is-buffer"></span>
+                  <span class="ag-cs-rail-cc-lbl">${escapeHtml(ui.segOverhead || 'Overhead')}</span>
+                  <span class="ag-cs-rail-cc-num">${formatCompactK(overhead)}</span>
+                  <span class="ag-cs-rail-cc-pct">${pctOne(overhead)}</span>
+                </div>`
+              : ''
+          }
+          <div class="ag-cs-rail-cc-row">
+            <span class="ag-cs-rail-sq is-free"></span>
+            <span class="ag-cs-rail-cc-lbl">${escapeHtml(ui.segRemaining || 'Free space')}</span>
+            <span class="ag-cs-rail-cc-num">${formatCompactK(ring.remainingTokens)}</span>
+            <span class="ag-cs-rail-cc-pct">${pctOne(ring.remainingTokens)}</span>
+          </div>
+        </div>
+        ${expandedDetailsHtml}
+        <div class="ag-cs-rail-foot-meta">
+          <span>${escapeHtml(ui.cacheShort || 'Cache')} ${Math.round(d.cacheHitPct || 0)}%</span>
+          <span>·</span>
+          <span>${escapeHtml(ui.sessionThroughput || 'Total')} ${formatCompactK(d.totalTokens || 0)}</span>
+          ${d.avgSpeed || d.displaySpeed ? `<span>·</span><span>${d.avgSpeed || d.displaySpeed} tok/s</span>` : ''}
+        </div>
+      </section>
+    `;
+
+    // 3. Dedicated Changes / Diff View (Exact replica of right-sidebar-cc-replica.html)
+    const diffCountLabel = ui.railFileCount.replace('{n}', changedTotals.files);
+    const diffViewHtml = `
+      <section class="ag-cs-rail-sec is-last">
+        <div class="ag-cs-rail-cc-diff-head">
+          <span><small class="ag-cs-rail-scope">${escapeHtml(ui.railSessionTotal)}</small><span class="ag-cs-rail-h is-inline">${escapeHtml(diffCountLabel)}</span></span>
+          ${
+            changedTotals.addedLines > 0 || changedTotals.deletedLines > 0
+              ? `<span class="ag-cs-rail-diff-stat">
+                  ${changedTotals.addedLines > 0 ? `<span class="is-add">+${changedTotals.addedLines}</span>` : ''}
+                  ${changedTotals.deletedLines > 0 ? `<span class="is-del">−${changedTotals.deletedLines}</span>` : ''}
+                </span>`
+              : ''
+          }
+        </div>
+        ${
+          changedFiles.length === 0
+            ? `<div class="ag-cs-rail-empty">${escapeHtml(ui.railDiffEmpty || 'No file changes in this session')}</div>`
+            : `<div class="ag-cs-rail-diff-list">
+                ${changedFiles
+                  .map((f) => {
+                    const isFileOpen = railState.openDiffPath === f.path;
+                    const slashIdx = String(f.relPath || '').lastIndexOf('/');
+                    const dirPrefix = slashIdx > 0 ? f.relPath.slice(0, slashIdx + 1) : '';
+                    return `
+                      <div class="ag-cs-rail-diff-item">
+                        <button type="button" class="ag-cs-rail-cc-diff-row" data-rail-act="toggle-diff" aria-expanded="${isFileOpen}" data-diff-path="${escapeHtml(f.path)}" title="${escapeHtml(f.relPath)}">
+                          <span class="ag-cs-rail-chev${isFileOpen ? ' is-open' : ''}">${SVG_ICONS.chevron}</span>
+                          <span class="ag-cs-rail-cc-lbl">
+                            <span class="is-primary">${escapeHtml(f.baseName)}</span>${dirPrefix ? ` <span class="is-muted">${escapeHtml(dirPrefix)}</span>` : ''}
+                          </span>
+                          <span class="ag-cs-rail-diff-stat">
+                            ${f.addedLines > 0 ? `<span class="is-add">+${f.addedLines}</span>` : ''}
+                            ${f.deletedLines > 0 ? `<span class="is-del">−${f.deletedLines}</span>` : ''}
+                          </span>
+                        </button>
+                        ${isFileOpen && railState.activeView === 'diff' ? renderRailFileDetail(cid, f, ui) : ''}
+                      </div>`;
+                  })
+                  .join('')}
+              </div>`
+        }
+      </section>
+    `;
+
+    // 4. Conversation Turns Timeline (Click any turn to jump straight to that turn in chat!)
+    const turnsOpen = railState.sectionsOpen.turns && turns.length > 0;
+    const reversedTurns = turns.slice().reverse();
+    const turnsSectionHtml =
+      turns.length > 0
+        ? `<section class="ag-cs-rail-sec">
+            <button type="button" class="ag-cs-rail-sec-toggle" data-rail-act="toggle-sec" data-rail-sec="turns">
+              <span class="ag-cs-rail-h is-inline">
+                <span class="ag-cs-rail-chev${turnsOpen ? ' is-open' : ''}">${SVG_ICONS.chevron}</span>
+                <span>${escapeHtml(ui.railTurnsTitle || 'Turns')}</span>
+                <span class="is-muted">${turns.length}</span>
+              </span>
+              <span class="is-muted ag-cs-rail-hint">${escapeHtml(ui.railJumpHint || 'Click to jump')}</span>
+            </button>
+            ${
+              turnsOpen
+                ? `<div class="ag-cs-rail-turns">
+                    ${reversedTurns
+                      .map((t) => {
+                        const dSign = t.ctxDelta >= 0 ? '+' : '';
+                        return `
+                          <button type="button" class="ag-cs-rail-turn-row" data-rail-act="jump-turn" data-turn="${t.turn}">
+                            <span class="ag-cs-rail-turn-id">#T${t.turn}</span>
+                            <span class="ag-cs-rail-turn-preview">${escapeHtml(t.userPreview || `${t.model || modelName}`)}</span>
+                            <span class="ag-cs-rail-turn-delta">${t.inProgress ? SVG_ICONS.dots : `${dSign}${formatCompactK(t.ctxDelta)}`}</span>
+                          </button>`;
+                      })
+                      .join('')}
+                  </div>`
+                : ''
+            }
+          </section>`
+        : '';
+
+    // 5. Minimalist Bottom Account Model Quotas
+    const quotasOpen = railState.sectionsOpen.quotas;
+    const activeQRem =
+      activeQuota && typeof activeQuota.effectiveRemainingPct === 'number'
+        ? `${Math.round(activeQuota.effectiveRemainingPct)}%`
+        : '';
+    const quotasSectionHtml = `
+      <section class="ag-cs-rail-sec is-last">
+        <button type="button" class="ag-cs-rail-sec-toggle" data-rail-act="toggle-sec" data-rail-sec="quotas">
+          <span class="ag-cs-rail-h is-inline">
+            <span class="ag-cs-rail-chev${quotasOpen ? ' is-open' : ''}">${SVG_ICONS.chevron}</span>
+            <span>${escapeHtml(ui.railQuotasTitle || 'Usage limits')}</span>
+          </span>
+          ${activeQRem ? `<span class="is-muted ag-cs-rail-cc-num">${escapeHtml(ui.remShort || 'Rem')} ${activeQRem}</span>` : ''}
+        </button>
+        ${
+          quotasOpen
+            ? quotaGroups.length === 0
+              ? `<div class="ag-cs-rail-empty">${escapeHtml(ui.quotaLoading || 'Loading…')}</div>`
+              : `<div class="ag-cs-rail-quotas">
+                  ${quotaGroups
+                    .map((g) => {
+                      const qPct = typeof g.effectiveRemainingPct === 'number' ? g.effectiveRemainingPct : 0;
+                      const qCol = qPct <= 10 ? '#e05a47' : qPct <= 30 ? '#f2a20c' : '#2f7de1';
+                      const isAct = activeQuota && activeQuota.groupName === g.groupName;
+                      const r5h = fmtBucketReset(g.b5h, lang);
+                      const rWeek = fmtBucketReset(g.bWeek, lang);
+                      return `
+                        <div class="ag-cs-rail-quota-item">
+                          <div class="ag-cs-rail-quota-head">
+                            <span class="ag-cs-rail-truncate${isAct ? ' is-primary' : ''}">${escapeHtml(g.groupName)}</span>
+                            <span class="ag-cs-rail-cc-num" style="color:${qCol}">${qPct.toFixed(0)}%</span>
+                          </div>
+                          ${
+                            g.b5h && !g.b5h.disabled
+                              ? `<div class="ag-cs-rail-quota-bucket">
+                                  <div class="ag-cs-rail-quota-meta"><span>${escapeHtml(ui.railWindow5h || '5h')} · ${g.b5h.remainingPct.toFixed(0)}%</span><span>${escapeHtml(r5h)}</span></div>
+                                  <div class="ag-cs-rail-bar"><span style="width:${Math.max(0, Math.min(100, g.b5h.remainingPct)).toFixed(1)}%;background:${qCol}"></span></div>
+                                </div>`
+                              : ''
+                          }
+                          ${
+                            g.bWeek
+                              ? `<div class="ag-cs-rail-quota-bucket">
+                                  <div class="ag-cs-rail-quota-meta"><span>${escapeHtml(ui.weeklyLabel || 'Weekly')} · ${g.bWeek.remainingPct.toFixed(0)}%</span><span>${escapeHtml(rWeek)}</span></div>
+                                  <div class="ag-cs-rail-bar"><span style="width:${Math.max(0, Math.min(100, g.bWeek.remainingPct)).toFixed(1)}%;background:${g.bWeek.remainingPct <= 10 ? '#e05a47' : '#14b394'}"></span></div>
+                                </div>`
+                              : ''
+                          }
+                        </div>`;
+                    })
+                    .join('')}
+                </div>`
+            : ''
+        }
+      </section>
+    `;
+
+    rail.innerHTML = `
+      <div class="ag-cs-rail-resizer" aria-hidden="true"></div>
+      <div class="ag-cs-rail-body">
+        ${
+          railState.activeView === 'diff'
+            ? diffViewHtml
+            : `${liveSectionHtml}${envSectionHtml}${contextSectionHtml}${turnsSectionHtml}${quotasSectionHtml}`
+        }
+      </div>
+    `;
+
+    const newBody = rail.querySelector('.ag-cs-rail-body');
+    if (newBody && prevScroll > 0) newBody.scrollTop = prevScroll;
+  }
+
   function syncSurroundHud(card, footer, data) {
     const inputBox = card?.closest?.('[data-testid="agent-input-box"]');
     const composerShell = card?.closest?.('#antigravity\\.agentSidePanelInputBox') || card?.parentElement;
@@ -3178,7 +4890,8 @@
       if (lowCtxAttr) topBar.setAttribute('data-ctx-low', lowCtxAttr);
       else topBar.removeAttribute('data-ctx-low');
       const ctxColor = ctxRemPctRound <= 10 ? '#dc3c3d' : ctxRemPctRound <= 30 ? '#fbb315' : '#257de0';
-      const topKey = `${ctxRemPctRound}|${lowCtxAttr}|${ring.remainingTokens}|${totalW}|${ring.usedTokens}|${d.sysTokens || 0}|${d.toolsTokens || 0}|${chatMsgs}|${d.toolResultsTokens || 0}|${d.overheadTokens || 0}|${draftEst.tokens}|${Math.round(d.cacheHitPct || 0)}|${topSpeed}|${lang}`;
+      const topReadout = formatUnifiedContextReadout(ring, ui, draftEst.tokens);
+      const topKey = `${cfg.contextMetric || 'remaining'}|${ctxRemPctRound}|${lowCtxAttr}|${ring.remainingTokens}|${totalW}|${ring.usedTokens}|${d.sysTokens || 0}|${d.toolsTokens || 0}|${chatMsgs}|${d.toolResultsTokens || 0}|${d.overheadTokens || 0}|${draftEst.tokens}|${Math.round(d.cacheHitPct || 0)}|${topSpeed}|${lang}`;
       if (topBar.getAttribute('data-ag-cs-top-key') !== topKey) {
         topBar.setAttribute('data-ag-cs-top-key', topKey);
         topBar.innerHTML = `
@@ -3191,8 +4904,8 @@
             <span style="width:${pctOf(draftEst.tokens)}%;background:#ec4899"></span>
           </div>
           <div class="ag-cs-hud-top-row">
-            <span class="ag-cs-hud-rem" style="color:${ctxColor}">${escapeHtml(ui.remShort || 'Rem')} ${ctxRemPctRound}% (${formatCompactK(ring.remainingTokens)} / ${formatCompactK(totalW)})</span>
-            <span>${escapeHtml(ui.usedWord || 'Used')} ${formatCompactK(ring.usedTokens)}${draftEst.tokens > 0 ? ` +${formatCompactK(draftEst.tokens)}` : ''}</span>
+            <span class="ag-cs-hud-rem" style="color:${ctxColor}">${escapeHtml(topReadout.shortMain)}</span>
+            <span>${escapeHtml(topReadout.shortSub)}</span>
             <span>${escapeHtml(ui.cacheShort || 'Cache')} ${Math.round(d.cacheHitPct || 0)}%</span>
             ${topSpeed > 0 ? `<span>⚡ ${topSpeed} tok/s</span>` : ''}
             <button type="button" class="ag-cs-hud-compact-btn"${lowCtxAttr ? ` data-ctx-low="${lowCtxAttr}"` : ''} data-hud-compact-btn="1">/compact</button>
@@ -4744,6 +6457,7 @@
             if (card === primaryCard) {
               syncCrab(primaryCard, fresh);
               syncTurnBadges(fresh);
+              syncRightSidebar(primaryCard, fresh);
             }
             if (
               openPopover &&
@@ -4762,6 +6476,7 @@
       const needQuotaPoll =
         cfg.ringMode === 'quota' ||
         cfg.hudBottomBar === true ||
+        Boolean(cfg.rightSidebar !== false && inConvo) ||
         Boolean(openPopover && openPopover.isConnected && activeHudTab === 'quotas');
       if (needQuotaPoll) {
         const needQuotaRefresh = !cachedQuotaData || Date.now() - lastQuotaFetchAt >= 25000;
@@ -4772,6 +6487,7 @@
               const latest = resolveCardConvoData(card, baseData);
               updateFooterWidgets(card, footer, latest);
               syncSurroundHud(card, footer, latest);
+              if (card === primaryCard) syncRightSidebar(primaryCard, latest);
             }
           });
         }
@@ -4781,6 +6497,7 @@
       if (card === primaryCard) syncTurnBadges(cached);
     }
 
+    syncRightSidebar(primaryCard, activeInfoForCrab);
     syncCrab(primaryCard, activeInfoForCrab);
     syncSmoothCaret(false);
   }
@@ -4842,12 +6559,13 @@
       if (cacheEl) cacheEl.textContent = cacheTxt;
     }
 
-    const pct = Math.max(0, Math.min(100, ring.pct));
+    const ringReadout = formatUnifiedContextReadout(ring, ui, draftEst.tokens);
+    const pct = Math.max(0, Math.min(100, ringReadout.ringPct));
     const r = 5.5;
     const circ = 2 * Math.PI * r;
     const dash = ((pct / 100) * circ).toFixed(2);
     const color = ring.color;
-    const pctRound = ring.pctRound;
+    const pctRound = ringReadout.ringPctRound;
     const remStr = formatCompactK(ring.remainingTokens);
     const maxStr = formatCompactK(ring.maxTokens);
     const usedStr = formatCompactK(ring.usedTokens);
@@ -4887,11 +6605,15 @@
       ringBtn.setAttribute('title', ringTitle);
       const fillCircle = ringBtn.querySelector('.ag-cs-ring-fill');
       const pctSpan = ringBtn.querySelector('span');
-      if (fillCircle) {
-        fillCircle.setAttribute('stroke', color);
-        fillCircle.setAttribute('stroke-dasharray', `${dash} ${circ.toFixed(2)}`);
+      if (fillCircle || pctSpan) {
+        if (fillCircle) {
+          fillCircle.setAttribute('stroke', color);
+          fillCircle.setAttribute('stroke-dasharray', `${dash} ${circ.toFixed(2)}`);
+        }
+        if (pctSpan) pctSpan.textContent = `${pctRound}%`;
+      } else {
+        ringBtn.innerHTML = `<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="${r}" fill="none" stroke="var(--ag-cs-heat-empty)" stroke-width="2.2"/><circle class="ag-cs-ring-fill" cx="8" cy="8" r="${r}" fill="none" stroke="${color}" stroke-width="2.2" stroke-dasharray="${dash} ${circ.toFixed(2)}" stroke-linecap="round"/></svg><span>${pctRound}%</span>`;
       }
-      if (pctSpan) pctSpan.textContent = `${pctRound}%`;
     }
   }
 
@@ -5152,6 +6874,33 @@
           [false, ui.offLabel || 'Off'],
         ],
       },
+      rightSidebar: {
+        key: 'rightSidebar',
+        title: ui.setRightSidebarTitle || 'Right Persistent Sidebar',
+        desc: ui.setRightSidebarDesc || 'Show Claude Code-style single-column inspector on the right of conversations.',
+        opts: [
+          [true, ui.onLabel || 'On'],
+          [false, ui.offLabel || 'Off'],
+        ],
+      },
+      rightSidebarAutoSimplifyHud: {
+        key: 'rightSidebarAutoSimplifyHud',
+        title: ui.setAutoSimplifyHudTitle || 'Auto-Simplify Composer HUD',
+        desc: ui.setAutoSimplifyHudDesc || 'Hide duplicate surround HUD bars while the right sidebar is open.',
+        opts: [
+          [true, ui.onLabel || 'On'],
+          [false, ui.offLabel || 'Off'],
+        ],
+      },
+      contextMetric: {
+        key: 'contextMetric',
+        title: ui.setContextMetricTitle || 'Context Display Metric',
+        desc: ui.setContextMetricDesc || 'Unify Remaining vs Used primary percentage across right sidebar, ring, and HUD.',
+        opts: [
+          ['remaining', ui.optMetricRemaining || 'Remaining'],
+          ['used', ui.optMetricUsed || 'Used'],
+        ],
+      },
     };
 
     const groups = [
@@ -5168,7 +6917,7 @@
       {
         id: 'telemetry',
         title: ui.grpTelemetry || 'Usage Ring & HUD',
-        keys: ['inlineStats', 'ringMode', 'turnBadges'],
+        keys: ['rightSidebar', 'rightSidebarAutoSimplifyHud', 'contextMetric', 'inlineStats', 'ringMode', 'turnBadges'],
         hudKeys: ['hudTopBar', 'hudBottomBar', 'hudRimProgress', 'hudFooterChip', 'hudCompact'],
       },
     ];
@@ -5315,7 +7064,7 @@
     if (!el || !el.closest) return false;
     return Boolean(
       el.closest(
-        '.ag-cs-home-panel-seat, .ag-cs-ripple-host, .ag-cs-crab, .ag-cs-inline-stats, .ag-cs-context-ring, .ag-cs-ctx-popover, .ag-cs-effort-popover, .ag-cs-perf-backdrop, .ag-cs-smooth-caret, .ag-cs-turn-bar, .ag-cs-hud-top-bar, .ag-cs-hud-bottom-bar, .ag-cs-hud-footer-chip, #' +
+        '.ag-cs-home-panel-seat, .ag-cs-ripple-host, .ag-cs-crab, .ag-cs-inline-stats, .ag-cs-context-ring, .ag-cs-ctx-popover, .ag-cs-effort-popover, .ag-cs-perf-backdrop, .ag-cs-smooth-caret, .ag-cs-turn-bar, .ag-cs-hud-top-bar, .ag-cs-hud-bottom-bar, .ag-cs-hud-footer-chip, .ag-cs-right-rail, .ag-cs-rail-reopen-btn, .ag-cs-rail-top-toggle, #' +
           SETTINGS_SEC_ID +
           ', #ag-claude-style-css'
       )
@@ -5497,8 +7246,7 @@
       const ui = uiText(lang);
       const totalW = ring.maxTokens || 256000;
       const pctOf = (v) => Math.max(0, Math.min(100, (v / totalW) * 100)).toFixed(2);
-      const remStr = `${formatCompactK(ring.remainingTokens)} / ${formatCompactK(totalW)} (${ring.contextRemainingPct.toFixed(1)}%)`;
-      const usedStr = `${formatCompactK(ring.usedTokens)} (${ring.contextUsedPct.toFixed(1)}%)`;
+      const liveReadout = formatUnifiedContextReadout(ring, ui, draft);
       const remHero = openPopover.querySelector('[data-ag-live-rem-hero]');
       const draftSeg = openPopover.querySelector('[data-ag-live-draft-seg]');
       const kpiRemV = openPopover.querySelector('[data-ag-live-kpi-rem-v]');
@@ -5509,9 +7257,9 @@
 
       if (remHero) {
         remHero.style.color = ring.color;
-        remHero.textContent = `${ui.remAvailLabel || 'Remaining'} ${remStr}`;
+        remHero.textContent = liveReadout.heroMain;
       }
-      usedHero.textContent = `${ui.usedWord || 'Used'} ${usedStr}${hasDraft ? ` · ${ui.draftWord || 'Draft'} +${formatCompactK(draft)}` : ''}`;
+      usedHero.textContent = liveReadout.heroSub;
       if (draftSeg) draftSeg.style.width = `${pctOf(draft)}%`;
       if (kpiRemV) {
         kpiRemV.style.color = ring.color;
@@ -5576,6 +7324,9 @@
       if (typeof openEffortPop._syncEffortKnob === 'function') {
         openEffortPop._syncEffortKnob(true);
       }
+    }
+    if (cfg.rightSidebar !== false) {
+      scheduleSync();
     }
   }
 
@@ -5771,6 +7522,22 @@
       const data = (cid && activeTrajCache.get(cid)?.data) || card?._agCsLastData || null;
       if (a) openContextPopover(a, data, tab || 'breakdown');
     },
+    scrollToTurn(turnNum, data) {
+      return scrollToConversationTurn(turnNum, data);
+    },
+    toggleRightSidebar(forceOpen) {
+      if (typeof forceOpen === 'boolean') {
+        railState.collapsed = !forceOpen;
+        railState.forceOpen = forceOpen;
+      } else {
+        const currentlyOpen = Boolean(railState.el && railState.el.isConnected);
+        railState.collapsed = currentlyOpen;
+        railState.forceOpen = !currentlyOpen;
+      }
+      saveRightRailPrefs();
+      runSync();
+      return Boolean(railState.el && railState.el.isConnected);
+    },
     getState() {
       return {
         cfg: { ...cfg },
@@ -5781,15 +7548,19 @@
         hasSmoothCaret: Boolean(document.querySelector('.ag-cs-smooth-caret')),
         hasEffortPopover: Boolean(openEffortPop && openEffortPop.isConnected),
         hasContextPopover: Boolean(openPopover && openPopover.isConnected),
+        hasRightSidebar: Boolean(railState.el && railState.el.isConnected),
       };
     },
     destroy() {
       teardownCore();
+      cancelTurnJump();
+      clearTurnFlashes();
       for (const fn of [
         closeContextPopover,
         closeEffortPopover,
         teardownSmoothCarets,
         clearTurnBadges,
+        unmountRightSidebar,
         unmountRipple,
         unmountPanelSeat,
         unmountCrab,
@@ -5832,6 +7603,9 @@
           'data-ag-cs-hud-compact',
           'data-ag-cs-effort-accent',
           'data-ag-cs-perf-backdrop',
+          'data-ag-cs-right-rail',
+          'data-ag-cs-hud-simplified',
+          'data-ag-cs-ctx-metric',
           'data-ag-cs-lang',
           'data-ag-cs-cjk',
         ]) {

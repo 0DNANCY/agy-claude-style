@@ -815,6 +815,183 @@
     return 0;
   }
 
+  function normalizeUriPath(raw) {
+    if (!raw || typeof raw !== 'string') return '';
+    let s = raw.trim();
+    if (!s) return '';
+    if (/^file:\/\//i.test(s)) {
+      s = s.replace(/^file:\/\/\/?([a-zA-Z]:[\\/])/, '$1').replace(/^file:\/\//i, '');
+    }
+    try {
+      s = decodeURIComponent(s);
+    } catch {}
+    s = s.replace(/\\/g, '/');
+    if (s.length > 1) s = s.replace(/\/+$/, '');
+    return s;
+  }
+
+  function parseJsonObjectSafe(raw) {
+    if (!raw) return null;
+    if (typeof raw === 'object') return raw;
+    if (typeof raw !== 'string') return null;
+    try {
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === 'object' ? parsed : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function parseUnifiedDiffPreview(diffText, maxPreviewLines = 18) {
+    if (typeof diffText !== 'string' || !diffText.trim()) {
+      return { addedLines: 0, deletedLines: 0, diffLines: [] };
+    }
+    const rawLines = diffText.replace(/\r\n/g, '\n').split('\n');
+    let addedLines = 0;
+    let deletedLines = 0;
+    let oldNo = 1;
+    let newNo = 1;
+    const diffLines = [];
+    for (let i = 0; i < rawLines.length; i++) {
+      const line = rawLines[i];
+      if (!line && i === rawLines.length - 1) continue;
+      if (line.startsWith('--- ') || line.startsWith('+++ ') || line.startsWith('diff --git ') || line.startsWith('index ')) {
+        continue;
+      }
+      const hunkMatch = /^@@\s+-(\d+)(?:,\d+)?\s+\+(\d+)(?:,\d+)?\s+@@/.exec(line);
+      if (hunkMatch) {
+        oldNo = parseInt(hunkMatch[1], 10) || 1;
+        newNo = parseInt(hunkMatch[2], 10) || 1;
+        if (diffLines.length < maxPreviewLines) {
+          diffLines.push({ type: 'hdr', lineNo: newNo, text: line });
+        }
+        continue;
+      }
+      if (line.startsWith('+')) {
+        addedLines++;
+        if (diffLines.length < maxPreviewLines) {
+          diffLines.push({ type: 'add', lineNo: newNo, text: line });
+        }
+        newNo++;
+      } else if (line.startsWith('-')) {
+        deletedLines++;
+        if (diffLines.length < maxPreviewLines) {
+          diffLines.push({ type: 'del', lineNo: oldNo, text: line });
+        }
+        oldNo++;
+      } else {
+        if (diffLines.length < maxPreviewLines && (diffLines.length > 0 || rawLines.length <= maxPreviewLines)) {
+          diffLines.push({ type: 'ctx', lineNo: newNo, text: line });
+        }
+        oldNo++;
+        newNo++;
+      }
+    }
+    return { addedLines, deletedLines, diffLines };
+  }
+
+  function buildReplacementDiffPreview(oldStr, newStr, startLineHint = 1, maxPreviewLines = 18) {
+    const hasOld = typeof oldStr === 'string' && oldStr.length > 0;
+    const hasNew = typeof newStr === 'string' && newStr.length > 0;
+    if (!hasOld && !hasNew) return { addedLines: 0, deletedLines: 0, diffLines: [] };
+    const splitClean = (s) => {
+      if (!s) return [];
+      const arr = String(s).replace(/\r\n/g, '\n').split('\n');
+      if (arr.length > 0 && arr[arr.length - 1] === '') arr.pop();
+      return arr;
+    };
+    const oldLines = hasOld ? splitClean(oldStr) : [];
+    const newLines = hasNew ? splitClean(newStr) : [];
+    let prefix = 0;
+    const minLen = Math.min(oldLines.length, newLines.length);
+    while (prefix < minLen && oldLines[prefix] === newLines[prefix]) prefix++;
+    let suffix = 0;
+    while (
+      suffix < oldLines.length - prefix &&
+      suffix < newLines.length - prefix &&
+      oldLines[oldLines.length - 1 - suffix] === newLines[newLines.length - 1 - suffix]
+    ) {
+      suffix++;
+    }
+    const delSlice = oldLines.slice(prefix, oldLines.length - suffix);
+    const addSlice = newLines.slice(prefix, newLines.length - suffix);
+    const baseLine = Math.max(1, Number(startLineHint) || 1);
+    const diffLines = [];
+    if (prefix > 0 && diffLines.length < maxPreviewLines) {
+      diffLines.push({
+        type: 'ctx',
+        lineNo: baseLine + prefix - 1,
+        text: ' ' + oldLines[prefix - 1],
+      });
+    }
+    for (let i = 0; i < delSlice.length && diffLines.length < maxPreviewLines; i++) {
+      diffLines.push({
+        type: 'del',
+        lineNo: baseLine + prefix + i,
+        text: '-' + delSlice[i],
+      });
+    }
+    for (let i = 0; i < addSlice.length && diffLines.length < maxPreviewLines; i++) {
+      diffLines.push({
+        type: 'add',
+        lineNo: baseLine + prefix + i,
+        text: '+' + addSlice[i],
+      });
+    }
+    if (suffix > 0 && diffLines.length < maxPreviewLines) {
+      diffLines.push({
+        type: 'ctx',
+        lineNo: baseLine + prefix + addSlice.length,
+        text: ' ' + newLines[newLines.length - suffix].slice(0, 180),
+      });
+    }
+    return {
+      addedLines: addSlice.length,
+      deletedLines: delSlice.length,
+      diffLines,
+    };
+  }
+
+
+  function readEditDiff(source, limit = 18) {
+    if (typeof source === 'string') return parseUnifiedDiffPreview(source, limit);
+    const result = { addedLines: 0, deletedLines: 0, diffLines: [] };
+    for (const part of source || []) {
+      const diff = buildReplacementDiffPreview(part.oldText, part.newText, part.start, limit - result.diffLines.length);
+      result.addedLines += diff.addedLines;
+      result.deletedLines += diff.deletedLines;
+      for (const line of diff.diffLines) result.diffLines.push(line);
+    }
+    return result;
+  }
+
+  function deriveCommonDir(paths) {
+    const valid = paths.filter((p) => p && p.startsWith('/') && p.split('/').length > 2);
+    if (valid.length < 2) return '';
+    let parts = valid[0].split('/');
+    parts.pop();
+    for (let i = 1; i < valid.length && parts.length > 2; i++) {
+      const cur = valid[i].split('/');
+      cur.pop();
+      let k = 0;
+      while (k < parts.length && k < cur.length && parts[k] === cur[k]) k++;
+      parts = parts.slice(0, k);
+    }
+    return parts.length > 2 ? parts.join('/') : '';
+  }
+
+  function toRelativeDisplayPath(fullPath, workspaceRoot) {
+    if (!fullPath) return '';
+    const norm = normalizeUriPath(fullPath);
+    const root = normalizeUriPath(workspaceRoot);
+    if (root && norm.startsWith(root + '/')) {
+      return norm.slice(root.length + 1);
+    }
+    const segs = norm.split('/').filter(Boolean);
+    if (segs.length <= 2) return segs.join('/') || norm;
+    return segs.slice(-2).join('/');
+  }
+
   // Extract live active-conversation metrics, per-call telemetry, breakdown trees,
   // streaming speeds, and budgets for the composer footer, turn badges, and inspector popover.
   function analyzeActiveConversation(trajObj, opts = {}) {
@@ -1817,11 +1994,412 @@
     const clampedToolResults = msgTokens > 0 ? Math.min(msgTokens, toolIoTokens) : toolIoTokens;
     const chatMsgTokens = msgTokens > 0 ? Math.max(0, msgTokens - clampedToolResults) : userMsgTokens + botMsgTokens;
 
+    const findTurnForStep = (realStepIdx) => {
+      if (typeof realStepIdx !== 'number' || realStepIdx < 0 || turnDetails.length === 0) return 0;
+      for (let i = 0; i < turnDetails.length; i++) {
+        const td = turnDetails[i];
+        if (td.userStepIdx >= 0 && realStepIdx >= td.userStepIdx && realStepIdx < td.nextUserStepIdx) {
+          return td.turn;
+        }
+      }
+      for (let i = turnDetails.length - 1; i >= 0; i--) {
+        if (turnDetails[i].userStepIdx >= 0 && realStepIdx >= turnDetails[i].userStepIdx) {
+          return turnDetails[i].turn;
+        }
+      }
+      return turnDetails[turnDetails.length - 1]?.turn || 0;
+    };
+
+    // Extract workspacePath, activeTasks, recentCommands, and session changedFiles / diffs
+    const rawWsMeta =
+      opts.workspacePath ||
+      t.metadata?.workspaces?.[0]?.workspaceFolderAbsoluteUri ||
+      t.metadata?.workspaces?.[0]?.workspaceUri ||
+      t.metadata?.workspaceUri ||
+      '';
+    const seenPathsForRoot = [];
+    const pendingPlannerToolCalls = [];
+    const changedMap = new Map();
+    const activeTasks = [];
+    const backgroundCandidates = new Map();
+    const allCommands = [];
+    let currentFocus = '';
+    let latestTurnAction = '';
+    const latestTurnNum = turnDetails.length > 0 ? turnDetails[turnDetails.length - 1].turn : 1;
+
+    const consumePendingToolArgs = (toolNameHint, matchNormPath) => {
+      if (pendingPlannerToolCalls.length === 0) return null;
+      const hint = String(toolNameHint || '').toLowerCase().replace(/^[^:]+:/, '');
+      const isFileEdit = (n) =>
+        /^(?:write_file|edit_file|create_file|write_to_file|replace_file_content|multi_replace_file_content|delete_file)$/.test(n);
+      if (matchNormPath) {
+        for (const item of pendingPlannerToolCalls) {
+          if (item.used || !isFileEdit(item.name)) continue;
+          const p = normalizeUriPath(item.args?.Path || item.args?.TargetFile || item.args?.file_path || item.args?.path || '');
+          if (p && p === matchNormPath) {
+            item.used = true;
+            return item.args;
+          }
+        }
+        if (isFileEdit(hint)) return null;
+      }
+      if (hint) {
+        const idx = pendingPlannerToolCalls.findIndex((x) => !x.used && (x.name === hint || (isFileEdit(hint) && isFileEdit(x.name))));
+        if (idx >= 0) {
+          pendingPlannerToolCalls[idx].used = true;
+          return pendingPlannerToolCalls[idx].args;
+        }
+      }
+      const firstUnused = pendingPlannerToolCalls.find((x) => !x.used);
+      if (firstUnused && !hint) {
+        firstUnused.used = true;
+        return firstUnused.args;
+      }
+      return null;
+    };
+
+    for (let idx = 0; idx < steps.length; idx++) {
+      const st = steps[idx];
+      if (!st) continue;
+      const realIdx = stepRealIndices[idx];
+      const sc = st.step?.case || '';
+      const val = st.step?.value || {};
+      const md = st.metadata || val.metadata || {};
+
+      if (sc === 'plannerResponse' && Array.isArray(val.toolCalls)) {
+        for (const tc of val.toolCalls) {
+          if (!tc) continue;
+          const parsedArgs = parseJsonObjectSafe(tc.argumentsJson || tc.arguments);
+          if (parsedArgs) {
+            const cleanName = String(tc.name || '').trim().toLowerCase().replace(/^[^:]+:/, '');
+            if (cleanName === 'update_focus' && typeof parsedArgs.focus === 'string' && parsedArgs.focus.trim()) {
+              currentFocus = parsedArgs.focus.trim();
+            }
+            pendingPlannerToolCalls.push({
+              name: cleanName,
+              args: parsedArgs,
+              used: false,
+            });
+          }
+        }
+      }
+
+      const rawToolCallName = String(md.toolCall?.name || val.toolCalls?.[0]?.name || '').trim();
+      const lowerToolName = rawToolCallName.toLowerCase().replace(/^[^:]+:/, '');
+      const directUri =
+        val.absolutePathUri ||
+        val.path ||
+        val.targetFile ||
+        val.filePath ||
+        val.actionResult?.result?.value?.absoluteUri ||
+        val.actionSpec?.spec?.value?.target?.value?.absoluteUri ||
+        val.actionSpec?.spec?.value?.path?.absoluteUri ||
+        val.actionSpec?.createFile?.path?.absoluteUri ||
+        val.actionSpec?.editFile?.path?.absoluteUri ||
+        val.actionSpec?.deleteFile?.path?.absoluteUri ||
+        '';
+      const directNormPath = normalizeUriPath(directUri);
+      const stepArgs =
+        parseJsonObjectSafe(md.toolCall?.argumentsJson || md.toolCall?.arguments || val.argumentsJson) ||
+        (sc !== 'plannerResponse' && sc !== 'userInput' && sc !== 'systemMessage' && sc !== 'checkpoint'
+          ? consumePendingToolArgs(
+              lowerToolName ||
+                (sc === 'codeAction'
+                  ? 'edit_file'
+                  : sc === 'runCommand'
+                  ? 'run_command'
+                  : sc === 'viewFile'
+                  ? 'read_file'
+                  : ''),
+              directNormPath
+            )
+          : null);
+
+      const candidateUri =
+        directUri ||
+        stepArgs?.Path ||
+        stepArgs?.TargetFile ||
+        stepArgs?.file_path ||
+        stepArgs?.path ||
+        '';
+      const normPath = directNormPath || normalizeUriPath(candidateUri);
+      const isInternalBrainPath =
+        Boolean(val.isArtifactFile) ||
+        (normPath && /\/\.gemini\/antigravity\/brain\//.test(normPath));
+      if (normPath && normPath.startsWith('/') && !isInternalBrainPath) seenPathsForRoot.push(normPath);
+
+      const stepRunning = st.status === 1 || st.status === 2;
+      const stepFailed = st.status === 4 || st.status === 6;
+      const createdSec = tsSec(md.createdAt);
+      const finishedSec = tsSec(md.finishedGeneratingAt) || tsSec(md.completedAt);
+      const elapsedSec =
+        finishedSec > createdSec && finishedSec - createdSec < 7200
+          ? finishedSec - createdSec
+          : stepRunning && createdSec > 0 && nowSec > createdSec && nowSec - createdSec < 7200
+          ? nowSec - createdSec
+          : durSec(val.duration);
+
+      const genericArg = (key) => {
+        const raw = val.args?.[key];
+        if (typeof raw !== 'string') return '';
+        if (raw.startsWith('"')) {
+          try { return String(JSON.parse(raw)); } catch {}
+        }
+        return raw;
+      };
+      const commandLine = val.commandLine || val.command || stepArgs?.CommandLine || stepArgs?.command || genericArg('CommandLine');
+      const taskInfo = st.taskDetails;
+      if (taskInfo?.id) backgroundCandidates.set(taskInfo.id, {
+        taskId: taskInfo.id, stepIndex: realIdx, description: taskInfo.description || commandLine,
+        toolSummary: taskInfo.title || md.toolSummary, startTime: md.startedAt || md.createdAt,
+      });
+      // A background tool step finishes before its process. Its completion message names the same task ID.
+      if (sc === 'systemMessage') {
+        const message = val.agentMessage;
+        const content = message?.payload?.value || message?.content || val.message;
+        if (typeof content === 'string') {
+          const done = /Task id "([^"]+)" (?:finished|failed|cancelled|canceled|terminated)\b/i.exec(content);
+          if (done) backgroundCandidates.delete(done[1]);
+        }
+      }
+
+      const isCmdStep = sc === 'runCommand' || lowerToolName === 'run_command';
+      if (isCmdStep) {
+        const cmdStr = String(
+          commandLine ||
+            md.toolSummary ||
+            'run_command'
+        ).trim();
+        const rawCmdOut =
+          typeof val.combinedOutput === 'string'
+            ? val.combinedOutput
+            : val.combinedOutput?.full ||
+              val.combinedOutput?.truncated ||
+              val.output ||
+              val.stdout ||
+              val.result?.output ||
+              '';
+        const outPreview = rawCmdOut
+          ? String(rawCmdOut)
+              .replace(/\r\n/g, '\n')
+              .trim()
+              .split('\n')
+              .slice(-6)
+              .join('\n')
+              .slice(0, 360)
+          : '';
+        const exitCode =
+          val.exitCode !== undefined
+            ? Number(val.exitCode)
+            : val.result?.exitCode !== undefined
+            ? Number(val.result.exitCode)
+            : null;
+        allCommands.push({
+          stepIdx: realIdx,
+          turn: findTurnForStep(realIdx),
+          command: cmdStr,
+          summary: String(md.toolSummary || stepArgs?.toolSummary || '').trim(),
+          status: Number(st.status || 0),
+          isRunning: stepRunning,
+          isError: stepFailed || (exitCode !== null && Number.isFinite(exitCode) && exitCode !== 0),
+          exitCode: Number.isFinite(exitCode) ? exitCode : null,
+          durationSec: elapsedSec,
+          outputPreview: outPreview,
+        });
+      }
+
+      if (findTurnForStep(realIdx) === latestTurnNum && sc !== 'userInput' && sc !== 'systemMessage' && sc !== 'checkpoint') {
+        const sSum = String(md.toolSummary || stepArgs?.toolSummary || '').trim();
+        if (sSum) {
+          latestTurnAction = sSum;
+        } else if (isCmdStep) {
+          const cTxt = String(commandLine || '').trim();
+          if (cTxt) latestTurnAction = `运行 ${cTxt.slice(0, 42)}`;
+        } else if ((sc === 'codeAction' || sc === 'viewFile') && normPath && !isInternalBrainPath) {
+          const bName = normPath.split('/').pop() || normPath;
+          latestTurnAction = sc === 'codeAction' ? `编辑 ${bName}` : `读取 ${bName}`;
+        } else if (sc === 'searchWeb') {
+          latestTurnAction = '搜索网页资料';
+        }
+      }
+
+      if (stepRunning && sc !== 'userInput' && sc !== 'systemMessage' && sc !== 'checkpoint') {
+        const sInfo = stepInfoMap.get(realIdx);
+        let kind = 'tool';
+        let title = sInfo?.toolSummary || sInfo?.toolName || sc || 'Working…';
+        if (sc === 'plannerResponse') {
+          kind = val.response ? 'streaming' : 'thinking';
+          title = val.response ? 'Generating response…' : 'Thinking…';
+        } else if (isCmdStep || sc === 'commandStatus') {
+          kind = 'command';
+          title = String(
+            commandLine || taskInfo?.description || md.toolSummary || genericArg('toolSummary') || 'run_command'
+          ).trim();
+        } else if (sc === 'viewFile' || sc === 'codeAction' || normPath) {
+          kind = 'file';
+          const bName = normPath ? normPath.split('/').pop() : '';
+          title = md.toolSummary || (bName ? `${sInfo?.toolName?.split(':')[0] || sc}: ${bName}` : title);
+        } else if (lowerToolName === 'invoke_subagent') {
+          title = stepArgs?.Role || genericArg('Role') || title;
+        } else if (sc === 'grep' || sc === 'find' || sc === 'searchWeb') {
+          kind = 'search';
+        }
+        activeTasks.push({
+          stepIdx: realIdx,
+          turn: findTurnForStep(realIdx),
+          stepCase: sc,
+          kind,
+          title,
+          summary: String(md.toolSummary || stepArgs?.toolSummary || '').trim(),
+          status: Number(st.status || 0),
+          startedAtSec: createdSec,
+          elapsedSec,
+        });
+      }
+
+      const isFileChangeStep =
+        !stepFailed &&
+        (sc === 'codeAction' ||
+          sc === 'editFile' ||
+          sc === 'createFile' ||
+          sc === 'writeToFile' ||
+          sc === 'replaceFileContent' ||
+          sc === 'multiReplaceFileContent' ||
+          sc === 'deleteFile' ||
+          /^(?:write_file|edit_file|create_file|write_to_file|replace_file_content|multi_replace_file_content|delete_file)$/i.test(
+            lowerToolName
+          ));
+
+      if (isFileChangeStep && normPath && !isInternalBrainPath) {
+        const existing = changedMap.get(normPath);
+        const specCase = String(val.actionSpec?.spec?.case || '');
+        const resVal = val.actionResult?.result?.value || {};
+        const isDel =
+          sc === 'deleteFile' ||
+          specCase === 'deleteFile' ||
+          Boolean(val.actionSpec?.deleteFile) ||
+          lowerToolName === 'delete_file';
+        const isCreate =
+          !isDel &&
+          (sc === 'createFile' ||
+            specCase === 'createFile' ||
+            Boolean(resVal.createFile) ||
+            Boolean(val.actionSpec?.createFile) ||
+            lowerToolName === 'create_file' ||
+            ((lowerToolName === 'write_file' || lowerToolName === 'write_to_file' || sc === 'writeToFile') &&
+              !existing &&
+              stepArgs?.Append !== true &&
+              stepArgs?.Overwrite !== true));
+
+        const rawUnified =
+          val.diff ||
+          val.unifiedDiff ||
+          val.patch ||
+          resVal.diff ||
+          resVal.unifiedDiff ||
+          val.actionResult?.diff ||
+          val.actionResult?.unifiedDiff ||
+          val.result?.diff ||
+          '';
+        const chunks = stepArgs?.ReplacementChunks || val.replacementChunks;
+        let source;
+        if (typeof rawUnified === 'string' && rawUnified.trim()) {
+          source = rawUnified;
+        } else if (Array.isArray(chunks) && chunks.length) {
+          source = chunks.filter(Boolean).map((ch) => ({
+            oldText: ch.TargetContent ?? ch.targetContent ?? ch.Target,
+            newText: ch.ReplacementContent ?? ch.replacementContent ?? ch.Replacement,
+            start: ch.StartLine ?? ch.startLine ?? 1,
+          }));
+        } else {
+          const oldText = stepArgs?.Target ?? stepArgs?.TargetContent ?? stepArgs?.old_string ??
+            val.targetContent ?? val.oldString ?? val.actionSpec?.editFile?.oldString;
+          const newText = stepArgs?.Replacement ?? stepArgs?.ReplacementContent ?? stepArgs?.new_string ??
+            val.replacementContent ?? val.newString ?? val.actionSpec?.editFile?.newString ??
+            stepArgs?.Content ?? stepArgs?.CodeContent ?? val.content ?? val.codeContent ?? val.actionSpec?.createFile?.content;
+          if (oldText || newText) source = [{ oldText, newText, start: stepArgs?.StartLine || val.startLine || 1 }];
+        }
+
+        const preview = readEditDiff(source);
+        const statAdd = Number(val.diffStats?.additions ?? val.linesAdded ?? val.addedLines ?? 0);
+        const statDel = Number(val.diffStats?.deletions ?? val.linesRemoved ?? val.deletedLines ?? 0);
+        const hasStats = statAdd > 0 || statDel > 0;
+        const edit = {
+          stepIdx: realIdx, turn: findTurnForStep(realIdx),
+          addedLines: hasStats ? statAdd : preview.addedLines,
+          deletedLines: hasStats ? statDel : preview.deletedLines,
+          source, diffLines: preview.diffLines,
+        };
+        const file = existing || {
+          path: normPath, relPath: normPath, baseName: normPath.split('/').pop() || normPath,
+          kind: isCreate ? 'A' : 'M', edits: 0, history: [],
+          addedLines: 0, deletedLines: 0, firstStepIdx: realIdx,
+        };
+        file.history.push(edit);
+        file.edits = file.history.length;
+        file.addedLines += edit.addedLines;
+        file.deletedLines += edit.deletedLines;
+        file.lastStepIdx = realIdx;
+        file.turn = edit.turn;
+        file.diffLines = edit.diffLines;
+        if (isDel) file.kind = 'D';
+        else if (file.kind === 'D') file.kind = 'M';
+        if (!existing) changedMap.set(normPath, file);
+      }
+    }
+
+    const bgCount = Number(opts.backgroundTaskCount || 0);
+    const background = Array.isArray(opts.backgroundTasks) ? opts.backgroundTasks :
+      bgCount > 0 ? Array.from(backgroundCandidates.values()).slice(-bgCount) : [];
+    for (const task of background) {
+      const idx = task.stepIndex;
+      const existing = activeTasks.find((item) => item.stepIdx === idx && Number.isInteger(idx));
+      const startedAtSec = tsSec(task.startTime);
+      const detail = {
+        taskId: task.taskId, title: task.description || task.toolSummary || existing?.title || task.toolName || 'Task',
+        startedAtSec, elapsedSec: startedAtSec > 0 ? Math.max(0, nowSec - startedAtSec) : 0,
+      };
+      if (existing) Object.assign(existing, detail);
+      else activeTasks.push({ ...detail, stepIdx: idx, turn: findTurnForStep(idx), kind: 'background' });
+    }
+    if (background.length) isRunning = true;
+
+    const workspacePath = normalizeUriPath(rawWsMeta) || deriveCommonDir(seenPathsForRoot);
+    const changedFiles = Array.from(changedMap.values()).map((f) => ({
+      ...f,
+      relPath: toRelativeDisplayPath(f.path, workspacePath),
+    }));
+    const changedTotals = changedFiles.reduce(
+      (acc, f) => {
+        acc.files += 1;
+        acc.addedLines += f.addedLines || 0;
+        acc.deletedLines += f.deletedLines || 0;
+        return acc;
+      },
+      { files: 0, addedLines: 0, deletedLines: 0 }
+    );
+    const recentCommands = allCommands.slice(-10).reverse();
+    const topStepsWithTurns = [...msgChildren]
+      .sort((a, b) => b.tokens - a.tokens)
+      .slice(0, 10)
+      .map((s) => ({
+        ...s,
+        turn: s.stepIdx >= 0 ? findTurnForStep(s.stepIdx) : 0,
+      }));
+
     const result = {
       cascadeId,
+      workspacePath,
+      subagentSpec: t.metadata?.subagentSpec,
       turns: turnDetails.length || callList.length,
       turnDetails,
       toolBreakdown,
+      activeTasks,
+      currentFocus,
+      latestTurnAction,
+      recentCommands,
+      changedFiles,
+      changedTotals,
       chatMsgTokens,
       toolResultsTokens: clampedToolResults,
       overheadTokens: Math.max(0, contextUsed - (sysTokens + toolsTokens + msgTokens)),
@@ -1853,7 +2431,7 @@
       sysChildren,
       toolsChildren,
       msgChildren,
-      topSteps: [...msgChildren].sort((a, b) => b.tokens - a.tokens).slice(0, 10),
+      topSteps: topStepsWithTurns,
       userMsgTokens,
       botMsgTokens,
       toolIoTokens,
@@ -1900,6 +2478,28 @@
     return result;
   }
 
+  function classifySubagentRole(raw, analysis) {
+    const meta = raw?.summaryObj?.trajectoryMetadata || raw?.trajectoryMetadata || {};
+    const explicitRole = String(
+      raw?.role || meta.subagentSpec?.role || analysis?.subagentSpec?.role || meta.role || meta.subagentRole || meta.agentRole || meta.workerName || ''
+    ).trim();
+    const explicitType = String(
+      raw?.typeName || meta.subagentSpec?.typeName || analysis?.subagentSpec?.typeName || meta.typeName || meta.subagentType || meta.agentType || ''
+    ).trim();
+    const hay = `${explicitRole} ${explicitType} ${raw?.summary || ''}`.toLowerCase();
+
+    let roleKind = 'agent';
+    if (/\b(?:browser|web|page|preview|ui|playwright|chrome|dom)\b|浏览器|网页/.test(hay)) roleKind = 'browser';
+    else if (/\b(?:research|researcher|explore|search|audit|investigate|survey|read|analy\w*)\b|调研|排查|分析|检索/.test(hay)) roleKind = 'research';
+    else if (/\b(?:review|reviewer|verify|test|qa|check|lint)\b|审查|测试|验证/.test(hay)) roleKind = 'review';
+    else if (/\b(?:image|draw|design|icon|visual|svg)\b|生成图|画图|设计/.test(hay)) roleKind = 'image';
+    else if (/\b(?:swarm|worker|coordinator|team)\b|蜂群|协作/.test(hay)) roleKind = 'swarm';
+    else if (/\b(?:code|coder|dev|build|fix|edit|refactor|impl\w*|debug)\b|写代码|修复|重构|开发/.test(hay)) roleKind = 'coder';
+
+    const label = explicitRole || explicitType || '';
+    return { role: label, roleKind, typeName: explicitType };
+  }
+
   function attachSubagentSummaries(convoData, subagentItems) {
     if (!convoData || !Array.isArray(subagentItems)) return convoData;
     const normalized = [];
@@ -1933,14 +2533,28 @@
       const toolCount = Number(
         raw.toolCount ?? (analysis?.toolBreakdown || []).reduce((acc, t) => acc + (t.count || 0), 0)
       );
+      const roleInfo = classifySubagentRole(raw, analysis);
+      const subMeta = raw?.summaryObj?.trajectoryMetadata || raw?.trajectoryMetadata || {};
+      const nestingDepth = Number(raw.nestingDepth ?? subMeta.nestingDepth ?? 1) || 1;
+      const subActiveTasks = Array.isArray(raw.activeTasks)
+        ? raw.activeTasks
+        : Array.isArray(analysis?.activeTasks)
+        ? analysis.activeTasks
+        : [];
       normalized.push({
         id,
         shortId: id ? id.slice(0, 8) : 'subagent',
         parentId: String(raw.parentId || ''),
         rootId: String(raw.rootId || ''),
         summary: String(raw.summary || ''),
+        role: roleInfo.role,
+        roleKind: roleInfo.roleKind,
+        typeName: roleInfo.typeName,
+        nestingDepth,
+        activeTasks: subActiveTasks,
         status,
-        isRunning: status === 2 || Boolean(analysis?.isRunning),
+        isRunning: status === 2 || Boolean(raw.backgroundTaskCount || raw.notFullyIdle ||
+          subActiveTasks.some((t) => t.taskId) || (!raw.status && analysis?.isRunning)),
         steps,
         calls,
         model,
@@ -2347,6 +2961,7 @@
     isUserTurnBoundary,
     extractUserPromptText,
     analyzeActiveConversation,
+    readEditDiff,
     attachSubagentSummaries,
     normalizeQuotaData,
     getActiveQuotaInfo,

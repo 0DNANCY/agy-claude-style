@@ -56,5 +56,39 @@ test('levelFromActiveInfo maps Antigravity trajectory states accurately', () => 
   assert.equal(mascotCore.levelFromActiveInfo(null).state, 'idle');
   assert.equal(mascotCore.levelFromActiveInfo({ isRunning: true, isThinking: true }).animation, 'thinking');
   assert.equal(mascotCore.levelFromActiveInfo({ isRunning: true, isThinking: false }).animation, 'typing');
-  assert.equal(mascotCore.levelFromActiveInfo({ hasError: true, isRunning: true }).animation, 'error');
+  assert.equal(mascotCore.levelFromActiveInfo({ isRunning: true, isBuilding: true }).animation, 'building');
+  assert.equal(mascotCore.levelFromActiveInfo({ isRunning: true, isConducting: true, isBuilding: true }).animation, 'conducting');
+  assert.equal(mascotCore.levelFromActiveInfo({ needsApproval: true, isRunning: true }).animation, 'notification');
+  assert.equal(mascotCore.levelFromActiveInfo({ isCompacting: true, isRunning: true }).animation, 'compacting');
+  assert.equal(mascotCore.levelFromActiveInfo({ hasError: true, isCompacting: true }).animation, 'error');
+});
+
+test('all 5 additional animations (building, conducting, compacting, notification, music) and waking are reachable', () => {
+  const t0 = 200000;
+  const stage = mascotCore.freshStage(t0);
+  const around = { extras: mascotCore.CRAB_EXTRAS, extrasAllowed: true, random: () => 0.9 };
+
+  // Music is in CRAB_EXTRAS and also triggerable via moment
+  assert.ok(mascotCore.CRAB_EXTRAS.includes('music'));
+  let pick = mascotCore.decideStage(stage, t0, { state: 'idle', animation: 'idle', priority: 1 }, around);
+  assert.equal(pick.key, 'idle');
+  pick = mascotCore.decideStage(stage, t0 + 45000, { state: 'idle', animation: 'idle', priority: 1 }, around);
+  assert.equal(pick.key, 'music');
+  mascotCore.finishStage(stage, 'music', t0 + 46000, () => 0.9);
+
+  // Sleep -> wakeStage -> waking
+  pick = mascotCore.decideStage(stage, t0 + 120000, { state: 'idle', animation: 'idle', priority: 1 }, around);
+  assert.equal(pick.key, 'sleeping');
+  assert.equal(mascotCore.wakeStage(stage, t0 + 121000), true);
+  pick = mascotCore.decideStage(stage, t0 + 121000, { state: 'idle', animation: 'idle', priority: 1 }, around);
+  assert.equal(pick.key, 'waking');
+  mascotCore.finishStage(stage, 'waking', t0 + 122000, () => 0.5);
+
+  // Compacting, notification, and music moments
+  assert.equal(mascotCore.takeMoment(stage, 'compacting', t0 + 123000), true);
+  assert.equal(mascotCore.decideStage(stage, t0 + 123500, { state: 'idle', animation: 'idle', priority: 1 }, around).key, 'compacting');
+  assert.equal(mascotCore.takeMoment(stage, 'notification', t0 + 124000), true);
+  assert.equal(mascotCore.decideStage(stage, t0 + 124500, { state: 'idle', animation: 'idle', priority: 1 }, around).key, 'notification');
+  assert.equal(mascotCore.takeMoment(stage, 'music', t0 + 130000), true);
+  assert.equal(mascotCore.decideStage(stage, t0 + 130500, { state: 'idle', animation: 'idle', priority: 1 }, around).key, 'music');
 });

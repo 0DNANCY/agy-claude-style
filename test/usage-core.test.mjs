@@ -1028,3 +1028,230 @@ test('analyzeActiveConversation skips 0-token generatorMetadata startup stubs fr
   assert.equal(info.turnDetails[1].turn, 2);
   assert.equal(info.turnDetails[1].inProgress, true, 'Turn 2 with active thinking step (status=1) must have inProgress=true');
 });
+
+test('analyzeActiveConversation extracts changedFiles diffs, activeTasks, recentCommands, and turn-linked topSteps', () => {
+  const traj = {
+    metadata: {
+      workspaces: [{ workspaceFolderAbsoluteUri: 'file:///Users/dev/repo' }],
+    },
+    steps: [
+      { status: 3, metadata: { createdAt: { seconds: '1700001000' } }, step: { case: 'userInput', value: { query: 'Edit app and create util' } } },
+      {
+        status: 3,
+        metadata: { createdAt: { seconds: '1700001002' } },
+        step: {
+          case: 'plannerResponse',
+          value: {
+            response: 'Updating files now',
+            toolCalls: [
+              {
+                name: 'edit_file',
+                argumentsJson: JSON.stringify({
+                  Path: '/Users/dev/repo/src/app.js',
+                  Target: 'const a = 1;\nconst b = 2;\n',
+                  Replacement: 'const a = 1;\nconst b = 42;\nconst c = 3;\n',
+                }),
+              },
+              {
+                name: 'write_file',
+                argumentsJson: JSON.stringify({
+                  Path: '/Users/dev/repo/src/util.js',
+                  Content: 'export function helper() {\n  return true;\n}\n',
+                }),
+              },
+            ],
+          },
+        },
+      },
+      { status: 3, metadata: { createdAt: { seconds: '1700001003' }, toolCall: { name: 'edit_file' } }, step: { case: 'codeAction', value: {} } },
+      { status: 3, metadata: { createdAt: { seconds: '1700001004' }, toolCall: { name: 'write_file' } }, step: { case: 'createFile', value: {} } },
+      { status: 3, metadata: { createdAt: { seconds: '1700002000' } }, step: { case: 'userInput', value: { query: 'Run tests' } } },
+      {
+        status: 1,
+        metadata: { createdAt: { seconds: '1700002002' }, toolSummary: 'Run unit tests', toolCall: { name: 'run_command' } },
+        step: { case: 'runCommand', value: { commandLine: 'npm test' } },
+      },
+    ],
+    generatorMetadata: [
+      {
+        stepIndices: [0, 1],
+        metadata: {
+          value: {
+            modelDisplayName: 'Claude Opus',
+            usage: { inputTokens: '1200', cacheReadTokens: '12000', outputTokens: '300' },
+            chatStartMetadata: {
+              contextWindowMetadata: {
+                estimatedTokensUsed: 40000,
+                maxContextTokens: 200000,
+                tokenBreakdown: {
+                  groups: [
+                    { type: 1, name: 'System', numTokens: 10000 },
+                    {
+                      type: 7,
+                      name: 'Messages',
+                      numTokens: 30000,
+                      children: [
+                        { name: '0: USER_INPUT', numTokens: 500 },
+                        { name: '2: GENERIC', numTokens: 18500 },
+                      ],
+                    },
+                  ],
+                },
+              },
+            },
+          },
+        },
+      },
+      {
+        stepIndices: [4, 5],
+        metadata: {
+          value: {
+            modelDisplayName: 'Claude Opus',
+            usage: { inputTokens: '800', cacheReadTokens: '40000', outputTokens: '120' },
+          },
+        },
+      },
+    ],
+  };
+
+  const info = usageCore.analyzeActiveConversation(traj, { cascadeId: 'sidebar-data-test', nowSec: 1700002008 });
+  assert.equal(info.workspacePath, '/Users/dev/repo');
+  assert.equal(info.changedFiles.length, 2);
+  assert.equal(info.changedFiles[0].relPath, 'src/app.js');
+  assert.equal(info.changedFiles[0].kind, 'M');
+  assert.equal(info.changedFiles[0].addedLines, 2);
+  assert.equal(info.changedFiles[0].deletedLines, 1);
+  assert.equal(info.changedFiles[0].turn, 1);
+  assert.ok(info.changedFiles[0].diffLines.some((l) => l.type === 'del' && l.text.includes('const b = 2;')));
+  assert.ok(info.changedFiles[0].diffLines.some((l) => l.type === 'add' && l.text.includes('const b = 42;')));
+
+  assert.equal(info.changedFiles[1].relPath, 'src/util.js');
+  assert.equal(info.changedFiles[1].kind, 'A');
+  assert.equal(info.changedFiles[1].addedLines, 3);
+  assert.equal(info.changedTotals.files, 2);
+  assert.equal(info.changedTotals.addedLines, 5);
+  assert.equal(info.changedTotals.deletedLines, 1);
+
+  assert.equal(info.activeTasks.length, 1);
+  assert.equal(info.activeTasks[0].kind, 'command');
+  assert.equal(info.activeTasks[0].title, 'npm test');
+  assert.equal(info.activeTasks[0].elapsedSec, 6);
+  assert.equal(info.recentCommands.length, 1);
+  assert.equal(info.recentCommands[0].isRunning, true);
+  assert.equal(info.topSteps[0].turn, 1);
+});
+
+test('attachSubagentSummaries classifies roles and preserves parent-child hierarchy metadata', () => {
+  const convo = usageCore.analyzeActiveConversation({
+    steps: [{ status: 3, metadata: { createdAt: { seconds: '1700001000' } }, step: { case: 'userInput', value: { query: 'Investigate' } } }],
+    generatorMetadata: [],
+  });
+  usageCore.attachSubagentSummaries(convo, [
+    { id: 'sub-res', parentId: 'root-1', rootId: 'root-1', status: 2, summary: 'Explore codebase architecture', role: 'Researcher', totalTokens: 12000 },
+    { id: 'sub-brw', parentId: 'root-1', rootId: 'root-1', status: 2, summary: 'Open localhost preview page', typeName: 'browser', totalTokens: 8000 },
+    { id: 'sub-nest', parentId: 'sub-res', rootId: 'root-1', status: 2, summary: 'Verify unit test suite', nestingDepth: 2, totalTokens: 4500 },
+  ]);
+  assert.equal(convo.subagents.length, 3);
+  const byId = new Map(convo.subagents.map((s) => [s.id, s]));
+  assert.equal(byId.get('sub-res').roleKind, 'research');
+  assert.equal(byId.get('sub-res').role, 'Researcher');
+  assert.equal(byId.get('sub-brw').roleKind, 'browser');
+  assert.equal(byId.get('sub-nest').roleKind, 'review');
+  assert.equal(byId.get('sub-nest').parentId, 'sub-res');
+  assert.equal(byId.get('sub-nest').nestingDepth, 2);
+});
+
+test('analyzeActiveConversation extracts connect-es CortexStepCodeAction absoluteUri, diffStats, and excludes artifacts', () => {
+  const info = usageCore.analyzeActiveConversation({
+    steps: [
+      { status: 3, metadata: { createdAt: { seconds: '1700002000' } }, step: { case: 'userInput', value: { query: 'Edit app' } } },
+      {
+        status: 3,
+        metadata: { createdAt: { seconds: '1700002001' } },
+        step: {
+          case: 'plannerResponse',
+          value: {
+            toolCalls: [
+              { name: 'default_api:edit_file', argumentsJson: JSON.stringify({ Path: '/repo/ui-runtime.js', Target: 'const a = 1;\n', Replacement: 'const a = 2;\nconst b = 3;\n' }) },
+            ],
+          },
+        },
+      },
+      {
+        status: 3,
+        metadata: { createdAt: { seconds: '1700002002' } },
+        step: {
+          case: 'codeAction',
+          value: {
+            isArtifactFile: true,
+            actionSpec: { spec: { case: 'createFile', value: { path: { absoluteUri: 'file:///Users/me/.gemini/antigravity/brain/cid/plan.md' } } } },
+            actionResult: { result: { case: 'edit', value: { absoluteUri: 'file:///Users/me/.gemini/antigravity/brain/cid/plan.md', createFile: true } } },
+            diffStats: { additions: 50, deletions: 0 },
+          },
+        },
+      },
+      {
+        status: 3,
+        metadata: { createdAt: { seconds: '1700002003' } },
+        step: {
+          case: 'codeAction',
+          value: {
+            isArtifactFile: false,
+            actionSpec: { spec: { case: 'command', value: { target: { case: 'file', value: { absoluteUri: 'file:///repo/ui-runtime.js' } } } } },
+            actionResult: { result: { case: 'edit', value: { absoluteUri: 'file:///repo/ui-runtime.js', createFile: false } } },
+            diffStats: { additions: 2, deletions: 1 },
+          },
+        },
+      },
+    ],
+    generatorMetadata: [],
+  });
+  assert.equal(info.changedFiles.length, 1);
+  assert.equal(info.changedFiles[0].baseName, 'ui-runtime.js');
+  assert.equal(info.changedFiles[0].addedLines, 2);
+  assert.equal(info.changedFiles[0].deletedLines, 1);
+  assert.ok(info.changedFiles[0].diffLines.some((l) => l.type === 'add' && l.text.includes('const b = 3;')));
+});
+
+test('file history keeps every edit, complete long lines, and the turn of each edit', () => {
+  const longLine = 'a'.repeat(250);
+  const patch = ['@@ -1 +1,150 @@', '-old', ...Array.from({ length: 150 }, (_, i) => '+' + (i === 149 ? longLine : i))].join('\n');
+  const user = (query) => ({ status: 3, step: { case: 'userInput', value: { query } } });
+  const change = (value) => ({ status: 3, step: { case: 'codeAction', value: { path: '/repo/main.js', ...value } } });
+  const info = usageCore.analyzeActiveConversation({
+    steps: [user('First'), change({ diff: patch }), user('Second'), change({ diffStats: { additions: 1, deletions: 1 } })],
+    generatorMetadata: [1, 3].map((idx) => ({
+      stepIndices: [idx], metadata: { value: { modelDisplayName: 'Test', usage: { inputTokens: '50', outputTokens: '5' } } },
+    })),
+  });
+  const [file] = info.changedFiles;
+  assert.deepEqual(file.history.map(({ stepIdx, turn }) => [stepIdx, turn]), [[1, 1], [3, 2]]);
+  assert.equal(file.addedLines, 151);
+  assert.equal(file.deletedLines, 2);
+  assert.equal(file.history[0].diffLines.length, 18);
+  assert.equal(usageCore.readEditDiff(file.history[0].source, Infinity).diffLines.at(-1).text, '+' + longLine);
+  assert.deepEqual(file.diffLines, [], 'A later stats-only edit must not display an older patch');
+});
+
+test('background commands keep their names, stay visible after dispatch, and leave independently', () => {
+  const taskStep = (n, status) => ({
+    status, metadata: { createdAt: { seconds: 100 }, toolCall: { name: 'run_command' } },
+    taskDetails: { id: 'cid/task-' + n, description: 'sleep ' + n },
+    step: { case: 'generic', value: { args: { CommandLine: JSON.stringify('sleep ' + n) } } },
+  });
+  const steps = [taskStep(25, 3), taskStep(55, 1)];
+  const live = [{ taskId: 'cid/task-25', stepIndex: 0, description: 'sleep 25' },
+    { taskId: 'cid/task-55', stepIndex: 1, description: 'sleep 55' }];
+  const analyze = (opts) => usageCore.analyzeActiveConversation({ steps }, { nowSec: 109, ...opts });
+  assert.deepEqual(analyze({ backgroundTasks: live }).activeTasks.map(t => t.title).sort(), ['sleep 25', 'sleep 55']);
+  steps[1].status = 3;
+  const remaining = analyze({ backgroundTasks: live.slice(1) });
+  assert.deepEqual(remaining.activeTasks.map(t => t.title), ['sleep 55']);
+  usageCore.attachSubagentSummaries(remaining, [{ id: 'child', status: 1, analysis: { activeTasks: remaining.activeTasks } }]);
+  assert.equal(remaining.subagents[0].isRunning, true);
+  assert.deepEqual(analyze({ backgroundTasks: [] }).activeTasks, []);
+  steps.push({ status: 3, step: { case: 'systemMessage', value: { agentMessage: {
+    payload: { case: 'content', value: 'Task id "cid/task-55" finished with result: done' },
+  } } } });
+  assert.deepEqual(analyze({ backgroundTaskCount: 1 }).activeTasks.map(t => t.title), ['sleep 25']);
+});

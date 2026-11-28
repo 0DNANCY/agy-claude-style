@@ -32,7 +32,10 @@ const DEFAULT_CONFIG = {
   logoInk: 'accent',
   inlineStats: true,
   ringMode: 'context',
+  contextMetric: 'remaining',
   turnBadges: true,
+  rightSidebar: true,
+  rightSidebarAutoSimplifyHud: true,
   hudTopBar: false,
   hudBottomBar: false,
   hudRimProgress: false,
@@ -61,7 +64,10 @@ const CONFIG_VALIDATORS = {
   logoInk: ['accent', 'foreground'],
   inlineStats: 'boolean',
   ringMode: ['context', 'quota'],
+  contextMetric: ['remaining', 'used'],
   turnBadges: 'boolean',
+  rightSidebar: 'boolean',
+  rightSidebarAutoSimplifyHud: 'boolean',
   hudTopBar: 'boolean',
   hudBottomBar: 'boolean',
   hudRimProgress: 'boolean',
@@ -404,12 +410,22 @@ const REMOVE_EXPRESSION = `(() => {
   if (root) {
     root.removeAttribute('data-ag-cs-effort-accent');
     root.removeAttribute('data-ag-cs-perf-backdrop');
+    root.removeAttribute('data-ag-cs-right-rail');
+    root.removeAttribute('data-ag-cs-hud-simplified');
+    root.removeAttribute('data-ag-cs-ctx-metric');
     root.removeAttribute('data-ag-cs-lang');
     root.removeAttribute('data-ag-cs-cjk');
     if (root.getAttribute('data-ag-cjk') === '1') root.removeAttribute('data-ag-cjk');
   }
+  document.querySelectorAll('[data-ag-cs-has-rail]').forEach((el) => {
+    el.removeAttribute('data-ag-cs-has-rail');
+    el.style.removeProperty('--ag-cs-rail-w');
+  });
+  document.querySelectorAll('[data-ag-cs-turn-flash]').forEach((el) => {
+    el.removeAttribute('data-ag-cs-turn-flash');
+  });
   const nodes = document.querySelectorAll(
-    'style#${STYLE_ID}, style#ag-token-hud-style, .ag-cs-home-panel-seat, .ag-cs-ripple-host, .ag-cs-ripple-canvas, .ag-cs-crab, .ag-cs-inline-stats, .ag-cs-context-ring, .ag-cs-ctx-popover, .ag-cs-effort-popover, .ag-cs-perf-backdrop, .ag-cs-smooth-caret, .ag-cs-turn-bar, .ag-cs-hud-top-bar, .ag-cs-hud-bottom-bar, .ag-cs-hud-rim-progress, .ag-cs-hud-footer-chip, #ag-cs-settings-sec, .ag-th-top-bar, .ag-th-bottom-bar, .ag-th-rim-progress, .ag-th-footer-chip, .ag-th-popover, .ag-th-turn-bar, .ag-th-reopen-pill'
+    'style#${STYLE_ID}, style#ag-token-hud-style, .ag-cs-home-panel-seat, .ag-cs-ripple-host, .ag-cs-ripple-canvas, .ag-cs-crab, .ag-cs-inline-stats, .ag-cs-context-ring, .ag-cs-ctx-popover, .ag-cs-effort-popover, .ag-cs-perf-backdrop, .ag-cs-smooth-caret, .ag-cs-turn-bar, .ag-cs-hud-top-bar, .ag-cs-hud-bottom-bar, .ag-cs-hud-rim-progress, .ag-cs-hud-footer-chip, .ag-cs-right-rail, .ag-cs-rail-reopen-btn, .ag-cs-rail-top-toggle, #ag-cs-settings-sec, .ag-th-top-bar, .ag-th-bottom-bar, .ag-th-rim-progress, .ag-th-footer-chip, .ag-th-popover, .ag-th-turn-bar, .ag-th-reopen-pill'
   );
   nodes.forEach((n) => n.remove());
   return { removed: nodes.length };

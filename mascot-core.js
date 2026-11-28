@@ -7,11 +7,14 @@
   const EXTRA_MIN_MS = 20000;
   const EXTRA_SPAN_MS = 20000;
   const REACTION_PRIORITY = 10;
-  const CRAB_EXTRAS = ['idle-look', 'idle-wave', 'idle-laptop'];
+  const CRAB_EXTRAS = ['idle-look', 'idle-laptop', 'idle-wave', 'music'];
 
   const MOMENTS = {
     error: { state: 'error', animation: 'error', priority: 8, holdMs: 4800 },
+    compacting: { state: 'compacting', animation: 'compacting', priority: 7, holdMs: 4800 },
+    notification: { state: 'notification', animation: 'notification', priority: 7, holdMs: 4800 },
     attention: { state: 'attention', animation: 'happy', priority: 5, holdMs: 5200 },
+    music: { state: 'music', animation: 'music', priority: 3, holdMs: 8000 },
   };
 
   function freshStage(now) {
@@ -52,9 +55,25 @@
   function levelFromActiveInfo(info) {
     if (!info) return { state: 'idle', animation: 'idle', priority: 1 };
     if (info.hasError) return { state: 'error', animation: 'error', priority: 8 };
+    if (info.isCompacting) return { state: 'compacting', animation: 'compacting', priority: 7 };
+    if (info.needsApproval) return { state: 'notification', animation: 'notification', priority: 7 };
+    if (info.isConducting) return { state: 'conducting', animation: 'conducting', priority: 6.5 };
+    if (info.isBuilding) return { state: 'building', animation: 'building', priority: 6 };
     if (info.isThinking) return { state: 'thinking', animation: 'thinking', priority: 6 };
     if (info.isRunning) return { state: 'typing', animation: 'typing', priority: 5 };
     return { state: 'idle', animation: 'idle', priority: 1 };
+  }
+
+  function wakeStage(stage, now) {
+    if (!stage) return false;
+    stage.quietSince = now;
+    if (stage.asleep) {
+      stage.asleep = false;
+      stage.waking = true;
+      stage.extra = null;
+      return true;
+    }
+    return false;
   }
 
   function decideStage(stage, now, level, around) {
@@ -147,6 +166,7 @@
     MOMENTS,
     freshStage,
     takeMoment,
+    wakeStage,
     levelFromActiveInfo,
     decideStage,
     finishStage,
