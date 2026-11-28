@@ -811,3 +811,16 @@ test('ui-rewind: double-Esc does not hijack Escape when an extensions/radix popo
   }
 });
 
+test('style.css: rewind bar uses defined theme surface/foreground/border tokens for light and dark readability', () => {
+  const css = fs.readFileSync(path.join(ROOT_DIR, 'style.css'), 'utf8');
+  const m = css.match(/\.ag-cs-rewind-bar,\s*\.ag-cs-rewind-notice\s*\{[\s\S]*?\}/);
+  assert.ok(m, 'expected .ag-cs-rewind-bar, .ag-cs-rewind-notice rule block in style.css');
+  const block = m[0];
+  assert.doesNotMatch(block, /--ag-cs-surface\b/, 'must not reference undefined --ag-cs-surface');
+  assert.doesNotMatch(block, /--ag-cs-fg\b/, 'must not reference undefined --ag-cs-fg');
+  assert.doesNotMatch(block, /--ag-cs-border(?![-0-9])/, 'must not reference undefined --ag-cs-border');
+  assert.match(block, /background:\s*var\(--card\b/, 'rewind background must follow theme --card token');
+  assert.match(block, /color:\s*var\(--foreground\b/, 'rewind text color must follow theme --foreground token');
+});
+
+

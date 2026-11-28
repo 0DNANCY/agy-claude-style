@@ -3289,10 +3289,10 @@ html[data-ag-cs-style] [contenteditable="true"][data-ag-cs-smooth-caret="1"] {
   display: flex;
   flex-direction: column;
   border-radius: 10px;
-  border: 1px solid color-mix(in srgb, var(--ag-cs-accent, #a78bfa) 48%, var(--ag-cs-border, rgba(255, 255, 255, 0.14)));
-  background: var(--ag-cs-surface, #161922);
-  color: var(--ag-cs-fg, #e6edf3);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.24);
+  border: 1px solid color-mix(in srgb, var(--ag-cs-accent, #a78bfa) 48%, var(--ag-cs-border-2, var(--border, rgba(255, 255, 255, 0.14))));
+  background: var(--card, var(--ag-cs-composer-bg, #161922));
+  color: var(--foreground, #e6edf3);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.16);
   overflow: hidden;
   font-family: var(--font-sans, system-ui, -apple-system, sans-serif);
 }
@@ -3432,10 +3432,10 @@ html[data-ag-cs-style] [contenteditable="true"][data-ag-cs-smooth-caret="1"] {
   gap: 6px;
 }
 .ag-cs-rewind-stat-add {
-  color: #4ade80;
+  color: var(--success, #22c55e);
 }
 .ag-cs-rewind-stat-del {
-  color: #f87171;
+  color: var(--error, #ef4444);
 }
 .ag-cs-rewind-opt {
   width: 100%;
